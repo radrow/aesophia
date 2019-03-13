@@ -36,8 +36,20 @@ code([], Icode) ->
 
 %% Generate error on correct format.
 
+-spec underapplied_primitive_error(any(), atom()) -> no_return().
+
+underapplied_primitive_error(Ann, Prim) ->
+    Pos = error_pos(Ann),
+    ErrorString = io_lib:format("under applied primitive ~s", [Prim]),
+    gen_error({Pos,ErrorString}).
+
 gen_error(Error) ->
     error({code_errors, [Error]}).
+
+error_pos(Ann) ->
+    {proplists:get_value(file, Ann, no_file),
+     proplists:get_value(line, Ann, 0),
+     proplists:get_value(col, Ann, 0)}.
 
 %% Create default init function (only if state is unit).
 add_default_init_function(Icode = #{functions := Funs, state_type := State}) ->
@@ -163,19 +175,19 @@ ast_body({qid, _, ["Chain",    "block_height"]}, _Icode) -> prim_block_height;
 ast_body({qid, _, ["Chain",    "difficulty"]}, _Icode)   -> prim_difficulty;
 ast_body({qid, _, ["Chain",    "gas_limit"]}, _Icode)    -> prim_gas_limit;
 %% TODO: eta expand!
-ast_body({qid, _, ["Chain", "balance"]}, _Icode) ->
-    gen_error({underapplied_primitive, 'Chain.balance'});
-ast_body({qid, _, ["Chain", "block_hash"]}, _Icode) ->
-    gen_error({underapplied_primitive, 'Chain.block_hash'});
-ast_body({qid, _, ["Chain", "spend"]}, _Icode) ->
-    gen_error({underapplied_primitive, 'Chain.spend'});
+ast_body({qid, Ann, ["Chain", "balance"]}, _Icode) ->
+    underapplied_primitive_error(Ann, 'Chain.balance');
+ast_body({qid, Ann, ["Chain", "block_hash"]}, _Icode) ->
+    underapplied_primitive_error(Ann, 'Chain.block_hash');
+ast_body({qid, Ann, ["Chain", "spend"]}, _Icode) ->
+    underapplied_primitive_error(Ann, 'Chain.spend');
 
 %% State
 ast_body({qid, _, [Con, "state"]}, #{ contract_name := Con }) -> prim_state;
 ast_body(?qid_app([Con, "put"], [NewState], _, _), Icode = #{ contract_name := Con }) ->
     #prim_put{ state = ast_body(NewState, Icode) };
-ast_body({qid, _, [Con, "put"]}, #{ contract_name := Con }) ->
-    gen_error({underapplied_primitive, put});   %% TODO: eta
+ast_body({qid, Ann, [Con, "put"]}, #{ contract_name := Con }) ->
+    underapplied_primitive_error(Ann, put);     % TODO: eta
 
 %% Abort
 ast_body(?id_app("abort", [String], _, _), Icode) ->
@@ -219,13 +231,13 @@ ast_body(?qid_app(["Oracle", "get_answer"], [Oracle, Q], [_, ?query_t(_, RType)]
     prim_call(?PRIM_CALL_ORACLE_GET_ANSWER, #integer{value = 0},
               [ast_body(Oracle, Icode), ast_body(Q, Icode)], [word, word], aeso_icode:option_typerep(ast_type(RType, Icode)));
 
-ast_body({qid, _, ["Oracle", "register"]}, _Icode)     -> gen_error({underapplied_primitive, 'Oracle.register'});
-ast_body({qid, _, ["Oracle", "query"]}, _Icode)        -> gen_error({underapplied_primitive, 'Oracle.query'});
-ast_body({qid, _, ["Oracle", "extend"]}, _Icode)       -> gen_error({underapplied_primitive, 'Oracle.extend'});
-ast_body({qid, _, ["Oracle", "respond"]}, _Icode)      -> gen_error({underapplied_primitive, 'Oracle.respond'});
-ast_body({qid, _, ["Oracle", "query_fee"]}, _Icode)    -> gen_error({underapplied_primitive, 'Oracle.query_fee'});
-ast_body({qid, _, ["Oracle", "get_answer"]}, _Icode)   -> gen_error({underapplied_primitive, 'Oracle.get_answer'});
-ast_body({qid, _, ["Oracle", "get_question"]}, _Icode) -> gen_error({underapplied_primitive, 'Oracle.get_question'});
+ast_body({qid, Ann, ["Oracle", "register"]}, _Icode)     -> underapplied_primitive_error(Ann, 'Oracle.register');
+ast_body({qid, Ann, ["Oracle", "query"]}, _Icode)        -> underapplied_primitive_error(Ann, 'Oracle.query');
+ast_body({qid, Ann, ["Oracle", "extend"]}, _Icode)       -> underapplied_primitive_error(Ann, 'Oracle.extend');
+ast_body({qid, Ann, ["Oracle", "respond"]}, _Icode)      -> underapplied_primitive_error(Ann, 'Oracle.respond');
+ast_body({qid, Ann, ["Oracle", "query_fee"]}, _Icode)    -> underapplied_primitive_error(Ann, 'Oracle.query_fee');
+ast_body({qid, Ann, ["Oracle", "get_answer"]}, _Icode)   -> underapplied_primitive_error(Ann, 'Oracle.get_answer');
+ast_body({qid, Ann, ["Oracle", "get_question"]}, _Icode) -> underapplied_primitive_error(Ann, 'Oracle.get_question');
 
 %% Name service
 ast_body(?qid_app(["AENS", "resolve"], [Name, Key], _, ?option_t(Type)), Icode) ->
@@ -266,11 +278,11 @@ ast_body(?qid_app(["AENS", "revoke"], Args, _, _), Icode) ->
               [ast_body(Addr, Icode), ast_body(NameHash, Icode), ast_body(Sign, Icode)],
               [word, word, sign_t()], {tuple, []});
 
-ast_body({qid, _, ["AENS", "resolve"]}, _Icode)  -> gen_error({underapplied_primitive, 'AENS.resolve'});
-ast_body({qid, _, ["AENS", "preclaim"]}, _Icode) -> gen_error({underapplied_primitive, 'AENS.preclaim'});
-ast_body({qid, _, ["AENS", "claim"]}, _Icode)    -> gen_error({underapplied_primitive, 'AENS.claim'});
-ast_body({qid, _, ["AENS", "transfer"]}, _Icode) -> gen_error({underapplied_primitive, 'AENS.transfer'});
-ast_body({qid, _, ["AENS", "revoke"]}, _Icode)   -> gen_error({underapplied_primitive, 'AENS.revoke'});
+ast_body({qid, Ann, ["AENS", "resolve"]}, _Icode)  -> underapplied_primitive_error(Ann, 'AENS.resolve');
+ast_body({qid, Ann, ["AENS", "preclaim"]}, _Icode) -> underapplied_primitive_error(Ann, 'AENS.preclaim');
+ast_body({qid, Ann, ["AENS", "claim"]}, _Icode)    -> underapplied_primitive_error(Ann, 'AENS.claim');
+ast_body({qid, Ann, ["AENS", "transfer"]}, _Icode) -> underapplied_primitive_error(Ann, 'AENS.transfer');
+ast_body({qid, Ann, ["AENS", "revoke"]}, _Icode)   -> underapplied_primitive_error(Ann, 'AENS.revoke');
 
 %% Maps
 
@@ -308,11 +320,11 @@ ast_body(App = ?qid_app(["Map", "from_list"], [List], _, MapType), Icode) ->
 ast_body(?qid_app(["Map", "to_list"], [Map], _, _), Icode) ->
     map_tolist(Map, Icode);
 
-ast_body({qid, _, ["Map", "from_list"]}, _Icode) -> gen_error({underapplied_primitive, 'Map.from_list'});
-%% ast_body({qid, _, ["Map", "to_list"]}, _Icode)   -> gen_error({underapplied_primitive, 'Map.to_list'});
-ast_body({qid, _, ["Map", "lookup"]}, _Icode)    -> gen_error({underapplied_primitive, 'Map.lookup'});
-ast_body({qid, _, ["Map", "lookup_default"]}, _Icode)    -> gen_error({underapplied_primitive, 'Map.lookup_default'});
-ast_body({qid, _, ["Map", "member"]}, _Icode)    -> gen_error({underapplied_primitive, 'Map.member'});
+ast_body({qid, Ann, ["Map", "from_list"]}, _Icode) -> underapplied_primitive_error(Ann, 'Map.from_list');
+%% ast_body({qid, Ann, ["Map", "to_list"]}, _Icode)   -> underapplied_primitive_error(Ann, 'Map.to_list');
+ast_body({qid, Ann, ["Map", "lookup"]}, _Icode)    -> underapplied_primitive_error(Ann, 'Map.lookup');
+ast_body({qid, Ann, ["Map", "lookup_default"]}, _Icode)    -> underapplied_primitive_error(Ann, 'Map.lookup_default');
+ast_body({qid, Ann, ["Map", "member"]}, _Icode)    -> underapplied_primitive_error(Ann, 'Map.member');
 
 %% -- map construction { k1 = v1, k2 = v2 }
 ast_body({typed, Ann, {map, _, KVs}, MapType}, Icode) ->
