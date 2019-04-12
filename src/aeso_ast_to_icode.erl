@@ -346,6 +346,11 @@ ast_body(?qid_app(["Crypto", "ecverify"], [Msg, PK, Sig], _, _), Icode) ->
               [ast_body(Msg, Icode), ast_body(PK, Icode), ast_body(Sig, Icode)],
               [word, word, sign_t()], word);
 
+ast_body(?qid_app(["Crypto", "ecverify_secp256k1"], [Msg, PK, Sig], _, _), Icode) ->
+    prim_call(?PRIM_CALL_CRYPTO_ECVERIFY_SECP256K1, #integer{value = 0},
+              [ast_body(Msg, Icode), ast_body(PK, Icode), ast_body(Sig, Icode)],
+              [word, word, sign_t()], word);
+
 ast_body(?qid_app(["Crypto", "sha3"], [Term], [Type], _), Icode) ->
     generic_hash_primop(?PRIM_CALL_CRYPTO_SHA3, Term, Type, Icode);
 ast_body(?qid_app(["Crypto", "sha256"], [Term], [Type], _), Icode) ->
@@ -688,6 +693,8 @@ ast_typerep({qid, _, Name}, Icode) ->
     lookup_type_id(Name, [], Icode);
 ast_typerep({con, _, _}, _) ->
     word;   %% Contract type
+ast_typerep({bytes_t, _, Len}, _) ->
+    {bytes, Len};
 ast_typerep({app_t, _, {id, _, Name}, Args}, Icode) ->
     ArgReps = [ ast_typerep(Arg, Icode) || Arg <- Args ],
     lookup_type_id(Name, ArgReps, Icode);
@@ -750,6 +757,8 @@ type_value({list, A}) ->
 type_value({tuple, As}) ->
     #tuple{ cpts = [#integer{ value = ?TYPEREP_TUPLE_TAG },
                     #list{ elems = [ type_value(A) || A <- As ] }] };
+type_value({bytes, Len}) ->
+    #tuple{ cpts = [#integer{ value = ?TYPEREP_BYTES_TAG }, #integer{ value = Len }] };
 type_value({variant, Cs}) ->
     #tuple{ cpts = [#integer{ value = ?TYPEREP_VARIANT_TAG },
                     #list{ elems = [ #list{ elems = [ type_value(A) || A <- As ] } || As <- Cs ] }] };

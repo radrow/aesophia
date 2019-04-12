@@ -1587,6 +1587,8 @@ unfold_types_in_type(Env, {field_t, Attr, Name, Type}, Options) ->
     {field_t, Attr, Name, unfold_types_in_type(Env, Type, Options)};
 unfold_types_in_type(Env, {constr_t, Ann, Con, Types}, Options) ->
     {constr_t, Ann, Con, unfold_types_in_type(Env, Types, Options)};
+unfold_types_in_type(Env, {named_arg_t, Ann, Con, Types, Default}, Options) ->
+    {named_arg_t, Ann, Con, unfold_types_in_type(Env, Types, Options), Default};
 unfold_types_in_type(Env, T, Options) when is_tuple(T) ->
     list_to_tuple(unfold_types_in_type(Env, tuple_to_list(T), Options));
 unfold_types_in_type(Env, [H|T], Options) ->
