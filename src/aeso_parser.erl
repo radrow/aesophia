@@ -207,7 +207,7 @@ exprAtom() ->
     ?LAZY_P(begin
         Expr = ?LAZY_P(expr()),
         choice(
-        [ id(), con(), token(qid), token(qcon)
+        [ id_or_addr(), con(), token(qid), token(qcon)
         , token(bytes), token(string), token(char)
         , token(int)
         , ?RULE(token(hex), set_ann(format, hex, setelement(1, _1, int)))
@@ -335,6 +335,20 @@ id(Id) ->
            if X == Id -> Y;
               true    -> fail({A, "expected 'bytes'"})
            end).
+
+id_or_addr() ->
+    ?RULE(id(), parse_addr_literal(_1)).
+
+parse_addr_literal(Id = {id, Ann, Name}) ->
+    case lists:member(lists:sublist(Name, 3), ["ak_", "ok_", "oq_", "ct_"]) of
+        false -> Id;
+        true  ->
+            try aeser_api_encoder:decode(list_to_binary(Name)) of
+                {Type, Bin} -> {Type, Ann, Bin}
+            catch _:_ ->
+                Id
+            end
+    end.
 
 %% -- Helpers ----------------------------------------------------------------
 

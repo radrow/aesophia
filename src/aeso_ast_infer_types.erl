@@ -56,7 +56,12 @@
     , fields   :: [aeso_syntax:id()]
     , context  :: why_record() }).
 
--type field_constraint() :: #field_constraint{} | #record_create_constraint{}.
+-record(is_contract_constraint,
+    { contract_t :: utype(),
+      context    :: aeso_syntax:expr()  %% The address literal
+    }).
+
+-type field_constraint() :: #field_constraint{} | #record_create_constraint{} | #is_contract_constraint{}.
 
 -record(field_info,
     { ann      :: aeso_syntax:ann()
@@ -907,6 +912,21 @@ infer_expr(_Env, Body={string, As, _}) ->
     {typed, As, Body, {id, As, "string"}};
 infer_expr(_Env, Body={bytes, As, Bin}) ->
     {typed, As, Body, {bytes_t, As, byte_size(Bin)}};
+infer_expr(_Env, Body={account_pubkey, As, _}) ->
+    {typed, As, Body, {id, As, "address"}};
+infer_expr(_Env, Body={oracle_pubkey, As, _}) ->
+    Q = fresh_uvar(As),
+    R = fresh_uvar(As),
+    {typed, As, Body, {app_t, As, {id, As, "oracle"}, [Q, R]}};
+infer_expr(_Env, Body={oracle_query_id, As, _}) ->
+    Q = fresh_uvar(As),
+    R = fresh_uvar(As),
+    {typed, As, Body, {app_t, As, {id, As, "oracle_query"}, [Q, R]}};
+infer_expr(_Env, Body={contract_pubkey, As, _}) ->
+    Con = fresh_uvar(As),
+    constrain([#is_contract_constraint{ contract_t = Con,
+                                        context    = Body }]),
+    {typed, As, Body, Con};
 infer_expr(_Env, Body={id, As, "_"}) ->
     {typed, As, Body, fresh_uvar(As)};
 infer_expr(Env, Id = {Tag, As, _}) when Tag == id; Tag == qid ->
@@ -1349,6 +1369,10 @@ check_record_create_constraints(Env, [C | Cs]) ->
     end,
     check_record_create_constraints(Env, Cs).
 
+check_is_contract_constraints(_Env, []) -> ok;
+check_is_contract_constraints(Env, [_C | Cs]) ->
+    check_is_contract_constraints(Env, Cs).
+
 -spec solve_field_constraints(env(), [field_constraint()]) -> ok.
 solve_field_constraints(Env, Constraints) ->
     %% First look for record fields that appear in only one type definition
@@ -1447,9 +1471,12 @@ solve_known_record_types(Env, Constraints) ->
     DerefConstraints--SolvedConstraints.
 
 destroy_and_report_unsolved_field_constraints(Env) ->
-    {FieldCs, CreateCs} =
+    {FieldCs, OtherCs} =
         lists:partition(fun(#field_constraint{}) -> true; (_) -> false end,
                         get_field_constraints()),
+    {CreateCs, ContractCs} =
+        lists:partition(fun(#record_create_constraint{}) -> true; (_) -> false end,
+                        OtherCs),
     Unknown  = solve_known_record_types(Env, FieldCs),
     if Unknown == [] -> ok;
        true ->
@@ -1459,6 +1486,7 @@ destroy_and_report_unsolved_field_constraints(Env) ->
             end
     end,
     check_record_create_constraints(Env, CreateCs),
+    check_is_contract_constraints(Env, ContractCs),
     destroy_field_constraints(),
     ok.
 

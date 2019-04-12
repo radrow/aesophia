@@ -429,6 +429,12 @@ ast_body({hash, _, Hash}, _Icode) ->
             #tuple{cpts = [#integer{value = Hi},
                            #integer{value = Lo}]}
     end;
+ast_body({Key, _, Bin}, _Icode) when Key == account_pubkey;
+                                     Key == contract_pubkey;
+                                     Key == oracle_pubkey;
+                                     Key == oracle_query_id ->
+    <<Value:32/unit:8>> = Bin,
+    #integer{value = Value};
 ast_body({string,_,Bin}, _Icode) ->
     Cpts = [size(Bin) | aeb_memory:binary_to_words(Bin)],
     #tuple{cpts = [#integer{value=X} || X <- Cpts]};

@@ -8,6 +8,8 @@
 
 -module(aeso_compiler_tests).
 
+-compile([export_all, nowarn_export_all]).
+
 -include_lib("eunit/include/eunit.hrl").
 
 %%  Very simply test compile the given contracts. Only basic checks
@@ -103,7 +105,8 @@ compilable_contracts() ->
      "events",
      "include",
      "basic_auth",
-     "bitcoin_auth"
+     "bitcoin_auth",
+     "address_literals"
     ].
 
 %% Contracts that should produce type errors
