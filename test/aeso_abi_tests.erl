@@ -4,6 +4,7 @@
 -compile(export_all).
 
 -define(SANDBOX(Code), sandbox(fun() -> Code end)).
+-define(DUMMY_ADDR, <<0:30/unit:8, 127, 119>>).
 
 sandbox(Code) ->
     Parent = self(),
@@ -22,6 +23,10 @@ malicious_from_binary_test() ->
     {ok, {error, circular_references}}   = ?SANDBOX(aeb_heap:from_binary({list, word}, CircularList)),
     {ok, {error, {binary_too_short, _}}} = ?SANDBOX(aeb_heap:from_binary(word, <<1, 2, 3, 4>>)),
     ok.
+
+addr_lit(Bin) ->
+    <<N:256>> = Bin,
+    lists:flatten(io_lib:format("#~64.16.0b", [N])).
 
 from_words(Ws) ->
     << <<(from_word(W))/binary>> || W <- Ws >>.
@@ -97,7 +102,7 @@ calldata_test() ->
     Map = #{ <<"a">> => 4 },
     [{variant, 1, [Map]}, {{<<"b">>, 5}, {variant, 0, []}}] =
         encode_decode_calldata("foo", ["variant", "r"], ["Blue({[\"a\"] = 4})", "{x = (\"b\", 5), y = Red}"]),
-    [16#123, 16#456] = encode_decode_calldata("foo", ["hash", "address"], ["#0000000000000000000000000000000000000000000000000000000000000123",
+    [16#123, 16#456] = encode_decode_calldata("foo", ["hash", "address"], [addr_lit(?DUMMY_ADDR),
                                                                            "ak_1111111111111111111111111111113AFEFpt5"]),
     ok.
 
@@ -140,7 +145,9 @@ oracle_test() ->
         "  function question(o, q : oracle_query(list(string), option(int))) =\n"
         "    Oracle.get_question(o, q)\n",
     {ok, _, {[word, word], {list, string}}, [16#123, 16#456]} =
-        aeso_compiler:check_call(Contract, "question", ["#123", "#456"], []),
+        aeso_compiler:check_call(Contract, "question", ["ok_111111111111111111111111111111ZrdqRz9",
+                                                        "oq_1111111111111111111111111111113AFEFpt5"], []),
+
     ok.
 
 permissive_literals_fail_test() ->
