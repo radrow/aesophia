@@ -679,7 +679,7 @@ check_type(Env, X = {Tag, _, _}, Arity) when Tag == con; Tag == qcon; Tag == id;
 check_type(Env, Type = {tuple_t, Ann, Types}, Arity) ->
     ensure_base_type(Type, Arity),
     {tuple_t, Ann, [ check_type(Env, T, 0) || T <- Types ]};
-check_type(Env, Type = {bytes_t, _Ann, _Len}, Arity) ->
+check_type(_Env, Type = {bytes_t, _Ann, _Len}, Arity) ->
     ensure_base_type(Type, Arity),
     Type;
 check_type(Env, {app_t, Ann, Type, Types}, Arity) ->
@@ -905,11 +905,8 @@ infer_expr(_Env, Body={int, As, _}) ->
     {typed, As, Body, {id, As, "int"}};
 infer_expr(_Env, Body={string, As, _}) ->
     {typed, As, Body, {id, As, "string"}};
-infer_expr(_Env, Body={hash, As, Hash}) ->
-    case byte_size(Hash) of
-        32 -> {typed, As, Body, {id, As, "address"}};
-        64 -> {typed, As, Body, {id, As, "signature"}}
-    end;
+infer_expr(_Env, Body={bytes, As, Bin}) ->
+    {typed, As, Body, {bytes_t, As, byte_size(Bin)}};
 infer_expr(_Env, Body={id, As, "_"}) ->
     {typed, As, Body, fresh_uvar(As)};
 infer_expr(Env, Id = {Tag, As, _}) when Tag == id; Tag == qid ->

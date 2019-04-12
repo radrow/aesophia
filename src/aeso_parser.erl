@@ -208,7 +208,7 @@ exprAtom() ->
         Expr = ?LAZY_P(expr()),
         choice(
         [ id(), con(), token(qid), token(qcon)
-        , token(hash), token(string), token(char)
+        , token(bytes), token(string), token(char)
         , token(int)
         , ?RULE(token(hex), set_ann(format, hex, setelement(1, _1, int)))
         , {bool, keyword(true), true}
@@ -467,7 +467,7 @@ parse_pattern(E = {id, _, _})     -> E;
 parse_pattern(E = {unit, _})      -> E;
 parse_pattern(E = {int, _, _})    -> E;
 parse_pattern(E = {bool, _, _})   -> E;
-parse_pattern(E = {hash, _, _})   -> E;
+parse_pattern(E = {bytes, _, _})  -> E;
 parse_pattern(E = {string, _, _}) -> E;
 parse_pattern(E = {char, _, _})   -> E;
 parse_pattern(E) -> bad_expr_err("Not a valid pattern", E).
