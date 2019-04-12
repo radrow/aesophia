@@ -104,13 +104,12 @@ from_string(ContractString, Options) ->
         %% General programming errors in the compiler just signal error.
     end.
 
--spec string_to_icode(string(), [option() | permissive_address_literals]) -> map().
-string_to_icode(ContractString, Options0) ->
-    {InferOptions, Options} = lists:partition(fun(Opt) -> Opt == permissive_address_literals end, Options0),
+-spec string_to_icode(string(), [option()]) -> map().
+string_to_icode(ContractString, Options) ->
     Ast = parse(ContractString, Options),
     pp_sophia_code(Ast, Options),
     pp_ast(Ast, Options),
-    {TypeEnv, TypedAst} = aeso_ast_infer_types:infer(Ast, [return_env | InferOptions]),
+    {TypeEnv, TypedAst} = aeso_ast_infer_types:infer(Ast, [return_env]),
     pp_typed_ast(TypedAst, Options),
     Icode = ast_to_icode(TypedAst, Options),
     pp_icode(Icode, Options),
@@ -151,11 +150,11 @@ check_call(Source, FunName, Args, Options) ->
 
 check_call(ContractString0, FunName, Args, Options, PatchFun) ->
     try
-        %% First check the contract without the __call function and no permissive literals
+        %% First check the contract without the __call function
         #{} = string_to_icode(ContractString0, Options),
         ContractString = insert_call_function(ContractString0, FunName, Args, Options),
         #{typed_ast := TypedAst,
-          icode     := Icode} = string_to_icode(ContractString, [permissive_address_literals | Options]),
+          icode     := Icode} = string_to_icode(ContractString, Options),
         {ok, {FunName, {fun_t, _, _, ArgTypes, RetType}}} = get_call_type(TypedAst),
         ArgVMTypes = [ aeso_ast_to_icode:ast_typerep(T, Icode) || T <- ArgTypes ],
         RetVMType  = case RetType of

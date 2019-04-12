@@ -506,7 +506,7 @@ map_t(As, K, V) -> {app_t, As, {id, As, "map"}, [K, V]}.
 infer(Contracts) ->
     infer(Contracts, []).
 
--type option() :: permissive_address_literals | return_env.
+-type option() :: return_env.
 
 -spec init_env(list(option())) -> env().
 init_env(_Options) -> global_env().
@@ -1694,26 +1694,8 @@ unify1(Env, {app_t, _, T, []}, B, When) ->
 unify1(Env, A, {app_t, _, T, []}, When) ->
     unify(Env, A, T, When);
 unify1(_Env, A, B, When) ->
-    Ok =
-        case get_option(permissive_address_literals, false) of
-            true ->
-                Kind = fun({qcon, _, _})       -> con;
-                          ({con, _, _})        -> con;
-                          ({id, _, "address"}) -> addr;
-                          ({id, _, "hash"})    -> hash;
-                          ({app_t, _, {id, _, "oracle"}, _})       -> oracle;
-                          ({app_t, _, {id, _, "oracle_query"}, _}) -> query;
-                          (_)                  -> other end,
-                %% If permissive_address_literals we allow unifying adresses
-                %% with contract types or oracles/oracle queries
-                case lists:usort([Kind(A), Kind(B)]) of
-                    [addr, K] -> K /= other;
-                    _ -> false
-                end;
-            false -> false
-        end,
-    [ cannot_unify(A, B, When) || not Ok ],
-    Ok.
+    cannot_unify(A, B, When),
+    false.
 
 dereference(T = {uvar, _, R}) ->
     case ets_lookup(type_vars, R) of
