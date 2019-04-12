@@ -136,11 +136,15 @@ type200() ->
 type300() -> type400().
 
 type400() ->
-    ?RULE(typeAtom(), optional(type_args()),
+    choice(
+    [?RULE(typeAtom(), optional(type_args()),
           case _2 of
             none       -> _1;
             {ok, Args} -> {app_t, get_ann(_1), _1, Args}
-          end).
+          end),
+     ?RULE(id("bytes"), parens(token(int)),
+           {bytes_t, get_ann(_1), element(3, _2)})
+    ]).
 
 typeAtom() ->
     ?LAZY_P(choice(
@@ -325,6 +329,12 @@ token(Tag) ->
         {Tok, {Line, Col}}      -> {Tok, pos_ann(Line, Col)};
         {Tok, {Line, Col}, Val} -> {Tok, pos_ann(Line, Col), Val}
     end).
+
+id(Id) ->
+    ?LET_P({id, A, X} = Y, id(),
+           if X == Id -> Y;
+              true    -> fail({A, "expected 'bytes'"})
+           end).
 
 %% -- Helpers ----------------------------------------------------------------
 

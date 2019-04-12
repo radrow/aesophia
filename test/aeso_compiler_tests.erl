@@ -16,10 +16,14 @@
 simple_compile_test_() ->
      [ {"Testing the " ++ ContractName ++ " contract",
         fun() ->
-            #{byte_code := ByteCode,
-              contract_source := _,
-              type_info := _} = compile(ContractName),
-            ?assertMatch(Code when is_binary(Code), ByteCode)
+            case compile(ContractName) of
+                #{byte_code := ByteCode,
+                  contract_source := _,
+                  type_info := _} -> ?assertMatch(Code when is_binary(Code), ByteCode);
+                ErrBin ->
+                    io:format("\n~s", [ErrBin]),
+                    error(ErrBin)
+            end
         end} || ContractName <- compilable_contracts() ] ++
      [ {"Testing error messages of " ++ ContractName,
         fun() ->
@@ -98,7 +102,8 @@ compilable_contracts() ->
      "state_handling",
      "events",
      "include",
-     "basic_auth"
+     "basic_auth",
+     "bitcoin_auth"
     ].
 
 %% Contracts that should produce type errors

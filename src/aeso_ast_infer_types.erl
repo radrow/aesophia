@@ -341,6 +341,7 @@ global_env() ->
     Address = {id, Ann, "address"},
     Hash    = {id, Ann, "hash"},
     Bits    = {id, Ann, "bits"},
+    Bytes   = fun(Len) -> {bytes_t, Ann, Len} end,
     Oracle  = fun(Q, R) -> {app_t, Ann, {id, Ann, "oracle"}, [Q, R]} end,
     Query   = fun(Q, R) -> {app_t, Ann, {id, Ann, "oracle_query"}, [Q, R]} end,
     Unit    = {tuple_t, Ann, []},
@@ -373,7 +374,9 @@ global_env() ->
                      {"abort", Fun1(String, A)}])
         , types = MkDefs(
                     [{"int", 0}, {"bool", 0}, {"string", 0}, {"address", 0},
-                     {"hash", 0}, {"signature", 0}, {"bits", 0},
+                     {"hash", {[], {alias_t, Bytes(32)}}},
+                     {"signature", {[], {alias_t, Bytes(64)}}},
+                     {"bits", 0},
                      {"option", 1}, {"list", 1}, {"map", 2},
                      {"oracle", 2}, {"oracle_query", 2}
                      ]) },
@@ -439,6 +442,7 @@ global_env() ->
     CryptoScope = #scope
         { funs = MkDefs(
                      [{"ecverify", Fun([Hash, Address, SignId], Bool)},
+                      {"ecverify_secp256k1", Fun([Hash, Bytes(65), Bytes(64)], Bool)},
                       {"sha3",     Fun1(A, Hash)},
                       {"sha256",   Fun1(A, Hash)},
                       {"blake2b",  Fun1(A, Hash)}]) },
@@ -675,6 +679,9 @@ check_type(Env, X = {Tag, _, _}, Arity) when Tag == con; Tag == qcon; Tag == id;
 check_type(Env, Type = {tuple_t, Ann, Types}, Arity) ->
     ensure_base_type(Type, Arity),
     {tuple_t, Ann, [ check_type(Env, T, 0) || T <- Types ]};
+check_type(Env, Type = {bytes_t, _Ann, _Len}, Arity) ->
+    ensure_base_type(Type, Arity),
+    Type;
 check_type(Env, {app_t, Ann, Type, Types}, Arity) ->
     Types1 = [ check_type(Env, T, 0) || T <- Types ],
     Type1  = check_type(Env, Type, Arity + length(Types)),
@@ -905,13 +912,10 @@ infer_expr(_Env, Body={hash, As, Hash}) ->
     end;
 infer_expr(_Env, Body={id, As, "_"}) ->
     {typed, As, Body, fresh_uvar(As)};
-infer_expr(Env, Id = {id, As, _}) ->
+infer_expr(Env, Id = {Tag, As, _}) when Tag == id; Tag == qid ->
     {QName, Type} = lookup_name(Env, As, Id),
     {typed, As, QName, Type};
-infer_expr(Env, Id = {qid, As, _}) ->
-    {QName, Type} = lookup_name(Env, As, Id),
-    {typed, As, QName, Type};
-infer_expr(Env, Id = {con, As, _}) ->
+infer_expr(Env, Id = {Tag, As, _}) when Tag == con; Tag == qcon ->
     {QName, Type} = lookup_name(Env, As, Id, [freshen]),
     {typed, As, QName, Type};
 infer_expr(Env, {unit, As}) ->
@@ -1638,6 +1642,8 @@ unify1(_Env, {qid, _, Name}, {qid, _, Name}, _When) ->
     true;
 unify1(_Env, {qcon, _, Name}, {qcon, _, Name}, _When) ->
     true;
+unify1(_Env, {bytes_t, _, Len}, {bytes_t, _, Len}, _When) ->
+    true;
 unify1(Env, {fun_t, _, Named1, Args1, Result1}, {fun_t, _, Named2, Args2, Result2}, When) ->
     unify(Env, Named1, Named2, When) andalso
     unify(Env, Args1, Args2, When) andalso unify(Env, Result1, Result2, When);
@@ -1703,6 +1709,7 @@ occurs_check1(_, {con, _, _}) -> false;
 occurs_check1(_, {qid, _, _}) -> false;
 occurs_check1(_, {qcon, _, _}) -> false;
 occurs_check1(_, {tvar, _, _}) -> false;
+occurs_check1(_, {bytes_t, _, _}) -> false;
 occurs_check1(R, {fun_t, _, Named, Args, Res}) ->
     occurs_check(R, [Res, Named | Args]);
 occurs_check1(R, {app_t, _, T, Ts}) ->
@@ -2043,6 +2050,8 @@ pp({qid, _, Name}) ->
     string:join(Name, ".");
 pp({con, _, Name}) ->
     Name;
+pp({qcon, _, Name}) ->
+    string:join(Name, ".");
 pp({uvar, _, Ref}) ->
     %% Show some unique representation
     ["?u" | integer_to_list(erlang:phash2(Ref, 16384)) ];
@@ -2050,6 +2059,8 @@ pp({tvar, _, Name}) ->
     Name;
 pp({tuple_t, _, Cpts}) ->
     ["(", pp(Cpts), ")"];
+pp({bytes_t, _, Len}) ->
+    ["bytes(", integer_to_list(Len), ")"];
 pp({app_t, _, T, []}) ->
     pp(T);
 pp({app_t, _, Type, Args}) ->
