@@ -102,8 +102,10 @@ calldata_test() ->
     Map = #{ <<"a">> => 4 },
     [{variant, 1, [Map]}, {{<<"b">>, 5}, {variant, 0, []}}] =
         encode_decode_calldata("foo", ["variant", "r"], ["Blue({[\"a\"] = 4})", "{x = (\"b\", 5), y = Red}"]),
-    [16#123, 16#456] = encode_decode_calldata("foo", ["hash", "address"], [addr_lit(?DUMMY_ADDR),
-                                                                           "ak_1111111111111111111111111111113AFEFpt5"]),
+    [?DUMMY_ADDR, 16#456] = encode_decode_calldata("foo", ["bytes(32)", "address"],
+                                                   [addr_lit(?DUMMY_ADDR), "ak_1111111111111111111111111111113AFEFpt5"]),
+    [?DUMMY_ADDR, ?DUMMY_ADDR] = encode_decode_calldata("foo", ["bytes(32)", "hash"],
+                                                        [addr_lit(?DUMMY_ADDR), addr_lit(?DUMMY_ADDR)]),
     ok.
 
 calldata_init_test() ->

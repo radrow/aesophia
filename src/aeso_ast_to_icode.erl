@@ -421,14 +421,8 @@ ast_body({bool, _, Bool}, _Icode) ->        %BOOL as ints
     #integer{value = Value};
 ast_body({int, _, Value}, _Icode) ->
     #integer{value = Value};
-ast_body({hash, _, Hash}, _Icode) ->
-    case Hash of
-        <<Value:32/unit:8>> ->              %% address
-            #integer{value = Value};
-        <<Hi:32/unit:8, Lo:32/unit:8>> ->   %% signature
-            #tuple{cpts = [#integer{value = Hi},
-                           #integer{value = Lo}]}
-    end;
+ast_body({bytes, Ann, Bin}, Icode) ->
+    ast_body({string, Ann, Bin}, Icode);
 ast_body({Key, _, Bin}, _Icode) when Key == account_pubkey;
                                      Key == contract_pubkey;
                                      Key == oracle_pubkey;
