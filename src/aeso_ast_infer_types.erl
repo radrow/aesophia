@@ -1370,7 +1370,13 @@ check_record_create_constraints(Env, [C | Cs]) ->
     check_record_create_constraints(Env, Cs).
 
 check_is_contract_constraints(_Env, []) -> ok;
-check_is_contract_constraints(Env, [_C | Cs]) ->
+check_is_contract_constraints(Env, [C | Cs]) ->
+    #is_contract_constraint{ contract_t = Type, context = Lit } = C,
+    Type1 = unfold_types_in_type(Env, instantiate(Type)),
+    case lookup_type(Env, record_type_name(Type1)) of
+        {_, {_Ann, {[], {contract_t, _}}}} -> ok;
+        _ -> type_error({not_a_contract_type, Type1, Lit})
+    end,
     check_is_contract_constraints(Env, Cs).
 
 -spec solve_field_constraints(env(), [field_constraint()]) -> ok.
@@ -1853,6 +1859,11 @@ pp_error({undefined_field, Id}) ->
     io_lib:format("Unbound field ~s at ~s\n", [pp(Id), pp_loc(Id)]);
 pp_error({not_a_record_type, Type, Why}) ->
     io_lib:format("~s\n~s\n", [pp_type("Not a record type: ", Type), pp_why_record(Why)]);
+pp_error({not_a_contract_type, Type, Lit}) ->
+    io_lib:format("The type ~s is not a contract type\n"
+                  "when checking that the contract literal at ~s\n~s\n"
+                  "has the type\n~s\n",
+                  [pp_type("", Type), pp_loc(Lit), pp_expr("  ", Lit), pp_type("  ", Type)]);
 pp_error({non_linear_pattern, Pattern, Nonlinear}) ->
     Plural = [ $s || length(Nonlinear) > 1 ],
     io_lib:format("Repeated name~s ~s in pattern\n~s (at ~s)\n",
