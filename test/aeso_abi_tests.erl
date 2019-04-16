@@ -4,7 +4,9 @@
 -compile(export_all).
 
 -define(SANDBOX(Code), sandbox(fun() -> Code end)).
--define(DUMMY_ADDR, <<0:30/unit:8, 127, 119>>).
+-define(DUMMY_HASH_WORD, 16#123).
+-define(DUMMY_HASH, <<0:30/unit:8, 127, 119>>). %% 16#123
+-define(DUMMY_HASH_LIT, "#0000000000000000000000000000000000000000000000000000000000000123").
 
 sandbox(Code) ->
     Parent = self(),
@@ -23,10 +25,6 @@ malicious_from_binary_test() ->
     {ok, {error, circular_references}}   = ?SANDBOX(aeb_heap:from_binary({list, word}, CircularList)),
     {ok, {error, {binary_too_short, _}}} = ?SANDBOX(aeb_heap:from_binary(word, <<1, 2, 3, 4>>)),
     ok.
-
-addr_lit(Bin) ->
-    <<N:256>> = Bin,
-    lists:flatten(io_lib:format("#~64.16.0b", [N])).
 
 from_words(Ws) ->
     << <<(from_word(W))/binary>> || W <- Ws >>.
@@ -102,10 +100,12 @@ calldata_test() ->
     Map = #{ <<"a">> => 4 },
     [{variant, 1, [Map]}, {{<<"b">>, 5}, {variant, 0, []}}] =
         encode_decode_calldata("foo", ["variant", "r"], ["Blue({[\"a\"] = 4})", "{x = (\"b\", 5), y = Red}"]),
-    [?DUMMY_ADDR, 16#456] = encode_decode_calldata("foo", ["bytes(32)", "address"],
-                                                   [addr_lit(?DUMMY_ADDR), "ak_1111111111111111111111111111113AFEFpt5"]),
-    [?DUMMY_ADDR, ?DUMMY_ADDR] = encode_decode_calldata("foo", ["bytes(32)", "hash"],
-                                                        [addr_lit(?DUMMY_ADDR), addr_lit(?DUMMY_ADDR)]),
+    [?DUMMY_HASH_WORD, 16#456] = encode_decode_calldata("foo", ["bytes(32)", "address"],
+                                                        [?DUMMY_HASH_LIT, "ak_1111111111111111111111111111113AFEFpt5"]),
+    [?DUMMY_HASH_WORD, ?DUMMY_HASH_WORD] =
+        encode_decode_calldata("foo", ["bytes(32)", "hash"], [?DUMMY_HASH_LIT, ?DUMMY_HASH_LIT]),
+
+    [119, {0, 0}] = encode_decode_calldata("foo", ["int", "signature"], ["119", [$# | lists:duplicate(128, $0)]]),
     ok.
 
 calldata_init_test() ->

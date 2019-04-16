@@ -266,7 +266,10 @@ translate_vm_value(word,   {app_t, _, {id, _, "oracle_query"}, _}, N) -> address
 translate_vm_value(word,   {id, _, "int"},     N) -> {int, [], N};
 translate_vm_value(word,   {id, _, "bits"},    N) -> error({todo, bits, N});
 translate_vm_value(word,   {id, _, "bool"},    N) -> {bool, [], N /= 0};
-translate_vm_value({bytes, Len}, {bytes_t, _, Len}, Val) -> {bytes, [], Val};
+translate_vm_value({bytes, Len}, {bytes_t, _, Len}, Val) when Len =< 32 ->
+    {bytes, [], <<Val:Len/unit:8>>};
+translate_vm_value({bytes, Len}, {bytes_t, _, Len}, Val) ->
+    {bytes, [], binary:part(<< <<W:32/unit:8>> || W <- tuple_to_list(Val) >>, 0, Len)};
 translate_vm_value(string, {id, _, "string"}, S) -> {string, [], S};
 translate_vm_value({list, VmType}, {app_t, _, {id, _, "list"}, [Type]}, List) ->
     {list, [], [translate_vm_value(VmType, Type, X) || X <- List]};
@@ -399,8 +402,10 @@ icode_to_term(word, {integer, N}) -> N;
 icode_to_term(string, {tuple, [{integer, Len} | Words]}) ->
     <<Str:Len/binary, _/binary>> = << <<W:256>> || {integer, W} <- Words >>,
     Str;
-icode_to_term({bytes, Len}, Bytes = {tuple, [{integer, Len} | Words]}) ->
-    icode_to_term(string, Bytes);
+icode_to_term({bytes, Len}, {integer, Value}) when Len =< 32 ->
+    Value;
+icode_to_term({bytes, Len}, {tuple, Words}) when Len > 32->
+    list_to_tuple([W || {integer, W} <- Words]);
 icode_to_term({list, T}, {list, Vs}) ->
     [ icode_to_term(T, V) || V <- Vs ];
 icode_to_term({tuple, Ts}, {tuple, Vs}) ->

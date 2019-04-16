@@ -349,7 +349,7 @@ ast_body(?qid_app(["Crypto", "ecverify"], [Msg, PK, Sig], _, _), Icode) ->
 ast_body(?qid_app(["Crypto", "ecverify_secp256k1"], [Msg, PK, Sig], _, _), Icode) ->
     prim_call(?PRIM_CALL_CRYPTO_ECVERIFY_SECP256K1, #integer{value = 0},
               [ast_body(Msg, Icode), ast_body(PK, Icode), ast_body(Sig, Icode)],
-              [word, word, sign_t()], word);
+              [bytes_t(32), bytes_t(65), bytes_t(72)], word);
 
 ast_body(?qid_app(["Crypto", "sha3"], [Term], [Type], _), Icode) ->
     generic_hash_primop(?PRIM_CALL_CRYPTO_SHA3, Term, Type, Icode);
@@ -421,8 +421,11 @@ ast_body({bool, _, Bool}, _Icode) ->        %BOOL as ints
     #integer{value = Value};
 ast_body({int, _, Value}, _Icode) ->
     #integer{value = Value};
-ast_body({bytes, Ann, Bin}, Icode) ->
-    ast_body({string, Ann, Bin}, Icode);
+ast_body({bytes, _, Bin}, _Icode) ->
+    case aeb_memory:binary_to_words(Bin) of
+        [Word] -> #integer{value = Word};
+        Words  -> #tuple{cpts = [#integer{value = W} || W <- Words]}
+    end;
 ast_body({Key, _, Bin}, _Icode) when Key == account_pubkey;
                                      Key == contract_pubkey;
                                      Key == oracle_pubkey;
@@ -722,8 +725,9 @@ ast_typerep({variant_t, Cons}, Icode) ->
 ttl_t(Icode) ->
     ast_typerep({qid, [], ["Chain", "ttl"]}, Icode).
 
-sign_t() ->
-    {tuple, [word, word]}.
+sign_t() -> bytes_t(64).
+bytes_t(Len) when Len =< 32 -> word;
+bytes_t(Len)                -> {tuple, lists:duplicate((31 + Len) div 32, word)}.
 
 get_signature_arg(Args0) ->
     NamedArgs = [Arg || Arg = {named_arg, _, _, _} <- Args0],
