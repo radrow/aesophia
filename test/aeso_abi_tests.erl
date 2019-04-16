@@ -106,6 +106,9 @@ calldata_test() ->
         encode_decode_calldata("foo", ["bytes(32)", "hash"], [?DUMMY_HASH_LIT, ?DUMMY_HASH_LIT]),
 
     [119, {0, 0}] = encode_decode_calldata("foo", ["int", "signature"], ["119", [$# | lists:duplicate(128, $0)]]),
+
+    [16#456] = encode_decode_calldata("foo", ["Remote"], ["ct_1111111111111111111111111111113AFEFpt5"]),
+
     ok.
 
 calldata_init_test() ->
@@ -134,7 +137,9 @@ parameterized_contract(FunName, Types) ->
 
 parameterized_contract(ExtraCode, FunName, Types) ->
     lists:flatten(
-        ["contract Dummy =\n",
+        ["contract Remote =\n"
+         "  function bla : () => ()\n\n"
+         "contract Dummy =\n",
          ExtraCode, "\n",
          "  type an_alias('a) = (string, 'a)\n"
          "  record r = {x : an_alias(int), y : variant}\n"

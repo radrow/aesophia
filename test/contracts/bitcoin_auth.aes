@@ -16,4 +16,3 @@ contract BitcoinAuth =
 
   private function require(b : bool, err : string) =
     if(!b) abort(err)
-
