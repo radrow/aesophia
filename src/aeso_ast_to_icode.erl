@@ -349,7 +349,7 @@ ast_body(?qid_app(["Crypto", "ecverify"], [Msg, PK, Sig], _, _), Icode) ->
 ast_body(?qid_app(["Crypto", "ecverify_secp256k1"], [Msg, PK, Sig], _, _), Icode) ->
     prim_call(?PRIM_CALL_CRYPTO_ECVERIFY_SECP256K1, #integer{value = 0},
               [ast_body(Msg, Icode), ast_body(PK, Icode), ast_body(Sig, Icode)],
-              [bytes_t(32), bytes_t(65), bytes_t(72)], word);
+              [bytes_t(32), bytes_t(64), bytes_t(64)], word);
 
 ast_body(?qid_app(["Crypto", "sha3"], [Term], [Type], _), Icode) ->
     generic_hash_primop(?PRIM_CALL_CRYPTO_SHA3, Term, Type, Icode);

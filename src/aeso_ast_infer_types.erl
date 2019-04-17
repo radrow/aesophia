@@ -447,7 +447,7 @@ global_env() ->
     CryptoScope = #scope
         { funs = MkDefs(
                      [{"ecverify", Fun([Hash, Address, SignId], Bool)},
-                      {"ecverify_secp256k1", Fun([Hash, Bytes(65), Bytes(72)], Bool)},
+                      {"ecverify_secp256k1", Fun([Hash, Bytes(64), Bytes(64)], Bool)},
                       {"sha3",     Fun1(A, Hash)},
                       {"sha256",   Fun1(A, Hash)},
                       {"blake2b",  Fun1(A, Hash)}]) },
