@@ -191,7 +191,9 @@ name({typed, _, Name, _}) -> name(Name).
 letdecl(Let, {letval, _, F, T, E}) ->
     block_expr(0, hsep([text(Let), typed(name(F), T), text("=")]), E);
 letdecl(Let, {letfun, _, F, Args, T, E}) ->
-    block_expr(0, hsep([text(Let), typed(beside(name(F), args(Args)), T), text("=")]), E).
+    block_expr(0, hsep([text(Let), typed(beside(name(F), args(Args)), T), text("=")]), E);
+letdecl(Let, {letrec, _, [D | Ds]}) ->
+    hsep(text(Let), above([ letdecl("rec", D) | [ letdecl("and", D1) || D1 <- Ds ] ])).
 
 -spec args([aeso_syntax:arg()]) -> doc().
 args(Args) ->
@@ -443,6 +445,7 @@ statements(Stmts) ->
 
 statement(S = {letval, _, _, _, _})    -> letdecl("let", S);
 statement(S = {letfun, _, _, _, _, _}) -> letdecl("let", S);
+statement(S = {letrec, _, _})          -> letdecl("let", S);
 statement(E) -> expr(E).
 
 get_elifs(Expr) -> get_elifs(Expr, []).

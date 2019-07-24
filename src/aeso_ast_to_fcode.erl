@@ -57,6 +57,7 @@
                | {set_proj, fexpr(), integer(), fexpr()}    %% tuple, field, new_value
                | {op, op(), [fexpr()]}
                | {'let', var_name(), fexpr(), fexpr()}
+               | {letrec, var_name(), [{recdef, var_name(), fexpr()}], fexpr()}
                | {funcall, fexpr(), [fexpr()]}  %% Call to unknown function
                | {closure, fun_name(), fexpr()}
                | {switch, fsplit()}
@@ -783,6 +784,15 @@ stmts_to_fcode(Env, [{letval, _, {typed, _, {id, _, X}, _}, _, Expr} | Stmts]) -
 stmts_to_fcode(Env, [{letfun, Ann, {id, _, X}, Args, _Type, Expr} | Stmts]) ->
     {'let', X, expr_to_fcode(Env, {lam, Ann, Args, Expr}),
                stmts_to_fcode(bind_var(Env, X), Stmts)};
+stmts_to_fcode(Env, [{letrec, _, Defs} | Stmts]) ->
+    Env1 = lists:foldl(fun ({letfun, _, {id, _, X}, _, _, _}, PEnv) ->
+                               bind_var(PEnv, X)
+                       end, Env, Defs),
+    FDefs = lists:foldr(fun ({letfun, Ann, {id, _, X}, Args, _Type, Expr}, Acc) ->
+                                io:format("FUN: ~p \n\n", [Expr]),
+                                [{recdef, X, expr_to_fcode(Env1, {lam, Ann, Args, Expr})} | Acc]
+                        end, [], Defs),
+    {letrec, FDefs, stmts_to_fcode(Env1, Stmts)};
 stmts_to_fcode(Env, [Expr]) ->
     expr_to_fcode(Env, Expr);
 stmts_to_fcode(Env, [Expr | Stmts]) ->
@@ -926,6 +936,8 @@ lambda_lift_expr(Expr) ->
         {set_proj, A, I, B}    -> {set_proj, lambda_lift_expr(A), I, lambda_lift_expr(B)};
         {op, Op, As}           -> {op, Op, lambda_lift_exprs(As)};
         {'let', X, A, B}       -> {'let', X, lambda_lift_expr(A), lambda_lift_expr(B)};
+        {letrec, A, B}         -> {letrec, lambda_lift_exprs(A), lambda_lift_expr(B)};
+        {recdef, X, A}         -> {recdef, X, lambda_lift_expr(A)};
         {funcall, A, Bs}       -> {funcall, lambda_lift_expr(A), lambda_lift_exprs(Bs)};
         {switch, S}            -> {switch, lambda_lift_expr(S)};
         {split, Type, X, Alts} -> {split, Type, X, lambda_lift_exprs(Alts)};

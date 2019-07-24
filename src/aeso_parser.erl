@@ -108,7 +108,9 @@ con_arg()    -> choice(type(), ?RULE(keyword(indexed), type(), set_ann(indexed, 
 %% -- Let declarations -------------------------------------------------------
 
 letdecl() ->
-    ?RULE(keyword('let'), letdef(), set_pos(get_pos(_1), _2)).
+    choice(
+      ?RULE(keyword('let'), letdef(), set_pos(get_pos(_1), _2)),
+      ?RULE(keyword('let'), tok(rec), sep1(letdef(), tok('and')), {letrec, _1, _3})).
 
 letdef() -> choice(valdef(), fundef()).
 

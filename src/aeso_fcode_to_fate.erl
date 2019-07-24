@@ -316,6 +316,22 @@ to_scode(Env, {'let', X, Expr, Body}) ->
     [ to_scode(notail(Env), Expr),
       aeb_fate_ops:store({var, I}, {stack, 0}),
       to_scode(Env1, Body) ];
+to_scode(Env, {letrec, Defs, Body}) ->
+    {Vars, Env1} =
+        lists:foldr(fun({recdef, X, _}, {PVars, PEnv}) ->
+                            {I, EnvN} = bind_local(X, PEnv),
+                            {[I|PVars], EnvN}
+                    end,
+                    {[], Env},
+                    Defs
+                   ),
+    lists:foldr(fun ({Id, {recdef, _, Expr}}, Acc) ->
+                        [  to_scode(notail(Env1), Expr),
+                           aeb_fate_ops:store({var, Id}, {stack, 0})
+                        ] ++ Acc
+                end,
+                [to_scode(Env1, Body)],
+                lists:zip(Vars, Defs));
 
 to_scode(Env, {def, Fun, Args}) ->
     FName = make_function_id(Fun),

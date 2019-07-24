@@ -41,9 +41,13 @@
               | {fun_decl, ann(), id(), type()}
               | letbind().
 
+-type letfun()
+    :: {letfun, ann(), id(), [arg()], type(), expr()}.
+
 -type letbind()
     :: {letval, ann(), id(), type(), expr()}
-     | {letfun, ann(), id(), [arg()], type(), expr()}.
+     | letfun()
+     | {letrec, ann(), [letfun()]}.
 
 -type arg() :: {arg, ann(), id(), type()}.
 

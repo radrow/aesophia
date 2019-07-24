@@ -1270,6 +1270,22 @@ infer_block(Env, Attrs, [Def={letfun, Ann, _, _, _, _}|Rest], BlockType) ->
     FunT = freshen_type(Ann, typesig_to_fun_t(TypeSig)),
     NewE = bind_var({id, Ann, Name}, FunT, Env),
     [LetFun|infer_block(NewE, Attrs, Rest, BlockType)];
+infer_block(Env, Attrs, [{letrec, Ann, Defs}|Rest], BlockType) ->
+    {Vars, Env1} =
+        lists:foldr(fun ({letfun, _, {id, A, Name}, _, _, _}, {Vars, PEnv}) ->
+                            V = fresh_uvar(A),
+                            {[V | Vars], bind_var({id, A, Name}, V, PEnv)}
+                    end, {[], Env}, Defs
+                   ),
+    Defs1 =
+        lists:foldr(fun ({Var, Def}, DefAcc) ->
+                            {{Name, Inferred}, LetFun} = infer_letfun(Env1, Def),
+                            unify(Env1, Var, typesig_to_fun_t(Inferred),
+                                 {check_typesig, Name, Inferred, Var}),
+                            [LetFun | DefAcc]
+                    end, [], lists:zip(Vars, Defs)
+                   ),
+    [{letrec, Ann, Defs1} | infer_block(Env1, Attrs, Rest, BlockType)];
 infer_block(Env, _, [{letval, Attrs, Pattern, Type, E}|Rest], BlockType) ->
     NewE = {typed, _, _, PatType} = infer_expr(Env, {typed, Attrs, E, arg_type(Type)}),
     {'case', _, NewPattern, {typed, _, {block, _, NewRest}, _}} =
