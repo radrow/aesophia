@@ -102,8 +102,6 @@ contract_to_icode([{letfun, Attrib, Name, Args, _What, Body={typed,_,_,T}}|Rest]
     QName    = aeso_icode:qualify(Name, Icode),
     NewIcode = ast_fun_to_icode(ast_id(QName), FunAttrs, FunArgs, FunBody, TypeRep, Icode),
     contract_to_icode(Rest, NewIcode);
-contract_to_icode([{letrec,_,Defs}|Rest], Icode) ->
-    gen_error(not_implemented); %% TODO
 contract_to_icode([], Icode) -> Icode;
 contract_to_icode([{fun_decl, _, _, _} | Code], Icode) ->
     contract_to_icode(Code, Icode);
@@ -534,7 +532,7 @@ ast_body({block,As,[{letval,_,Pat,_,E}|Rest]}, Icode) ->
 ast_body({block, As, [{letfun, Ann, F, Args, _Type, Expr} | Rest]}, Icode) ->
     ast_body({block, As, [{letval, Ann, F, unused, {lam, Ann, Args, Expr}} | Rest]}, Icode);
 ast_body({block, As, [{letrec, Ann, Defs} | Rest]}, Icode) ->
-    gen_error(not_implemented); %% TODO
+    ast_body({block, As, Defs ++ Rest}, Icode);
 ast_body({block,_,[]}, _Icode) ->
     #tuple{cpts=[]};
 ast_body({block,_,[E]}, Icode) ->

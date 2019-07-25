@@ -1367,6 +1367,14 @@ pp_fexpr({op, Op, As}) ->
 pp_fexpr({'let', X, A, B}) ->
     pp_par([pp_beside([pp_text("let "), pp_text(X), pp_text(" = "), pp_fexpr(A), pp_text(" in")]),
             pp_fexpr(B)]);
+pp_fexpr({letrec, Defs, In}) ->
+    pp_par([pp_beside([pp_text("let rec "),
+                       pp_beside([pp_par([pp_text(X),
+                                          pp_text(" = "),
+                                          pp_fexpr(V),
+                                          pp_text(";")
+                                         ]) || {recdef, X, V} <- Defs]), pp_text(" in")]),
+            pp_fexpr(In)]);
 pp_fexpr({builtin_u, B, N}) ->
     pp_beside([pp_text(B), pp_text("/"), pp_text(N)]);
 pp_fexpr({builtin, B, As}) ->
