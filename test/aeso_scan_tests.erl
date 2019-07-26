@@ -41,7 +41,7 @@ all_tokens() ->
     %% Operators
     lists:map(Lit, ['=', '==', '!=', '>', '<', '>=', '=<', '-', '+', '++', '*', '/', mod, ':', '::', '->', '=>', '||', '&&', '!']) ++
     %% Keywords
-    lists:map(Lit, [contract, type, 'let', switch]) ++
+    lists:map(Lit, [contract, type, 'let', switch, rec, 'and']) ++
     %% Comment token (not an actual token), just for tests
     [{comment, 0, "// *Comment!\"\n"},
      {comment, 0, "/* bla /* bla bla */*/"}] ++
