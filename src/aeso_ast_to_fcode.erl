@@ -789,7 +789,6 @@ stmts_to_fcode(Env, [{letrec, _, Defs} | Stmts]) ->
                                bind_var(PEnv, X)
                        end, Env, Defs),
     FDefs = lists:foldr(fun ({letfun, Ann, {id, _, X}, Args, _Type, Expr}, Acc) ->
-                                io:format("FUN: ~p \n\n", [Expr]),
                                 [{recdef, X, expr_to_fcode(Env1, {lam, Ann, Args, Expr})} | Acc]
                         end, [], Defs),
     {letrec, FDefs, stmts_to_fcode(Env1, Stmts)};
@@ -1284,7 +1283,7 @@ format_fexpr(E) ->
     prettypr:format(pp_fexpr(E)).
 
 pp_fun(Name, #{ args := Args, return := Return, body := Body }) ->
-    PPArg = fun({X, T}) -> pp_beside([pp_text(X), pp_text(" : "), pp_ftype(T)]) end,
+    PPArg = fun({X, T}) -> pp_beside([ pp_text(X), pp_text(" : "), pp_ftype(T)]) end,
     pp_above(pp_beside([pp_text("function "), pp_fun_name(Name),
                pp_parens(pp_par(pp_punctuate(pp_text(","), [PPArg(Arg) || Arg <- Args]))),
                pp_text(" : "), pp_ftype(Return), pp_text(" =")]),
@@ -1297,7 +1296,8 @@ pp_fun_name({local_fun, Q})  -> pp_text(string:join(Q, ".")).
 
 pp_text(<<>>) -> prettypr:text("\"\"");
 pp_text(Bin) when is_binary(Bin) -> prettypr:text(lists:flatten(io_lib:format("~p", [binary_to_list(Bin)])));
-pp_text(S) when is_list(S) -> prettypr:text(lists:concat([S])).
+pp_text(S) when is_list(S) -> prettypr:text(lists:concat([S]));
+pp_text(A) when is_atom(A) -> prettypr:text(atom_to_list(A)).
 
 pp_beside([])       -> prettypr:empty();
 pp_beside([X])      -> X;
@@ -1313,7 +1313,6 @@ pp_above(A, B) -> prettypr:above(A, B).
 
 pp_parens(Doc) -> pp_beside([pp_text("("), Doc, pp_text(")")]).
 pp_braces(Doc) -> pp_beside([pp_text("{"), Doc, pp_text("}")]).
-
 pp_punctuate(_Sep, [])      -> [];
 pp_punctuate(_Sep, [X])     -> [X];
 pp_punctuate(Sep, [X | Xs]) -> [pp_beside(X, Sep) | pp_punctuate(Sep, Xs)].
@@ -1330,18 +1329,18 @@ pp_fexpr(nil) ->
 pp_fexpr({var, X})   -> pp_text(X);
 pp_fexpr({def, Fun}) -> pp_fun_name(Fun);
 pp_fexpr({def_u, Fun, Ar}) ->
-    pp_beside([pp_fun_name(Fun), pp_text("/"), pp_text(Ar)]);
+    pp_beside([pp_fun_name(Fun), pp_text("/"), pp_text(integer_to_list(Ar))]);
 pp_fexpr({def, Fun, Args}) ->
     pp_call(pp_fun_name(Fun), Args);
 pp_fexpr({con, _, I, []}) ->
-    pp_beside(pp_text("C"), pp_text(I));
+    pp_beside(pp_text("C"), pp_text(integer_to_list(I)));
 pp_fexpr({con, _, I, Es}) ->
     pp_beside(pp_fexpr({con, [], I, []}),
               pp_fexpr({tuple, Es}));
 pp_fexpr({tuple, Es}) ->
     pp_parens(pp_par(pp_punctuate(pp_text(","), [pp_fexpr(E) || E <- Es])));
 pp_fexpr({proj, E, I}) ->
-    pp_beside([pp_fexpr(E), pp_text("."), pp_text(I)]);
+    pp_beside([pp_fexpr(E), pp_text("."), pp_text(integer_to_list(I))]);
 pp_fexpr({lam, Xs, A}) ->
     pp_par([pp_fexpr({tuple, [{var, X} || X <- Xs]}), pp_text("=>"),
             prettypr:nest(2, pp_fexpr(A))]);
@@ -1352,7 +1351,7 @@ pp_fexpr({closure, Fun, ClEnv}) ->
           end,
     pp_call(pp_text("__CLOSURE__"), [{def, Fun} | FVs]);
 pp_fexpr({set_proj, E, I, A}) ->
-    pp_beside(pp_fexpr(E), pp_braces(pp_beside([pp_text(I), pp_text(" = "), pp_fexpr(A)])));
+    pp_beside(pp_fexpr(E), pp_braces(pp_beside([pp_text(integer_to_list(I)), pp_text(" = "), pp_fexpr(A)])));
 pp_fexpr({op, Op, [A, B] = Args}) ->
     case is_infix(Op) of
         false -> pp_call(pp_text(Op), Args);
