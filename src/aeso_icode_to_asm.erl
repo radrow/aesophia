@@ -259,6 +259,12 @@ assemble_expr(Funs, Stack, _, {lambda, Args, Body}) ->
      i(?MLOAD),
      i(?STOP),
      jumpdest(Continue)];
+assemble_expr(Funs, Stack, Tail, {lambda_group, Defs, In}) ->
+    Funs1 = [{Name, length(Args), make_ref()}
+            || {fun_dec, Name, Args, _Body} <- Defs] ++ Funs,
+    Define = lists:flatten([ assemble_function(Funs1, Name, [ {Arg#arg.name, Arg#arg.type} || Arg <- Args ], Body)
+                            || {fun_dec, Name, Args, Body} <- Defs]),
+    [assemble_expr(Funs1, Stack, Tail, In) | Define];
 assemble_expr(_, _, _, {label, Label}) ->
     push_label(Label);
 assemble_expr(Funs, Stack, nontail, {funcall, Fun, Args}) ->

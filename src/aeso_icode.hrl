@@ -51,7 +51,8 @@
 -record(lambda,  { args :: arg_list(),
                    body :: expr()}).
 
-%% -record(lambda_group, { defs :: [lambda()] }).
+-record(lambda_group, { defs :: [#fun_dec{}]
+                      , in   :: expr()}).
 
 -record(missing_field, { format :: string()
                        , args   :: [term()]}).

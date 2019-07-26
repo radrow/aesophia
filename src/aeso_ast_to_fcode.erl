@@ -1297,7 +1297,7 @@ pp_fun_name({local_fun, Q})  -> pp_text(string:join(Q, ".")).
 
 pp_text(<<>>) -> prettypr:text("\"\"");
 pp_text(Bin) when is_binary(Bin) -> prettypr:text(lists:flatten(io_lib:format("~p", [binary_to_list(Bin)])));
-pp_text(S) -> prettypr:text(lists:concat([S])).
+pp_text(S) when is_list(S) -> prettypr:text(lists:concat([S])).
 
 pp_beside([])       -> prettypr:empty();
 pp_beside([X])      -> X;
@@ -1320,6 +1320,7 @@ pp_punctuate(Sep, [X | Xs]) -> [pp_beside(X, Sep) | pp_punctuate(Sep, Xs)].
 
 pp_par([]) -> prettypr:empty();
 pp_par(Xs) -> prettypr:par(Xs).
+
 pp_fexpr({lit, {typerep, T}}) ->
     pp_ftype(T);
 pp_fexpr({lit, {Tag, Lit}}) ->

@@ -532,7 +532,13 @@ ast_body({block,As,[{letval,_,Pat,_,E}|Rest]}, Icode) ->
 ast_body({block, As, [{letfun, Ann, F, Args, _Type, Expr} | Rest]}, Icode) ->
     ast_body({block, As, [{letval, Ann, F, unused, {lam, Ann, Args, Expr}} | Rest]}, Icode);
 ast_body({block, As, [{letrec, Ann, Defs} | Rest]}, Icode) ->
-    ast_body({block, As, Defs ++ Rest}, Icode);
+    #lambda_group { defs = [#fun_dec
+                                 { name = Name
+                                 , args = [#arg{name = ast_id(P), type = ast_type(T, Icode)} || {arg,_,P,T} <- Args]
+                                 , body = ast_body(Body, Icode)
+                                 } || {letfun, _, {id, _, Name}, Args, _, Body} <- Defs]
+                  , in   = ast_body({block, As, Rest}, Icode)
+                  };
 ast_body({block,_,[]}, _Icode) ->
     #tuple{cpts=[]};
 ast_body({block,_,[E]}, Icode) ->
@@ -576,7 +582,7 @@ ast_body({record, Attrs, {typed, _, Record, RecType={record_t, Fields}}, Update}
            ({field_upd, Ann, LV=[{proj, Ann1, P}], Fun}) ->
             {field, Ann, LV, {app, Ann, Fun, [{proj, Ann1, Rec, P}]}}
         end,
-
+    
     #switch{expr=ast_body(Record, Icode),
             cases=[{#var_ref{name = "_record"},
                 ast_body({typed, Attrs,
