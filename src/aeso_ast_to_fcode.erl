@@ -270,6 +270,7 @@ decl_to_fcode(Env = #{ functions := Funs }, {letfun, Ann, {id, _, Name}, Args, R
     FName = lookup_fun(Env, qname(Env, Name)),
     FArgs = args_to_fcode(Env, Args),
     FBody = expr_to_fcode(Env#{ vars => [X || {X, _} <- FArgs] }, Body),
+    io:format("GOT BODYYY ~p\n\n", [pp_fexpr(FBody)]),
     Def   = #{ attrs  => Attrs,
                args   => FArgs,
                return => type_to_fcode(Env, Ret),
@@ -682,7 +683,7 @@ split_pat({con, As, I, Pats}) ->
     Xs = [fresh_name() || _ <- Pats],
     {{con, As, I, Xs}, Pats};
 split_pat({tuple, Pats}) ->
-    Xs = [{var, fresh_name()} || _ <- Pats],
+    Xs = [fresh_name() || _ <- Pats],
     {{tuple, Xs}, Pats}.
 
 -spec split_vars(fsplit_pat(), ftype()) -> [{var_name(), ftype()}].
@@ -1105,6 +1106,17 @@ pat_vars({tuple, Ps})         -> pat_vars(Ps);
 pat_vars({con, _, _, Ps})     -> pat_vars(Ps);
 pat_vars(Ps) when is_list(Ps) -> [X || P <- Ps, X <- pat_vars(P)].
 
+-spec fsplit_pat_vars(fsplit_pat()) -> [var_name()].
+fsplit_pat_vars({var, X})            -> [X || X /= "_"];
+fsplit_pat_vars({bool, _})           -> [];
+fsplit_pat_vars({int, _})            -> [];
+fsplit_pat_vars({string, _})         -> [];
+fsplit_pat_vars(nil)                 -> [];
+fsplit_pat_vars({'::', P, Q})        -> [P, Q];
+fsplit_pat_vars({tuple, Ps})         -> Ps;
+fsplit_pat_vars({con, _, _, Ps})     -> Ps.
+
+
 free_vars(Xs) when is_list(Xs) ->
     lists:umerge([ free_vars(X) || X <- Xs ]);
 free_vars(Expr) ->
@@ -1130,7 +1142,7 @@ free_vars(Expr) ->
         {switch, A}          -> free_vars(A);
         {split, _, X, As}    -> free_vars([{var, X} | As]);
         {nosplit, A}         -> free_vars(A);
-        {'case', P, A}       -> free_vars(A) -- lists:sort(pat_vars(P))
+        {'case', P, A}       -> free_vars(A) -- lists:sort(fsplit_pat_vars(P))
     end.
 
 get_named_args(NamedArgsT, Args) ->
@@ -1380,7 +1392,7 @@ pp_fexpr({builtin_u, B, N}) ->
 pp_fexpr({builtin, B, As}) ->
     pp_call(pp_text(B), As);
 pp_fexpr({remote_u, Ct, Fun, Ar}) ->
-    pp_beside([pp_fexpr(Ct), pp_text("."), pp_fun_name(Fun), pp_text("/"), pp_text(Ar)]);
+    pp_beside([pp_fexpr(Ct), pp_text("."), pp_fun_name(Fun), pp_text("/"), pp_text(integer_to_list(Ar))]);
 pp_fexpr({remote, Ct, Fun, As}) ->
     pp_call(pp_beside([pp_fexpr(Ct), pp_text("."), pp_fun_name(Fun)]), As);
 pp_fexpr({funcall, Fun, As}) ->
