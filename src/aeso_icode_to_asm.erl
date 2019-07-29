@@ -262,9 +262,16 @@ assemble_expr(Funs, Stack, _, {lambda, Args, Body}) ->
 assemble_expr(Funs, Stack, Tail, {lambda_group, Defs, In}) ->
     Funs1 = [{Name, length(Args), make_ref()}
             || {fun_dec, Name, Args, _Body} <- Defs] ++ Funs,
-    Define = lists:flatten([ assemble_function(Funs1, Name, [ {Arg#arg.name, Arg#arg.type} || Arg <- Args ], Body)
+    Define = lists:flatten([begin
+                                [ jumpdest(lookup_fun(Funs1, Name))
+                                , assemble_expr(Funs1, lists:reverse([ {Arg#arg.name, Arg#arg.type}
+                                                                       || Arg <- Args ]) ++ Stack, tail, Body)
+                                , pop_args(length(Args))
+                                , swap(1)
+                                , i(?JUMP)]
+                            end
                             || {fun_dec, Name, Args, Body} <- Defs]),
-    [assemble_expr(Funs1, Stack, Tail, In) | Define];
+    Define ++ [assemble_expr(Funs1, Stack, Tail, In)];
 assemble_expr(_, _, _, {label, Label}) ->
     push_label(Label);
 assemble_expr(Funs, Stack, nontail, {funcall, Fun, Args}) ->
@@ -609,6 +616,11 @@ free_vars({switch, E, Cases}) ->
                                || {Pattern, Body} <- Cases]));
 free_vars({lambda, Args, Body}) ->
     free_vars(Body) -- [{var_ref, Arg#arg.name} || Arg <- Args];
+free_vars({lambda_group, Defs, In}) ->
+    Names = [{var_ref, N} || {fun_dec, N, _, _} <- Defs],
+    lists:umerge([free_vars(In) |
+                  [ free_vars({lambda, A, B})
+                    || {fun_dec, _, A, B} <- Defs]]) -- Names;
 free_vars(T) when is_tuple(T) ->
     free_vars(tuple_to_list(T));
 free_vars([H|T]) ->

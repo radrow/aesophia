@@ -57,7 +57,7 @@
                | {set_proj, fexpr(), integer(), fexpr()}    %% tuple, field, new_value
                | {op, op(), [fexpr()]}
                | {'let', var_name(), fexpr(), fexpr()}
-               | {letrec, var_name(), [{recdef, var_name(), fexpr()}], fexpr()}
+               | {letrec, [{recdef, var_name(), fexpr()}], fexpr()}
                | {funcall, fexpr(), [fexpr()]}  %% Call to unknown function
                | {closure, fun_name(), fexpr()}
                | {switch, fsplit()}
@@ -1136,6 +1136,10 @@ free_vars(Expr) ->
         {set_proj, A, _, B}  -> free_vars([A, B]);
         {op, _, As}          -> free_vars(As);
         {'let', X, A, B}     -> free_vars([A, {lam, [X], B}]);
+        {letrec, Defs, Body} -> %% TODO ENSURE IT WORKS. IF YOU SPOT THIS IN PR SHAME ME PLS
+            Names = lists:sort([N || {recdef, N, _} <- Defs]),
+            All = free_vars([Body | [BB || {recdef, _, BB} <- Defs]]),
+            All -- Names;
         {funcall, A, Bs}     -> free_vars([A | Bs]);
         {lam, Xs, B}         -> free_vars(B) -- lists:sort(Xs);
         {closure, _, A}      -> free_vars(A);
