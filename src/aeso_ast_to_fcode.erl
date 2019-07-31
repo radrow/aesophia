@@ -270,7 +270,6 @@ decl_to_fcode(Env = #{ functions := Funs }, {letfun, Ann, {id, _, Name}, Args, R
     FName = lookup_fun(Env, qname(Env, Name)),
     FArgs = args_to_fcode(Env, Args),
     FBody = expr_to_fcode(Env#{ vars => [X || {X, _} <- FArgs] }, Body),
-    io:format("GOT BODYYY ~p\n\n", [pp_fexpr(FBody)]),
     Def   = #{ attrs  => Attrs,
                args   => FArgs,
                return => type_to_fcode(Env, Ret),
