@@ -906,17 +906,34 @@ infer_letrec(Env, Defs) ->
     Funs = [{Name, fresh_uvar(A)}
                  || {letfun, _, {id, A, Name}, _, _, _} <- Defs],
     ExtendEnv = bind_funs(Funs, Env),
-    Inferred =
-        [ begin
-            Res    = {{Name, TypeSig}, _} = infer_letfun(ExtendEnv, LF),
-            Got    = proplists:get_value(Name, Funs),
-            Expect = typesig_to_fun_t(TypeSig),
-            unify(Env, Got, Expect, {check_typesig, Name, Got, Expect}),
-            solve_field_constraints(Env),
-            ?PRINT_TYPES("Checked ~s : ~s\n",
-                         [Name, pp(dereference_deep(Got))]),
-            Res
-          end || LF <- Defs ],
+    InferOne = fun(LF) ->
+                       Res    = {{Name, TypeSig}, _} = infer_letfun(ExtendEnv, LF),
+                       Got    = proplists:get_value(Name, Funs),
+                       Expect = typesig_to_fun_t(TypeSig),
+                       unify(Env, Got, Expect, {check_typesig, Name, Got, Expect}),
+                       solve_field_constraints(Env),
+                       ?PRINT_TYPES("Checked ~s : ~s\n",
+                                    [Name, pp(dereference_deep(Got))]),
+                       Res
+               end,
+    SplitInfer = fun R([]) -> [];
+                     R([H|T]) ->
+                         create_constraints(),
+                         Paren = self(),
+                         OnH = fun() -> Paren ! {h, InferOne(H)} end,
+                         spawn(OnH),
+                         OnT = fun() -> Paren ! {t, R(T)} end,
+                         spawn(OnT),
+                         Hh = receive
+                                  {h, IH} -> IH
+                              end,
+                         Th = receive
+                                  {t, IT} -> IT
+                              end,
+                         destroy_and_report_unsolved_constraints(Env),
+                         [Hh, Th]
+                 end,
+    Inferred = SplitInfer(Defs),
     destroy_and_report_unsolved_constraints(Env),
     TypeSigs = instantiate([Sig || {Sig, _} <- Inferred]),
     NewDefs  = instantiate([D || {_, D} <- Inferred]),
