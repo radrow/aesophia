@@ -599,7 +599,10 @@ parse(Text, Options) ->
 -spec parse(string(), sets:set(), aeso_compiler:options()) -> none() | aeso_syntax:ast().
 parse(Text, Included, Options) ->
     %% Try and return something sensible here!
-    case aeso_parser:string(Text, Included, Options) of
+    IK = spawn(aeso_parser, include_keeper, [Included]),
+    Pars = aeso_parser:string(Text, IK, Options),
+    IK ! finito,
+    case Pars of
         %% Yay, it worked!
         {ok, Contract} -> Contract;
         %% Scan errors.

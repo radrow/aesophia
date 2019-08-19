@@ -8,6 +8,7 @@
          string/2,
          string/3,
          hash_include/2,
+         include_keeper/1,
          type/1]).
 
 -include("aeso_parse_lib.hrl").
@@ -20,20 +21,31 @@
 
 -spec string(string()) -> parse_result().
 string(String) ->
-    string(String, sets:new(), []).
+    IK = spawn(aeso_parser, include_keeper, [sets:new()]),
+    Res = string(String, IK, []),
+    IK ! finito,
+    Res.
 
 -spec string(string(), aeso_compiler:options()) -> parse_result().
 string(String, Opts) ->
     case lists:keyfind(src_file, 1, Opts) of
-        {src_file, File} -> string(String, sets:add_element(File, sets:new()), Opts);
-        false -> string(String, sets:new(), Opts)
+        {src_file, File} ->
+            IK = spawn(aeso_parser, include_keeper, [sets:add_element(hash_include(File, String), sets:new())]),
+            Res = string(String, IK, Opts),
+            IK ! finito,
+            Res;
+        false ->
+            IK = spawn(aeso_parser, include_keeper, [sets:new()]),
+            Res = string(String, IK, Opts),
+            IK ! finito,
+            Res
     end.
 
--spec string(string(), sets:set(include_hash()), aeso_compiler:options()) -> parse_result().
-string(String, Included, Opts) ->
+-spec string(string(), pid(), aeso_compiler:options()) -> parse_result().
+string(String, IncludeKeeper, Opts) ->
     case parse_and_scan(file(), String, Opts) of
         {ok, AST} ->
-            expand_includes(AST, Included, Opts);
+            expand_includes(AST, IncludeKeeper, Opts);
         Err = {error, _} ->
             Err
     end.
@@ -548,36 +560,49 @@ bad_expr_err(Reason, E) ->
                             prettypr:nest(2, aeso_pretty:expr(E))])).
 
 %% -- Helper functions -------------------------------------------------------
-expand_includes(AST, Included, Opts) ->
-    expand_includes(AST, Included, [], Opts).
+expand_includes(AST, IncludeKeeper, Opts) ->
+    expand_includes(AST, IncludeKeeper, [], Opts).
 
-expand_includes([], _Included, Acc, _Opts) ->
+expand_includes([], _IncludeKeeper, Acc, _Opts) ->
     {ok, lists:reverse(Acc)};
-expand_includes([{include, Ann, {string, SAnn, File}} | AST], Included, Acc, Opts) ->
+expand_includes([{include, Ann, {string, SAnn, File}} | AST], IncludeKeeper, Acc, Opts) ->
     case get_include_code(File, Ann, Opts) of
         {ok, Code} ->
             Hashed = hash_include(File, Code),
-            case sets:is_element(Hashed, Included) of
+            io:format("~p", [IncludeKeeper]),
+            IncludeKeeper ! {include, Hashed, self()},
+            AlreadyIncluded = receive
+                                  {include, Hashed, Resp} -> Resp
+                              end,
+            case AlreadyIncluded of
                 false ->
                     Opts1 = lists:keystore(src_file, 1, Opts, {src_file, File}),
-                    Included1 = sets:add_element(Hashed, Included),
-                    case string(Code, Included1, Opts1) of
+                    case string(Code, IncludeKeeper, Opts1) of
                         {ok, AST1} ->
                             Dependencies = [ {include, Ann, {string, SAnn, Dep}}
                                              || Dep <- aeso_stdlib:dependencies(File)
                                            ],
-                            expand_includes(Dependencies ++ AST1 ++ AST, Included1, Acc, Opts);
+                            expand_includes(Dependencies ++ AST1 ++ AST, IncludeKeeper, Acc, Opts);
                         Err = {error, _} ->
                             Err
                     end;
                 true ->
-                    expand_includes(AST, Included, Acc, Opts)
+                    expand_includes(AST, IncludeKeeper, Acc, Opts)
             end;
         Err = {error, _} ->
             Err
     end;
-expand_includes([E | AST], Included, Acc, Opts) ->
-    expand_includes(AST, Included, [E | Acc], Opts).
+expand_includes([E | AST], IncludeKeeper, Acc, Opts) ->
+    expand_includes(AST, IncludeKeeper, [E | Acc], Opts).
+
+-spec include_keeper(sets:set(include_hash())) -> ok.
+include_keeper(Included) ->
+    receive
+        {include, File, Back} ->
+            Back ! {include, File, sets:is_element(File, Included)},
+            include_keeper(sets:add_element(File, Included));
+        finito -> ok
+    end.
 
 read_file(File, Opts) ->
     case proplists:get_value(include, Opts, {explicit_files, #{}}) of
