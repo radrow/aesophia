@@ -578,12 +578,22 @@ pp(Code, Options, Option, PPFun) ->
 
 -spec parse_stdlib() -> none() | aeso_syntax:ast().
 parse_stdlib() ->
-    lists:foldr(
-      fun ({Lib, LibCode}, Acc) ->
-              parse(LibCode, [{src_file, binary_to_list(Lib)}]) ++ Acc
-      end,
-      [],
-      aeso_stdlib:stdlib_list()).
+    SplitParse = fun R([]) -> [];
+                     R([{Lib, LibCode}|T]) ->
+                         Self = self(),
+                         DoH = fun() -> Self ! {h, parse(LibCode, [{src_file, binary_to_list(Lib)}])} end,
+                         DoT = fun() -> Self ! {t, R(T)} end,
+                         spawn(DoH),
+                         spawn(DoT),
+                         FromH = receive
+                                     {h, Bin} -> Bin
+                                 end,
+                         FromT = receive
+                                     {t, BinRest} -> BinRest
+                                 end,
+                         FromH ++ FromT
+                 end,
+    SplitParse(aeso_stdlib:stdlib_list()).
 
 sophia_type_to_typerep(String) ->
     {ok, Ast} = aeso_parser:type(String),

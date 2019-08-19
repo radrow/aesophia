@@ -918,20 +918,21 @@ infer_letrec(Env, Defs) ->
                end,
     SplitInfer = fun R([]) -> [];
                      R([H|T]) ->
-                         create_constraints(),
-                         Paren = self(),
-                         OnH = fun() -> Paren ! {h, InferOne(H)} end,
-                         spawn(OnH),
-                         OnT = fun() -> Paren ! {t, R(T)} end,
-                         spawn(OnT),
-                         Hh = receive
-                                  {h, IH} -> IH
-                              end,
-                         Th = receive
-                                  {t, IT} -> IT
-                              end,
-                         destroy_and_report_unsolved_constraints(Env),
-                         [Hh, Th]
+                         %% create_constraints(),
+                         %% Paren = self(),
+                         %% OnH = fun() -> Paren ! {h, InferOne(H)} end,
+                         %% OnT = fun() -> Paren ! {t, R(T)} end,
+                         %% spawn(OnH),
+                         %% spawn(OnT),
+                         %% Hh = receive
+                         %%          {h, IH} -> IH
+                         %%      end,
+                         %% Th = receive
+                         %%          {t, IT} -> IT
+                         %%      end,
+                         %% destroy_and_report_unsolved_constraints(Env),
+                         %% [Hh, Th]
+                         [InferOne(H)| R(T)]
                  end,
     Inferred = SplitInfer(Defs),
     destroy_and_report_unsolved_constraints(Env),
