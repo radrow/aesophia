@@ -6,7 +6,7 @@
 %%%-------------------------------------------------------------------
 -module(aeso_utils).
 
--export([scc/1]).
+-export([scc/1, scc_group/2]).
 
 -export_type([graph/1]).
 
@@ -27,6 +27,36 @@ scc(Graph) ->
             Is -> {cyclic, Is}
         end end,
     lists:map(Decode, Trees).
+
+remove_dups([])    -> [];
+remove_dups([H|T]) -> [H | [X || X <- remove_dups(T), X /= H]].
+scc_group(Graph, Nodes) ->
+    NodeVerts = fun({acyclic, N}) ->
+                        maps:get(N, Graph, []);
+                   ({cyclic, Ns}) -> remove_dups(lists:flatmap(fun (N) -> maps:get(N, Graph, []) end, Ns)) -- Ns
+                end,
+    SCCGraph = maps:from_list([{N, NodeVerts(N)} || N <- Nodes]),
+    leaf_cutoff(SCCGraph, Nodes).
+
+group_member(_, []) ->
+    false;
+group_member(X, [{acyclic, H}|T]) ->
+    X == H orelse group_member(X, T);
+group_member(X, [{cyclic, Hs}|T]) ->
+    lists:member(X, Hs) orelse group_member(X, T).
+
+leaf_cutoff(Graph, Nodes) ->
+    leaf_cutoff(Graph, Nodes, [], []).
+leaf_cutoff(_, [], Group, Acc) ->
+    [Group|Acc];
+leaf_cutoff(Graph, [N|Rest], Group, Acc) ->
+    Neigh = maps:get(N, Graph, []),
+    case lists:any(fun(X) -> group_member(X, Group) end, Neigh) of
+        false ->
+            leaf_cutoff(Graph, Rest, [N|Group], Acc);
+        true ->
+            leaf_cutoff(Graph, Rest, [N], [Group|Acc])
+    end.
 
 %% Depth first spanning forest of a graph.
 dff(Graph) ->
