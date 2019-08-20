@@ -541,7 +541,7 @@ infer(Contracts, Options) ->
     try
         Env = init_env(Options),
         create_options(Options),
-        ets_new(type_vars, [set]),
+        ets_new(type_vars, [public, set]),
         check_modifiers(Env, Contracts),
         {Env1, Decls} = infer1(Env, Contracts, [], Options),
         {Env2, Decls2} =
@@ -626,7 +626,34 @@ infer_contract(Env, What, Defs) ->
     DepGraph  = maps:map(fun(_, Def) -> aeso_syntax_utils:used_ids(Def) end, FunMap),
     SCCs      = aeso_utils:scc(DepGraph),
     %% io:format("Dependency sorted functions:\n  ~p\n", [SCCs]),
-    {Env4, Defs1} = check_sccs(Env3, FunMap, SCCs, []),
+    SCCGroups = aeso_utils:scc_group(DepGraph, SCCs),
+    %% io:format("\nGrouped:\n~p\n", [aeso_utils:scc_group(DepGraph, SCCs)]),
+    Tabs = get(aeso_ast_infer_types),
+    put(aeso_ast_infer_types, Tabs),
+    Process = fun R(E, []) -> {E, []};
+                  R(E, [H|T]) ->
+                      S = self(),
+                      DoH = fun() ->
+                                    put(aeso_ast_infer_types, Tabs),
+                                    S ! {h, check_sccs(E, FunMap, [H], [])} end,
+                      DoT = fun() -> S ! {t, R(E, T)} end,
+                      spawn(DoH),
+                      spawn(DoT),
+                      {#env{namespace = NS, scopes = S1}, D1} = receive {h, X1} -> X1 end,
+                      {E2 = #env{scopes = S2}, D2} = receive {t, X2} -> X2 end,
+                      #scope{funs = F1} = maps:get(NS, S1),
+                      Ss2 = #scope{funs = F2} = maps:get(NS, S2),
+                      E3 = E2#env{scopes = S2#{NS => Ss2#scope{funs = F1 ++ (F2 -- F1)}}},
+                      {E3, D1 ++ D2}
+              end,
+    %% {Env4, Defs1} = check_sccs(Env3, FunMap, SCCs, []),
+    {Env4, Defs1} = lists:foldl(fun (Group, {E, Ds}) ->
+                                        {Ee, Ds1} = Process(E, Group),
+                                        {Ee, Ds1 ++ Ds}
+                                end,
+                                {Env3, []},
+                                SCCGroups
+                               ),
     %% Check that `init` doesn't read or write the state
     check_state_dependencies(Env4, Defs1),
     destroy_and_report_type_errors(Env4),
@@ -906,6 +933,7 @@ infer_letrec(Env, Defs) ->
     Funs = [{Name, fresh_uvar(A)}
                  || {letfun, _, {id, A, Name}, _, _, _} <- Defs],
     ExtendEnv = bind_funs(Funs, Env),
+    Inf = get(aeso_ast_infer_types),
     InferOne = fun(LF) ->
                        Res    = {{Name, TypeSig}, _} = infer_letfun(ExtendEnv, LF),
                        Got    = proplists:get_value(Name, Funs),
@@ -918,21 +946,18 @@ infer_letrec(Env, Defs) ->
                end,
     SplitInfer = fun R([]) -> [];
                      R([H|T]) ->
-                         %% create_constraints(),
-                         %% Paren = self(),
-                         %% OnH = fun() -> Paren ! {h, InferOne(H)} end,
-                         %% OnT = fun() -> Paren ! {t, R(T)} end,
-                         %% spawn(OnH),
-                         %% spawn(OnT),
-                         %% Hh = receive
-                         %%          {h, IH} -> IH
-                         %%      end,
-                         %% Th = receive
-                         %%          {t, IT} -> IT
-                         %%      end,
-                         %% destroy_and_report_unsolved_constraints(Env),
-                         %% [Hh, Th]
-                         [InferOne(H)| R(T)]
+                         Paren = self(),
+                         OnH = fun() ->
+                                       put(aeso_ast_infer_types, Inf),
+                                       Paren ! {h, InferOne(H)} end,
+                         OnT = fun() ->
+                                       put(aeso_ast_infer_types, Inf),
+                                       Paren ! {t, R(T)} end,
+                         spawn(OnH),
+                         spawn(OnT),
+                         Hh = receive {h, IH} -> IH end,
+                         Th = receive {t, IT} -> IT end,
+                         [Hh | Th]
                  end,
     Inferred = SplitInfer(Defs),
     destroy_and_report_unsolved_constraints(Env),
@@ -1463,7 +1488,7 @@ ets_tab2list(Name) ->
 %% Options
 
 create_options(Options) ->
-    ets_new(options, [set]),
+    ets_new(options, [public, set]),
     Tup = fun(Opt) when is_atom(Opt) -> {Opt, true};
              (Opt) when is_tuple(Opt) -> Opt end,
     ets_insert(options, lists:map(Tup, Options)).
@@ -1497,7 +1522,7 @@ destroy_and_report_unsolved_constraints(Env) ->
 %% -- Named argument constraints --
 
 create_named_argument_constraints() ->
-    ets_new(named_argument_constraints, [bag]).
+    ets_new(named_argument_constraints, [public, bag]).
 
 destroy_named_argument_constraints() ->
     ets_delete(named_argument_constraints).
@@ -1545,7 +1570,7 @@ destroy_and_report_unsolved_named_argument_constraints(Env) ->
 -type byte_constraint() :: {is_bytes, utype()}.
 
 create_bytes_constraints() ->
-    ets_new(bytes_constraints, [bag]).
+    ets_new(bytes_constraints, [public, bag]).
 
 get_bytes_constraints() ->
     ets_tab2list(bytes_constraints).
@@ -1575,7 +1600,7 @@ check_bytes_constraint(Env, {is_bytes, Type}) ->
 
 create_field_constraints() ->
     %% A relation from uvars to constraints
-    ets_new(field_constraints, [bag]).
+    ets_new(field_constraints, [public, bag]).
 
 destroy_field_constraints() ->
     ets_delete(field_constraints).
@@ -1992,7 +2017,7 @@ fresh_uvar(Attrs) ->
     {uvar, Attrs, make_ref()}.
 
 create_freshen_tvars() ->
-    ets_new(freshen_tvars, [set]).
+    ets_new(freshen_tvars, [public, set]).
 
 destroy_freshen_tvars() ->
     ets_delete(freshen_tvars).
@@ -2066,7 +2091,7 @@ type_error(Err) ->
     ets_insert(type_errors, Err).
 
 create_type_errors() ->
-    ets_new(type_errors, [bag]).
+    ets_new(type_errors, [public, bag]).
 
 destroy_and_report_type_errors(Env) ->
     Errors   = lists:reverse(ets_tab2list(type_errors)),

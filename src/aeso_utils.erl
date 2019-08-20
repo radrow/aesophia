@@ -48,7 +48,7 @@ group_member(X, [{cyclic, Hs}|T]) ->
 leaf_cutoff(Graph, Nodes) ->
     leaf_cutoff(Graph, Nodes, [], []).
 leaf_cutoff(_, [], Group, Acc) ->
-    [Group|Acc];
+    lists:reverse([Group|Acc]);
 leaf_cutoff(Graph, [N|Rest], Group, Acc) ->
     Neigh = maps:get(N, Graph, []),
     case lists:any(fun(X) -> group_member(X, Group) end, Neigh) of
