@@ -23,6 +23,7 @@ run_test(Test) ->
 %%  Very simply test compile the given contracts. Only basic checks
 %%  are made on the output, just that it is a binary which indicates
 %%  that the compilation worked.
+simple_compile_test_() -> [];
 simple_compile_test_() ->
     [ {"Testing the " ++ ContractName ++ " contract with the " ++ atom_to_list(Backend) ++ " backend",
        fun() ->
@@ -126,7 +127,7 @@ compile(Backend, Name, Options) ->
 
 %% compilable_contracts() -> [ContractName].
 %%  The currently compilable contracts.
-
+compilable_contracts() -> ["hagia"];
 compilable_contracts() ->
     ["complex_types",
      "counter",
@@ -174,7 +175,8 @@ compilable_contracts() ->
      "qualified_constructor",
      "let_patterns",
      "lhs_matching",
-     "hermetization_turnoff"
+     "hermetization_turnoff",
+     "hagia"
     ].
 
 not_compilable_on(fate) -> [];
@@ -202,7 +204,7 @@ debug_mode_contracts() ->
 
 -define(TYPE_ERROR(Name, Errs), ?ERROR("Type", Name, Errs)).
 -define(PARSE_ERROR(Name, Errs), ?ERROR("Parse", Name, Errs)).
-
+failing_contracts() -> [];
 failing_contracts() ->
     {ok, V} = aeso_compiler:numeric_version(),
     Version = list_to_binary(string:join([integer_to_list(N) || N <- V], ".")),
@@ -845,6 +847,7 @@ validation_test_() ->
         ?assertEqual(ok, validate(C, C))
       end} || C <- compilable_contracts()].
 
+validation_fails() -> [];      
 validation_fails() ->
     [{"deadcode", "nodeadcode",
       [<<"Data error:\n"

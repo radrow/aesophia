@@ -411,6 +411,11 @@ type_to_fcode(Env, Sub, {fun_t, _, Named, Args, Res}) ->
     FNamed = [type_to_fcode(Env, Sub, Arg) || {named_arg_t, _, _, Arg, _} <- Named],
     FArgs  = [type_to_fcode(Env, Sub, Arg) || Arg <- Args],
     {function, FNamed ++ FArgs, type_to_fcode(Env, Sub, Res)};
+type_to_fcode(Env, Sub, {named_t, _, _, T}) ->
+    type_to_fcode(Env, Sub, T);
+type_to_fcode(Env, Sub, {liquid, _, T, _}) ->
+    %% We drop the liquid constraints as they don't affect semantics.
+    type_to_fcode(Env, Sub, T);
 type_to_fcode(_Env, _Sub, Type) ->
     error({todo, Type}).
 
