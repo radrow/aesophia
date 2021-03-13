@@ -282,7 +282,47 @@ type(T = {id, _, _})   -> name(T);
 type(T = {qid, _, _})  -> name(T);
 type(T = {con, _, _})  -> name(T);
 type(T = {qcon, _, _}) -> name(T);
-type(T = {tvar, _, _}) -> name(T).
+type(T = {tvar, _, _}) -> name(T);
+
+type({named_t, _, Var, {liquid, _, BaseType, Constraints}}) ->
+    beside(
+      [ text("{")
+      , name(Var)
+      , text(":")
+      , type(BaseType)
+      , text("|")
+      , par(punctuate(text(","), [qual(Var, C) || C <- Constraints]))
+      , text("}")
+      ]);
+type({named_t, _, Var, Type}) ->
+    beside(
+      [ text("{")
+      , name(Var)
+      , text(":")
+      , type(Type)
+      , text("}")
+      ]);
+type({liquid, _, BaseType, Constraints}) ->
+    beside(
+     [ text("{$nu :")
+     , type(BaseType)
+     , text("|")
+     , par(punctuate(text(","), [qual({id, [], "nu"}, C) || C <- Constraints]))
+     , text("}")
+     ]).
+
+qual(Nu, {eq, A, B}) ->
+    beside([qual_var(Nu, A), text("=="), qual_var(Nu, B)]);
+qual(Nu, {lt, A, B}) ->
+    beside([qual_var(Nu, A), text("<"), qual_var(Nu, B)]);
+qual(Nu, {leq, A, B}) ->
+    beside([qual_var(Nu, A), text("=<"), qual_var(Nu, B)]);
+qual(_, Expr) ->  %% Non-processed qualifier expr
+    expr(Expr).
+
+qual_var(Nu, nu) -> Nu;
+qual_var(_, I) when is_integer(I) -> text(integer_to_list(I));
+qual_var(_, {id, _, N}) -> name(N).
 
 -spec args_type([aeso_syntax:type()]) -> doc().
 args_type(Args) ->

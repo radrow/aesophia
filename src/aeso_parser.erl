@@ -230,7 +230,8 @@ type400() ->
             {ok, Args} -> {app_t, get_ann(_1), _1, Args}
           end),
      ?RULE(id("bytes"), parens(token(int)),
-           {bytes_t, get_ann(_1), element(3, _2)})
+           {bytes_t, get_ann(_1), element(3, _2)}),
+     liquid()
     ]).
 
 typeAtom() ->
@@ -246,6 +247,17 @@ args_t() ->
       %% Singleton case handled separately
     , ?RULE(tok('('), type(), tok(','), sep1(type(), tok(',')), tok(')'), {args_t, get_ann(_1), [_2|_4]})
     ])).
+
+liquid() ->
+    ?LAZY_P(choice(
+    [ ?RULE(tok('{'), id(), tok(':'), type(), tok('|'), comma_sep(expr()), tok('}'),
+            {named_t, get_ann(_1), _2, {liquid, get_ann(_3), _4, _6}}
+           )
+    , ?RULE(tok('{'), id(), tok(':'), type(), tok('}'),
+            {named_t, get_ann(_1), _2, _4}
+           )
+    ])).
+
 
 %% -- Statements -------------------------------------------------------------
 

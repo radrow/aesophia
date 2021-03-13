@@ -72,11 +72,19 @@
 
 -type constructor_t() :: {constr_t, ann(), con(), [type()]}.
 
+-type qual_var() :: id() | nu | integer().
+-type qualifier() :: {eq, qual_var(), qual_var()}
+                   | {leq, qual_var(), qual_var()}
+                   | {lt, qual_var(), qual_var()}
+                   .
+
 -type type() :: {fun_t, ann(), [named_arg_t()], [type()], type()}
               | {app_t, ann(), type(), [type()]}
               | {tuple_t, ann(), [type()]}
               | {args_t, ann(), [type()]}   %% old tuple syntax, old for error messages
               | {bytes_t, ann(), integer() | any}
+              | {named_t, ann(), id(), type()}
+              | {liquid_t, ann(), type(), [qualifier()]}
               | id()  | qid()
               | con() | qcon()  %% contracts
               | tvar().
