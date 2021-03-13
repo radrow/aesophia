@@ -1,0 +1,4 @@
+contract C =
+  type nat = {n : int | n >= 0}
+
+  entrypoint succ(n : nat) : {m : int | m > 0} = n + 1
