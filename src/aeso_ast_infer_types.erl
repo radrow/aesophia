@@ -1120,14 +1120,16 @@ check_liquid(Env, Nu, {liquid, Ann, T, Quals}, Arity) ->
 
 check_qual(Env, Nu, {app, _, {'==', _}, [A, B]}) ->
     {eq, check_qual_var(Env, Nu, A), check_qual_var(Env, Nu, B)};
+check_qual(Env, Nu, {app, _, {'!=', _}, [A, B]}) ->
+    {neg, {eq, check_qual_var(Env, Nu, A), check_qual_var(Env, Nu, B)}};
 check_qual(Env, Nu, {app, _, {'<', _}, [A, B]}) ->
     {lt, check_qual_var(Env, Nu, A), check_qual_var(Env, Nu, B)};
 check_qual(Env, Nu, {app, _, {'>', _}, [A, B]}) ->
     {lt, check_qual_var(Env, Nu, B), check_qual_var(Env, Nu, A)};
 check_qual(Env, Nu, {app, _, {'=<', _}, [A, B]}) ->
-    {leq, check_qual_var(Env, Nu, A), check_qual_var(Env, Nu, B)};
+    {neg, {lt, check_qual_var(Env, Nu, B), check_qual_var(Env, Nu, A)}};
 check_qual(Env, Nu, {app, _, {'>=', _}, [A, B]}) ->
-    {leq, check_qual_var(Env, Nu, B), check_qual_var(Env, Nu, A)};
+    {neg, {lt, check_qual_var(Env, Nu, A), check_qual_var(Env, Nu, B)}};
 check_qual(_, _, E) ->
     error({invalid_qual, E}). %% FIXME proper error
 

@@ -6,7 +6,7 @@
 %%%-------------------------------------------------------------------
 -module(aeso_syntax_utils).
 
--export([used_ids/1, used_types/2, used/1, subst_nu/2]).
+-export([used_ids/1, used_types/2, used/1]).
 
 -record(alg, {zero, plus, scoped}).
 
@@ -153,11 +153,3 @@ used(D) ->
                (_, _)             -> #{}
             end, decl, D)),
     lists:filter(NotBound, Xs).
-
-%% Substitutions
-
-subst_nu(X, nu) -> %% FIXME this is so dirty
-    X;
-subst_nu(X, T) when is_tuple(T) ->
-    list_to_tuple([subst_nu(X, E) || E <- tuple_to_list(T)]);
-subst_nu(_, E) -> E.
