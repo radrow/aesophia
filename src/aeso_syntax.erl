@@ -69,11 +69,6 @@
 
 -type constructor_t() :: {constr_t, ann(), con(), [type()]}.
 
--type qual_var() :: id() | nu | integer().
--type qualifier() :: {eq, qual_var(), qual_var()}
-                   | {leq, qual_var(), qual_var()}
-                   | {lt, qual_var(), qual_var()}
-                   .
 
 -type type() :: {fun_t, ann(), [named_arg_t()], [type()], type()}
               | {app_t, ann(), type(), [type()]}
@@ -81,10 +76,25 @@
               | {args_t, ann(), [type()]}   %% old tuple syntax, old for error messages
               | {bytes_t, ann(), integer() | any}
               | {named_t, ann(), id(), type()}
-              | {liquid_t, ann(), type(), [qualifier()]}
               | id()  | qid()
               | con() | qcon()  %% contracts
               | tvar().
+
+%% Liquid value – either a Sophia expression or nu
+-type pred_val() :: expr() | nu.
+%% Single assertion. TODO: aeso_syntax:expr()
+-type pred_expr() :: {eq, pred_val(), pred_val()}
+                   | {lt, pred_val(), pred_val()}
+                   | {neg, pred_expr()}.
+%% Predicate for a liquid type
+-type predicate() :: [pred_expr()].
+
+%% Dependent type
+-type dep_type(Qual)
+    :: {refined_t, ann(), type(), Qual}
+     | {dep_fun_t, ann(), [named_arg_t()], [{id(), dep_type(Qual)}], dep_type(Qual)}
+     | tvar().
+-type liquid_type() :: dep_type(predicate()).
 
 -type named_arg_t() :: {named_arg_t, ann(), id(), type(), expr()}.
 

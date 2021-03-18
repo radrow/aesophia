@@ -11,6 +11,8 @@
 
 -export([decls/1, decls/2, decl/1, decl/2, expr/1, expr/2, type/1, type/2]).
 
+-export([constr/1, dep_type/1]).
+
 -export_type([options/0]).
 
 -type doc() :: prettypr:document().
@@ -276,45 +278,94 @@ type(T = {con, _, _})  -> name(T);
 type(T = {qcon, _, _}) -> name(T);
 type(T = {tvar, _, _}) -> name(T);
 
-type({named_t, _, Var, {liquid, _, BaseType, Constraints}}) ->
+type(T) -> dep_type(T).
+
+
+dep_type({refined_t, _, BaseType, []}) ->
+    type(BaseType);
+dep_type({refined_t, _, BaseType, Pred}) ->
     beside(
-      [ text("{")
-      , name(Var)
-      , text(":")
+      [ text("{$nu :")
       , type(BaseType)
       , text("|")
-      , par(punctuate(text(","), [qual(Var, C) || C <- Constraints]))
+      , predicate(Pred)
       , text("}")
       ]);
-type({named_t, _, Var, Type}) ->
-    beside(
-      [ text("{")
-      , name(Var)
-      , text(":")
-      , type(Type)
-      , text("}")
-      ]);
-type({liquid, _, BaseType, Constraints}) ->
-    beside(
-     [ text("{$nu :")
-     , type(BaseType)
-     , text("|")
-     , par(punctuate(text(","), [qual({id, [], "nu"}, C) || C <- Constraints]))
-     , text("}")
-     ]).
+dep_type({dep_fun_t, _, Named, Args, Ret}) ->
+    follow
+      ( hsep(
+          [args_type(Named)] ++
+          [ beside([text("{"), name(Name), text(":"), dep_type(DT), text("}")])
+            || {Name, DT} <- Args]
+          ++ [text("=>")]
+          )
+      , dep_type(Ret)
+      );
+dep_type(T = {tvar, _, _}) ->
+    name(T).
 
-qual(Nu, {eq, A, B}) ->
-    beside([qual_var(Nu, A), text("=="), qual_var(Nu, B)]);
-qual(Nu, {lt, A, B}) ->
-    beside([qual_var(Nu, A), text("<"), qual_var(Nu, B)]);
-qual(Nu, {leq, A, B}) ->
-    beside([qual_var(Nu, A), text("=<"), qual_var(Nu, B)]);
-qual(_, Expr) ->  %% Non-processed qualifier expr
-    expr(Expr).
+predicate(P) ->
+    predicate({id, [], "$nu"}, P).
+predicate(Nu, Constraints) when is_list(Constraints) ->
+    par(punctuate(text(","), [pred_expr(Nu, C) || C <- Constraints]));
+predicate(_, {[], LTVar}) ->
+    ltvar(LTVar);
+predicate(Nu, {Subst, LTVar}) ->
+    beside(
+      [ ltvar(LTVar)
+      , text("[")
+      , par(punctuate(
+              text(";"),
+              [ beside([text(V), text("/"), pred_expr(Nu, Q)])
+                || {V, Q} <- Subst
+              ]))
+      , text("]")
+      ]
+     ).
 
-qual_var(Nu, nu) -> Nu;
-qual_var(_, I) when is_integer(I) -> text(integer_to_list(I));
-qual_var(_, {id, _, N}) -> name(N).
+ltvar({ltvar, Ref}) ->
+    Id = case get({ltvar_print, Ref}) of
+             undefined ->
+                 NextId = case get(ltvar_print_count) of
+                              undefined -> 0;
+                              N -> N + 1
+                          end,
+                 put(ltvar_print_count, NextId),
+                 put({ltvar_print, Ref}, NextId),
+                 NextId;
+             X -> X
+         end,
+    text(io_lib:format("k_~p", [Id])).
+
+pred_expr(Nu, {eq, A, B}) ->
+    beside([pred_expr(Nu, A), text("=="), pred_expr(Nu, B)]);
+pred_expr(Nu, {lt, A, B}) ->
+    beside([pred_expr(Nu, A), text("<"), pred_expr(Nu, B)]);
+pred_expr(Nu, {neg, Q}) ->
+    beside([text("!"), paren(pred_expr(Nu, Q))]);
+pred_expr(Nu, Expr) ->
+    pred_val(Nu, Expr).
+
+pred_val(Nu, nu) -> name(Nu);
+pred_val(_, Expr) -> expr(Expr).
+
+conclusion({well_formed, T}) ->
+    dep_type(T);
+conclusion({subtype, T1, T2}) ->
+    beside([dep_type(T1), text("<:"), dep_type(T2)]).
+
+constr({{env, TypeBinds, GuardPreds}, Concl}) ->
+    above(
+      [ par(punctuate(
+              text(","),
+              [beside([text(Var), text(":"), type(Type)])
+               || {Var, Type} <- maps:to_list(TypeBinds)])
+           )
+      , text("&")
+      , predicate(GuardPreds)
+      , text("|-")
+      , conclusion(Concl)
+      ]).
 
 -spec args_type([aeso_syntax:type()]) -> doc().
 args_type(Args) ->
