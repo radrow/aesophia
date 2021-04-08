@@ -209,7 +209,8 @@ name({con, _,  Name})  -> text(Name);
 name({qid, _,  Names}) -> text(string:join(Names, "."));
 name({qcon, _, Names}) -> text(string:join(Names, "."));
 name({tvar, _, Name})  -> text(Name);
-name({typed, _, Name, _}) -> name(Name).
+name({typed, _, Name, _}) -> name(Name);
+name({ltvar, Name}) -> text(Name).
 
 -spec letdecl(string(), aeso_syntax:letbind()) -> doc().
 letdecl(Let, {letval, _, P, E}) ->
@@ -312,6 +313,10 @@ dep_type({dep_fun_t, _, Named, Args, Ret}) ->
 dep_type(T = {tvar, _, _}) ->
     name(T).
 
+predicate({template, _, {ltvar, Var}}) -> text(Var);
+predicate([]) -> text("true");
+predicate(L) when is_list(L) ->
+    par(punctuate(text("/\\"), [expr(E) || E <- L]));
 predicate(P) ->
     predicate({id, [], "$nu"}, P).
 predicate(Nu, Constraints) when is_list(Constraints) ->
@@ -357,23 +362,27 @@ pred_expr(Nu, Expr) ->
 pred_val(Nu, nu) -> name(Nu);
 pred_val(_, Expr) -> expr(Expr).
 
-conclusion({well_formed, T}) ->
-    dep_type(T);
-conclusion({subtype, T1, T2}) ->
-    beside([dep_type(T1), text("<:"), dep_type(T2)]).
-
-constr({{env, TypeBinds, GuardPreds}, Concl}) ->
+liquid_env({env, TypeBinds, GuardPreds}) ->
     above(
       [ par(punctuate(
               text(","),
               [beside([text(Var), text(":"), type(Type)])
                || {Var, Type} <- maps:to_list(TypeBinds)])
            )
-      , text("&")
       , predicate(GuardPreds)
-      , text("|-")
-      , conclusion(Concl)
       ]).
+
+under_env(Env, X) ->
+    above([ liquid_env(Env)
+          , text("--------------")
+          , X
+          ]
+     ).
+
+constr({well_formed, Env, T}) ->
+    under_env(Env, dep_type(T));
+constr({subtype, Env, T1, T2}) ->
+    under_env(Env, beside([dep_type(T1), text(" <: "), dep_type(T2)])).
 
 -spec args_type([aeso_syntax:type()]) -> doc().
 args_type(Args) ->
@@ -489,7 +498,8 @@ expr_p(_, E = {qcon, _, _}) -> name(E);
 %% -- For error messages
 expr_p(_, {Op, _}) when is_atom(Op) ->
     paren(text(atom_to_list(Op)));
-expr_p(_, {lvalue, _, LV})  -> lvalue(LV).
+expr_p(_, {lvalue, _, LV})  -> lvalue(LV);
+expr_p(_, nu) -> text("$nu").
 
 stmt_p({'if', _, Cond, Then}) ->
     block_expr(200, beside(text("if"), paren(expr(Cond))), Then);
