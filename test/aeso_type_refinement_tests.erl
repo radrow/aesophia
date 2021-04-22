@@ -19,30 +19,47 @@ run_test(Test) ->
       end || {Label, Fun} <- ?MODULE:TestFun() ],
     ok.
 
+solver_test_() ->
+    aeso_smt:start_z3(),
+    [ { "SMT solver test"
+      , fun() ->
+              ?assert(aeso_kurwamac:impl_holds(
+                        maps:from_list([{"x", {id, [], "int"}}]), [], [{app, [], {'==', []}, [{id, [], "x"}, {id, [], "x"}]}]))
+      end
+      }
+    ].
+
 constraints_gen_test_() ->
     aeso_kurwamac:init_refiner(),
     [ {"Testing liquid template generation of " ++ ContractName,
        fun() ->
-               case gen_constraints(ContractName) of
+               try gen_constraints(ContractName) of
                    {ok, AST} ->
-                       io:format("~p", [AST]), error(xd);
+                       io:format("~p", [AST]), error(success);
                    {error, ErrBin} ->
                        io:format("\n~s", [ErrBin]),
                        error(ErrBin)
+               catch _:T:S -> io:format("\n\n\n***** CHUJ\n stack:\n~p\n", [S]), error(T)
                end
            end} || ContractName <- compilable_contracts()].
 gen_constraints(Name) ->
+    io:format("no elo\n\n"),
     ContractString = aeso_test_utils:read_contract(Name),
     Ast = aeso_parser:string(ContractString, sets:new(), []),
     {_, _, TAst} = aeso_ast_infer_types:infer(Ast, [return_env]),
     [ begin
-          {T, Cs} = aeso_kurwamac:constr_letfun(aeso_kurwamac:init_env(), Decl, []),
+          {T, Cs} = aeso_kurwamac:constr_letfun(aeso_kurwamac:init_type_env(), Decl, []),
           io:format("AA ~p", [T]),
           io:format("\n*** INFERRED\n\n~s\n\n",
                     [prettypr:format(aeso_pretty:dep_type(T))
                     ]
                    ),
-          [io:format("~s\n\n", [prettypr:format(aeso_pretty:constr(C))]) || C <- Cs]
+          Cs1 = aeso_kurwamac:simplify(Cs),
+          Cs2 = aeso_kurwamac:group_subtypes(Cs1),
+          io:format("**** CONSTRAINTS ****\n"),
+          [io:format("~s\n\n", [prettypr:format(aeso_pretty:constr(C))]) || C <- Cs2],
+          Assg = aeso_kurwamac:solve(Cs2),
+          io:format("SOLVED TO: ~p\n", [Assg])
       end
       || {contract, _, _, Decls} <- TAst,
          Decl <- Decls,

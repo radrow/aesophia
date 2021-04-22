@@ -354,27 +354,32 @@ pred_expr(Nu, Expr) ->
 pred_val(Nu, nu) -> name(Nu);
 pred_val(_, Expr) -> expr(Expr).
 
-liquid_env({env, TypeBinds, GuardPreds}) ->
+constr_env({type_env, Scope, GuardPreds}) ->
     above(
       [ par(punctuate(
               text(","),
-              [beside([text(Var), text(":"), type(Type)])
-               || {Var, Type} <- maps:to_list(TypeBinds)])
+              [beside([text(Var), text(" : "), type(T)]) || {Var, T} <- maps:to_list(Scope)])
            )
       , predicate(GuardPreds)
       ]).
 
-under_env(Env, X) ->
-    above([ liquid_env(Env)
+under_constr_env(Env, X) ->
+    above([ constr_env(Env)
           , text("--------------")
           , X
           ]
      ).
 
 constr({well_formed, Env, T}) ->
-    under_env(Env, dep_type(T));
+    under_constr_env(Env, dep_type(T));
 constr({subtype, Env, T1, T2}) ->
-    under_env(Env, beside([dep_type(T1), text(" <: "), dep_type(T2)])).
+    under_constr_env(Env, beside([dep_type(T1), text(" <: "), dep_type(T2)]));
+constr({subtype, Subs, {ltvar, T}}) when is_list(Subs) ->
+    above([ text(T)
+          | [ beside([text("  :> "), constr_env(Env), text(" |- "), dep_type(T1)])
+             || {Env, T1} <- Subs
+            ]
+          ]).
 
 -spec args_type([aeso_syntax:type()]) -> doc().
 args_type(Args) ->
