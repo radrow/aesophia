@@ -204,6 +204,8 @@ constr_expr(_, E, A, B) ->
 
 apply_subst1({id, _, X}, Expr, {id, _, X}) ->
     Expr;
+apply_subst1({ltvar, X}, Expr, {ltvar, X}) ->
+    Expr;
 apply_subst1(nu, Expr, nu) ->
     Expr;
 apply_subst1(X, Expr, {template, S1, T}) ->
@@ -227,8 +229,9 @@ apply_subst1(X, Expr, T) when is_tuple(T) ->
     list_to_tuple(apply_subst1(X, Expr, tuple_to_list(T)));
 apply_subst1(_X, _Expr, X) -> X.
 
-
-apply_subst(Subs, Q) ->
+apply_subst(Subs, Q) when is_map(Subs) ->
+    apply_subst(maps:to_list(Subs), Q);
+apply_subst(Subs, Q) when is_list(Subs) ->
     lists:foldl(fun({X, Expr}, Q0) -> apply_subst1(X, Expr, Q0) end, Q, Subs).
 
 
@@ -470,3 +473,15 @@ expr_to_smt({'!', _})  -> "not";
 expr_to_smt(nu) -> {var, "nu__"};
 expr_to_smt(E) -> error({not_smt_expr, E}).
 
+apply_assg(Assg, Var = {ltvar, _}) ->
+    case Assg of
+        #{Var := #kinfo{curr_qs = P}} ->
+            P;
+        _ -> []
+    end;
+apply_assg(Assg, {template, S, T}) ->
+    apply_assg(Assg, apply_subst(S, T));
+apply_assg(Assg, [H|T]) -> [apply_assg(Assg, H)|apply_assg(Assg, T)];
+apply_assg(Assg, T) when is_tuple(T) ->
+    list_to_tuple(apply_assg(Assg, tuple_to_list(T)));
+apply_assg(_, X) -> X.
