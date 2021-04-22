@@ -11,7 +11,7 @@
 
 -export([decls/1, decls/2, decl/1, decl/2, expr/1, expr/2, type/1, type/2]).
 
--export([constr/1, dep_type/1]).
+-export([constr/1, dep_type/1, pp/2]).
 
 -export_type([options/0]).
 
@@ -600,3 +600,5 @@ get_elifs(If = {'if', Ann, Cond, Then, Else}, Elifs) ->
     end;
 get_elifs(Else, Elifs) -> {lists:reverse(Elifs), {else, Else}}.
 
+pp(PP, X) ->
+    prettypr:format(apply(aeso_pretty, PP, [X])).
