@@ -2,7 +2,8 @@
 -compile([export_all, nowarn_export_all]).
 
 -include_lib("eunit/include/eunit.hrl").
-
+-define(DBG(A, B), ?debugFmt(A, B)).
+-define(DBG(A), ?debugMsg(A)).
 
 %% Liquid type variable
 -type ltvar() :: {ltvar, string()}.
@@ -25,7 +26,7 @@
                 | {well_formed, type_env(), template()}.
 
 %% Grouped subtype
--type subtype_constr() :: {subtype, [{type_env(), template()}], ltvar()}.
+-type subtype_constr() :: {subtype, [{type_env(), subst(), template()}], ltvar()}.
 
 -record(kinfo, {base :: aeso_syntax:type(), all_qs :: predicate(), curr_qs :: predicate()}).
 -type kinfo() :: #kinfo{}.
@@ -132,6 +133,8 @@ constr_exprs(Env, [H|T], Acc, S0) ->
     constr_exprs(Env, T, [H1|Acc], S1).
 
 -define(refined(T, Q), {refined_t, element(2, T), T, Q}).
+-define(op(A, Op, B), {app, [{format, infix}|ann()], {Op, ann()}, [A, B]}).
+-define(op(Op, B), {app, [{format, prefix}|ann()], {Op, ann()}, [B]}).
 
 constr_expr(Env, {typed, Ann, {app, Ann1, F, Args}, RetT}, S)
   when element(1, F) =/= typed ->
@@ -146,17 +149,17 @@ constr_expr(_, X, _) ->
 constr_expr(Env, Expr = {id, _, Name}, T, S) ->
     case get_var(Env, Name) of
         undefined ->
-            Eq = {app, ann(), {'==', ann()}, [nu, Expr]},
+            Eq = ?op(nu, '==', Expr),
             {{refined_t, ann(), T, [Eq]}, S};
         {refined_t, Ann, B, _} ->
-            Eq = {app, ann(), {'==', ann()}, [nu, Expr]},
+            Eq = ?op(nu, '==', Expr),
             {{refined_t, Ann, B, [Eq]}, S};
         T1 -> {T1, S}
     end;
 constr_expr(_Env, I = {int, _, _}, T, S) ->
-    {?refined(T, [{app, ann(), {'==', ann()}, [nu, I]}]), S};
+    {?refined(T, [?op(nu, '==', I)]), S};
 constr_expr(_Env, {bool, _, B}, T, S) ->
-    {?refined(T, [if B -> nu; true -> {app, ann(), {'!', ann()}, [nu]} end]), S};
+    {?refined(T, [if B -> nu; true -> ?op('!', nu) end]), S};
 
 constr_expr(_Env, Expr = {CmpOp, Ann}, {fun_t, _, _, [OpLT, OpRT], RetT = {id, _, "bool"}}, S)
       when CmpOp =:= '<' orelse
@@ -169,7 +172,7 @@ constr_expr(_Env, Expr = {CmpOp, Ann}, {fun_t, _, _, [OpLT, OpRT], RetT = {id, _
     OpRV = fresh_id("opr"),
     { {dep_fun_t, Ann, ann(),
        [{OpLV, ?refined(OpLT, [])}, {OpLV, ?refined(OpRT, [])}],
-       ?refined(RetT, [{app, ann(), {'==', ann()}, [nu, {app, Ann, Expr, [OpLV, OpRV]}]}])
+       ?refined(RetT, [?op(nu, '==', {app, [{format, infix}|Ann], Expr, [OpLV, OpRV]})])
       }
     , S
     };
@@ -189,7 +192,7 @@ constr_expr(Env, {'if', _, Cond, Then, Else}, T, S0) ->
     { ExprT
     , [ {well_formed, Env, ExprT}
       , {subtype, assert(Cond, Env), ThenT, ExprT}
-      , {subtype, assert({app, ann(), {'!', ann()}, [Cond]}, Env), ElseT, ExprT}
+      , {subtype, assert(?op('!', Cond), Env), ElseT, ExprT}
       | S3
       ]
     };
@@ -282,11 +285,8 @@ filter_obvious([H|T], Acc) ->
     end.
 
 int_qualifiers(Thing) ->
-    [ {app, ann(), {'=<', ann()}, [{int, ann(), 0}, nu]}
-    , {app, ann(), {'=<', ann()}, [nu, Thing]}
-    , {app, ann(), {'<',  ann()}, [nu, Thing]}
-    , {app, ann(), {'=<', ann()}, [Thing, nu]}
-    , {app, ann(), {'<',  ann()}, [Thing, nu]}
+    [ ?op(nu, '=<', Thing)
+    , ?op(nu, '>=', Thing)
     ].
 
 init_assg(Cs) ->
@@ -306,16 +306,14 @@ inst_pred(Scope) ->
         ],
     Pred1.
 
-%% TODO: ALFA NORMALIZATION to filter inst_pred to only reasonable ones
-
 group_subtypes(Cs) ->
     Subts = [C || C = {subtype, _, _, {refined_t, _, _, {template, _, _}}} <- Cs],
     WFs = Cs -- Subts,
 
     SubtsMap =
         lists:foldl(
-          fun ({subtype, Env, T, {refined_t, _, _, {template, _, LV}}}, Map) ->
-                  maps:put(LV, [{Env, T}|maps:get(LV, Map, [])], Map)
+          fun ({subtype, Env, T, {refined_t, _, _, {template, Subst, LV}}}, Map) ->
+                  maps:put(LV, [{Env, Subst, T}|maps:get(LV, Map, [])], Map)
           end, #{}, Subts
          ),
     WFs ++ [ {subtype, Ts, LV}
@@ -349,40 +347,52 @@ solve(Cs) ->
 solve(Assg, _, []) ->
     Assg;
 solve(Assg, AllCs, [C|Rest]) ->
-    printsizes(Assg),
     case valid_in(C, Assg) of
-        false -> solve(weaken(C, Assg), AllCs, AllCs);
-        true  -> solve(Assg, AllCs, Rest)
+        false -> ?DBG("CONSTR INVALID"), solve(weaken(C, Assg), AllCs, AllCs);
+        true  -> ?DBG("CONSTR VALID"), solve(Assg, AllCs, Rest)
     end.
 
 valid_in({well_formed, _, _}, _) ->
+    ?DBG("CHECKING VALID FOR WF"),
     true; %% TODO
 valid_in({subtype, Subs, SupPredVar}, Assg) ->
     KInfo = assg_of(Assg, SupPredVar),
+    ?DBG("CHECKING VALID FOR SUB ~p", [SupPredVar]),
     lists:all(
-      fun({#type_env{type_binds = Scope, path_pred = PathPred}, SubKVar}) ->
+      fun({#type_env{type_binds = Scope, path_pred = PathPred}, _Subst, SubKVar}) ->
               VarPred = pred_of(Assg, SubKVar),
               ScopePred = [], %% TODO
               SubPred = PathPred ++ VarPred ++ ScopePred,
-              io:format("kinfo: ~p\n\n", [KInfo]),
-              impl_holds(Scope, SubPred, KInfo#kinfo.all_qs) %% FIXME all or curr?
+              impl_holds(Scope, SubPred, KInfo#kinfo.curr_qs) %% FIXME all or curr?
       end,
       Subs
      );
-valid_in({subtype, CEnv, {refined_t, _, _, SubP}, {refined_t, _, _, SupP}}, Assg) ->
+valid_in({subtype, #type_env{type_binds = Scope, path_pred = PathPred},
+          {refined_t, _, _, SubP}, {refined_t, _, _, SupP}}, Assg) ->
+    ScopePred = [], %% TODO
+    SubPred = PathPred ++ pred_of(Assg, SubP) ++ ScopePred,
+    case impl_holds(Scope, SubPred, pred_of(Assg, SupP)) of
+        true -> ok;
+        false -> throw(contradict)
+    end,
     true. %% TODO !!!!
 
-printsizes(A) ->
-    ?debugFmt("SIZES: ~p", [[{K, length(V#kinfo.curr_qs)}||{K, V} <- maps:to_list(A)]]).
-
 weaken({subtype, Subs, SubPredVar}, Assg) ->
+    ?DBG("**** WEAKENING SUB FOR ~p", [SubPredVar]),
     KInfo = assg_of(Assg, SubPredVar),
     Filtered =
         [ Q || Q <- KInfo#kinfo.curr_qs,
-               lists:all(fun({CEnv, Sub}) ->
-                                 subtype_implies(CEnv, Sub, Q, Assg)
+               lists:all(fun({CEnv, Subst, Sub}) ->
+                                 ?DBG("CHECKING SUB"),
+                                 Valid = subtype_implies(CEnv, Sub, apply_subst(Subst, Q), Assg),
+                                 case Valid of
+                                     true -> ?DBG("SUB VALID");
+                                     false -> ?DBG("SUB INVALID")
+                                 end,
+                                 Valid
                          end, Subs)
         ],
+    ?DBG("**** WEAKENED FROM ~p TO ~p", [length(KInfo#kinfo.curr_qs), length(Filtered)]),
     NewKInfo = KInfo#kinfo{
                  curr_qs = Filtered
                 },
@@ -405,13 +415,13 @@ subtype_implies(#type_env{type_binds=Scope, path_pred=PathPred},
 make_conjunction([]) -> {bool, ann(), true};
 make_conjunction([H|T]) ->
     lists:foldl(
-      fun (E, Acc) -> {app, ann(), {'&&', ann()}, [E, Acc]}
+      fun (E, Acc) -> ?op(E, '&&', Acc)
       end, H, T);
 make_conjunction(X) -> X.
 
 impl_holds(Scope, Assump, Concl) ->
-    io:format("ASSERT IMPL:\n ~s\n=>\n~p\n\n", [lists:flatten([prettypr:format(aeso_pretty:expr(A)) || A <- Assump]), Concl]),
     ConclExpr  = make_conjunction(Concl),
+    ?DBG("IMPL;\n* ASSUMPTION: ~s\n* CONCLUSION: ~s", [aeso_pretty:pp(expr, make_conjunction(Assump)), aeso_pretty:pp(expr, ConclExpr)]),
     aeso_smt:scoped(
       fun() ->
               [aeso_smt:declare_const({var, Var}, type_to_smt(T))
@@ -421,7 +431,7 @@ impl_holds(Scope, Assump, Concl) ->
               [ aeso_smt:assert(expr_to_smt(Expr))
                 || Expr <- Assump
               ],
-              aeso_smt:assert(expr_to_smt({app, ann(), {'!', ann()}, [ConclExpr]})),
+              aeso_smt:assert(expr_to_smt(?op('!', ConclExpr))),
               not aeso_smt:check_sat()
       end).
 
