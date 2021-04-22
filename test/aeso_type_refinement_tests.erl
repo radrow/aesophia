@@ -59,7 +59,8 @@ gen_constraints(Name) ->
           io:format("**** CONSTRAINTS ****\n"),
           [io:format("~s\n\n", [prettypr:format(aeso_pretty:constr(C))]) || C <- Cs2],
           Assg = aeso_kurwamac:solve(Cs2),
-          io:format("SOLVED TO: ~p\n", [Assg])
+          T1 = aeso_kurwamac:apply_assg(Assg, T),
+          io:format("SOLVED TO: ~s\n", [aeso_pretty:pp(dep_type, T1)])
       end
       || {contract, _, _, Decls} <- TAst,
          Decl <- Decls,
