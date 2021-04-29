@@ -11,7 +11,7 @@
 
 -export([decls/1, decls/2, decl/1, decl/2, expr/1, expr/2, type/1, type/2]).
 
--export([constr/1, dep_type/1, pp/2]).
+-export([constr/1, dep_type/1, predicate/1, pp/2]).
 
 -export_type([options/0]).
 
@@ -362,7 +362,7 @@ pred_expr(Nu, Expr) ->
 pred_val(Nu, nu) -> name(Nu);
 pred_val(_, Expr) -> expr(Expr).
 
-constr_env({type_env, Scope, GuardPreds}) ->
+constr_env({type_env, Scope, GuardPreds, _}) ->
     above(
       [ par(punctuate(
               text(","),
@@ -385,7 +385,7 @@ constr({subtype, Env, T1, T2}) ->
 constr({subtype, Subs, {ltvar, T}}) when is_list(Subs) ->
     above([ text(T)
           | [ beside([text("  :> "), constr_env(Env), text(" |- "), dep_type(T1)])
-             || {Env, T1} <- Subs
+             || {Env, _, T1} <- Subs
             ]
           ]).
 

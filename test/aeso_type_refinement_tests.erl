@@ -39,7 +39,7 @@ constraints_gen_test_() ->
                    {error, ErrBin} ->
                        io:format("\n~s", [ErrBin]),
                        error(ErrBin)
-               catch _:T:S -> io:format("\n\n\n***** CHUJ\n stack:\n~p\n", [S]), error(T)
+               catch _:T:S -> io:format("\n\n\n***** CHUJ 8===>\n stack:\n~p\n", [S]), error(T)
                end
            end} || ContractName <- compilable_contracts()].
 gen_constraints(Name) ->
@@ -48,24 +48,33 @@ gen_constraints(Name) ->
     Ast = aeso_parser:string(ContractString, sets:new(), []),
     {_, _, TAst} = aeso_ast_infer_types:infer(Ast, [return_env]),
     [ begin
-          {T, Cs} = aeso_kurwamac:constr_letfun(aeso_kurwamac:init_type_env(), Decl, []),
-          io:format("AA ~p", [T]),
-          io:format("\n*** INFERRED\n\n~s\n\n",
-                    [prettypr:format(aeso_pretty:dep_type(T))
-                    ]
-                   ),
+          {Con1, E, Cs} = aeso_kurwamac:constr_con(Con),
           Cs1 = aeso_kurwamac:simplify(Cs),
           Cs2 = aeso_kurwamac:group_subtypes(Cs1),
-          io:format("**** CONSTRAINTS ****\n"),
-          [io:format("~s\n\n", [prettypr:format(aeso_pretty:constr(C))]) || C <- Cs2],
-          Assg = aeso_kurwamac:solve(Cs2),
-          T1 = aeso_kurwamac:apply_assg(Assg, T),
-          io:format("SOLVED TO: ~s\n", [aeso_pretty:pp(dep_type, T1)])
+          Assg = aeso_kurwamac:solve(E, Cs2),
+          [ io:format("~s : ~s\n", [Name, aeso_pretty:pp(dep_type, aeso_kurwamac:apply_assg(Assg, T))])
+           || {Name, T} <- maps:to_list(element(2, E))
+          ]
       end
-      || {contract, _, _, Decls} <- TAst,
-         Decl <- Decls,
-        element(1, Decl) =:= letfun
+     || Con <- TAst
     ],
+    %% [ begin
+    %%       {T, Cs} = aeso_kurwamac:constr_letfun(aeso_kurwamac:init_type_env(), Decl, []),
+    %%       io:format("\n*** INFERRED\n\n~s\n\n",
+    %%                 [prettypr:format(aeso_pretty:dep_type(T))
+    %%                 ]),
+    %%       Cs1 = aeso_kurwamac:simplify(Cs),
+    %%       Cs2 = aeso_kurwamac:group_subtypes(Cs1),
+    %%       io:format("**** CONSTRAINTS ****\n\n"),
+    %%       [io:format("~s\n\n", [prettypr:format(aeso_pretty:constr(C))]) || C <- Cs],
+    %%       Assg = aeso_kurwamac:solve(Cs2),
+    %%       T1 = aeso_kurwamac:apply_assg(Assg, T),
+    %%       io:format("**** SOLVED ****\n\n~s\n", [aeso_pretty:pp(dep_type, T1)])
+    %%   end
+    %%   || {contract, _, _, Decls} <- TAst,
+    %%      Decl <- Decls,
+    %%     element(1, Decl) =:= letfun
+    %% ],
     {ok, ok}.
 
 %% compilable_contracts() -> [ContractName].
