@@ -145,7 +145,7 @@ constr_con({contract, Ann, Con, Defs}) ->
     S = lists:flatten(Ss),
     {{contract, Ann, Con, Defs1}, Env1, S}.
 
-constr_letfun(Env0, {letfun, Ann, {id, _, Name}, Args, RetT, Body}, S) ->
+constr_letfun(Env0, {letfun, Ann, Id = {id, _, Name}, Args, RetT, Body}, S) ->
     ArgsT =
         [ {ArgName, decorate_base_types(contravariant, "argi_" ++ StrName, T)}
           || {typed, _, ArgName = {id, _, StrName}, T} <- Args
@@ -163,7 +163,7 @@ constr_letfun(Env0, {letfun, Ann, {id, _, Name}, Args, RetT, Body}, S) ->
          | S1
          ],
 
-    {DepSelfT, S2}.
+    {{fun_decl, Ann, Id, DepSelfT}, S2}.
 
 
 constr_exprs(Env, Es, S) ->
@@ -248,7 +248,7 @@ constr_expr(_Env, Expr = {CmpOp, Ann}, {fun_t, _, _, [OpLT, OpRT], RetT = ?int_t
       }
     , S
     };
-constr_expr(_Env, Expr = {'-', Ann}, ?int_tp, S) ->
+constr_expr(_Env, Expr = {'-', Ann}, _, S) ->
     N = fresh_id("n"),
     { {dep_fun_t, Ann, [],
        [{N, ?refined({id, ann(), "int"}, [])}],
@@ -383,12 +383,19 @@ eq_qualifiers(Thing) ->
 int_qualifiers(Thing) ->
     cmp_qualifiers(Thing) ++ eq_qualifiers(Thing).
 
+plus_int_qualifiers({int, _, 0}, _Thing) -> [];
+plus_int_qualifiers(Int, Thing) ->
+    int_qualifiers(?op(Thing, '+', Int)) ++ int_qualifiers(?op(Thing, '-', Int)).
+
+var_int_qualifiers(Var) ->
+    int_qualifiers({id, ann(), Var}) ++ plusminus_int_qualifiers(?int(1), {id, ann(), Var}).
+
 inst_pred_int(Scope) ->
     lists:concat(
       [ int_qualifiers(?int(0)) %% 0 is quite probable to be relevant
-      %% , int_qualifiers(?int(1)) %% 1 as well
+      , int_qualifiers(?int(1)) %% 1 as well
       , [ Q || {Var, {refined_t, _, ?int_tp, _}} <- Scope,
-               Q <- int_qualifiers({id, ann(), Var})
+               Q <- var_int_qualifiers(Var)
         ]
       ]
      ).
@@ -499,7 +506,9 @@ valid_in({subtype, #type_env{type_binds = Scope, path_pred = PathPred},
             ?DBG("**** CONTRADICTION"),
             throw(contradict)
     end,
-    true. %% TODO !!!!
+    true; %% TODO !!!!
+valid_in({subtype, _, T, T}, _) ->
+    true.
 
 weaken({subtype, Subs, SubPredVar}, Assg) ->
     ?DBG("**** WEAKENING SUB FOR ~p", [SubPredVar]),
@@ -632,7 +641,7 @@ apply_assg(Assg, T) when is_tuple(T) ->
 apply_assg(_, X) -> X.
 
 %% this is absolutely heuristic
-%% simplify_pred(Scope, Pred) -> Pred;
+simplify_pred(Scope, Pred) -> Pred;
 simplify_pred(Scope, Pred) ->
     simplify_pred(Scope, [], Pred).
 simplify_pred(_Scope, Prev, []) ->

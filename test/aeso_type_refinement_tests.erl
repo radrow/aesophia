@@ -24,7 +24,7 @@ solver_test_() ->
     [ { "SMT solver test"
       , fun() ->
               ?assert(aeso_ast_refine_types:impl_holds(
-                        maps:from_list([{"x", {id, [], "int"}}]), [], [{app, [], {'!=', []}, [{id, [], "x"}, {id, [], "x"}]}]))
+                        maps:from_list([{"x", {id, [], "int"}}]), [], [{app, [], {'==', []}, [{id, [], "x"}, {id, [], "x"}]}]))
       end
       }
     ].
@@ -58,7 +58,7 @@ gen_constraints(Name) ->
            || {Name, T} <- maps:to_list(element(2, E))
           ],
           io:format("\n\n**** INTERNAL:\n"),
-          [ io:format("_ : ~s\n", [aeso_pretty:pp(dep_type, aeso_ast_refine_types:apply_assg(Assg, T))])
+          [ io:format("_ : ~s\n", [aeso_pretty:pp(decl, aeso_ast_refine_types:apply_assg(Assg, T))])
             || T <- Defs
           ]
       end
