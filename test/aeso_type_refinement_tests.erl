@@ -24,7 +24,7 @@ solver_test_() ->
     [ { "SMT solver test"
       , fun() ->
               ?assert(aeso_ast_refine_types:impl_holds(
-                        maps:from_list([{"x", {id, [], "int"}}]), [], [{app, [], {'==', []}, [{id, [], "x"}, {id, [], "x"}]}]))
+                        maps:from_list([{"x", {id, [], "int"}}]), [], [{app, [], {'!=', []}, [{id, [], "x"}, {id, [], "x"}]}]))
       end
       }
     ].
