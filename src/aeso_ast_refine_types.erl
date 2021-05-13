@@ -32,6 +32,8 @@
 -record(kinfo, {base :: aeso_syntax:type(), curr_qs :: predicate(), env :: type_env()}).
 -type kinfo() :: #kinfo{}.
 
+-type variance() :: contravariant | covariant.
+
 %%%% INIT
 
 
@@ -62,7 +64,9 @@ fresh_ltvar(Name) ->
     {ltvar, Name ++ "_" ++ integer_to_list(I)}.
 
 -spec fresh_template(string()) -> template().
-fresh_template(Name) -> {template, [], fresh_ltvar(Name)}.
+fresh_template(Name) -> fresh_template(covariant, Name).
+fresh_template(covariant, Name) -> {template, [], fresh_ltvar(Name)};
+fresh_template(contravariant, Name) -> [].
 
 get_var(#type_env{type_binds = TB}, Name) ->
     maps:get(Name, TB, undefined).
@@ -95,31 +99,41 @@ fresh_id(Name) ->
     put(id_supply, I + 1),
     {id, [], Name ++ "_" ++ integer_to_list(I)}.
 
+switch_variance(covariant) ->
+    contravariant;
+switch_variance(contravariant) ->
+    covariant.
+
 %% Decorates base types with templates through the AST
-decorate_base_types(Type = {id, Ann, "int"}) ->
-    {refined_t, Ann, Type, fresh_template("I")};
-decorate_base_types(Type = {id, Ann, "bool"}) ->
-    {refined_t, Ann, Type, fresh_template("B")};
-decorate_base_types({fun_t, Ann, Named, Args, Ret}) ->
+decorate_base_types(Hint, Type) ->
+    decorate_base_types(covariant, Hint, Type).
+decorate_base_types(Variance, Hint, Type = {id, Ann, "int"}) ->
+    {refined_t, Ann, Type, fresh_template(Variance, Hint)};
+decorate_base_types(Variance, Hint, Type = {id, Ann, "bool"}) ->
+    {refined_t, Ann, Type, fresh_template(Variance, Hint)};
+decorate_base_types(Variance, Hint, {fun_t, Ann, Named, Args, Ret}) ->
     { dep_fun_t, Ann, Named
-    , [{fresh_id("arg"), decorate_base_types(Arg)}|| Arg <- Args]
-    , decorate_base_types(Ret)
+    , [{fresh_id("arg"),
+        decorate_base_types(switch_variance(Variance), Hint ++ "_argl", Arg)}
+       || Arg <- Args]
+    , decorate_base_types(Variance, Hint, Ret)
     };
-decorate_base_types([]) -> [];
-decorate_base_types([H|T]) -> [decorate_base_types(H)|decorate_base_types(T)];
-decorate_base_types(T) when is_tuple(T) ->
-    list_to_tuple(decorate_base_types(tuple_to_list(T)));
-decorate_base_types(X) -> X.
+decorate_base_types(_, _, []) -> [];
+decorate_base_types(Variance, Hint, [H|T]) ->
+    [decorate_base_types(Variance, Hint, H)|decorate_base_types(Variance, Hint, T)];
+decorate_base_types(Variance, Hint, T) when is_tuple(T) ->
+    list_to_tuple(decorate_base_types(Variance, Hint, tuple_to_list(T)));
+decorate_base_types(_, _, X) -> X.
 
 constr_con({contract, Ann, Con, Defs}) ->
     EnvDefs =
         maps:from_list(
           [ begin
                 ArgsT =
-                    [ {ArgName, decorate_base_types(T)}
-                      || {typed, _, ArgName, T} <- Args
+                    [ {ArgName, decorate_base_types(contravariant, "arg_" ++ StrName, T)}
+                      || {typed, _, ArgName = {id, _, StrName}, T} <- Args
                     ],
-                TypeDep = {dep_fun_t, FAnn, [], ArgsT, decorate_base_types(RetT)},
+                TypeDep = {dep_fun_t, FAnn, [], ArgsT, decorate_base_types("ret", RetT)},
                 {Name, TypeDep}
             end
             || {letfun, FAnn, {id, _, Name}, Args, RetT, _} <- Defs
@@ -133,8 +147,8 @@ constr_con({contract, Ann, Con, Defs}) ->
 
 constr_letfun(Env0, {letfun, Ann, {id, _, Name}, Args, RetT, Body}, S) ->
     ArgsT =
-        [ {ArgName, decorate_base_types(T)}
-          || {typed, _, ArgName, T} <- Args
+        [ {ArgName, decorate_base_types(contravariant, "argi_" ++ StrName, T)}
+          || {typed, _, ArgName = {id, _, StrName}, T} <- Args
         ],
     Env1 = bind_args(ArgsT, Env0),
     {DepRetT, S1} = constr_expr(Env1, Body, S),
@@ -180,12 +194,13 @@ constr_expr(_, X, _) ->
 constr_expr(Env, Expr = {id, _, Name}, T, S) ->
     case get_var(Env, Name) of
         undefined ->
+            ?DBG("UNDEF VAR ~s", [Name]),
             Eq = ?op(nu, '==', Expr),
             {{refined_t, ann(), T, [Eq]}, S};
-        {refined_t, Ann, B, _} = T1 ->
+        {refined_t, Ann, B, P} = T1 ->
             Eq = ?op(nu, '==', Expr), %% IF THIS IS THE ONLY Q THEN IT WORKS BETTER
             { {refined_t, Ann, B, [Eq]}
-            %% , [{subtype, Env, T1, {refined_t, Ann, B, [Eq]}}|S] %% FIXME Flip?
+            %% , [{subtype, Env, {refined_t, Ann, B, [Eq]}, T1}|S] %% FIXME Flip?
             , S
             };
         T1 -> {T1, S}
@@ -412,7 +427,7 @@ assg_of(Assg, Var = {ltvar, _}) ->
     case maps:get(Var, Assg, undef) of
         undef ->
             #kinfo
-                { base = {id, ann(), "int"} %% TODO NOT ONLY INT
+                { base = {id, ann(), "int"} %% FIXME NOT ONLY INT
                 , curr_qs = []
                 , env = init_type_env()
                 };
@@ -474,8 +489,8 @@ valid_in({subtype, Subs, SupPredVar} = C, Assg) ->
       Subs
      );
 valid_in({subtype, #type_env{type_binds = Scope, path_pred = PathPred},
-          {refined_t, _, _, SubP}, {refined_t, _, _, SupP}} = C, Assg) ->
-    ?DBG("CHECKING VALID FOR SIMP SUB\n~s", [aeso_pretty:pp(constr, C)]),
+          {refined_t, _, _, SubP}, {refined_t, _, _, SupP}} = C, Assg) when is_list(SupP) ->
+    ?DBG("CHECKING VALID FOR RIGID SIMP SUB\n~s", [aeso_pretty:pp(constr, C)]),
     ScopePred = [], %% TODO
     SubPred = PathPred ++ pred_of(Assg, SubP) ++ ScopePred,
     case impl_holds(Scope, SubPred, pred_of(Assg, SupP)) of

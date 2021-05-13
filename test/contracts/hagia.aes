@@ -3,6 +3,5 @@ contract C =
 
 //  entrypoint chuj(x : int) = if(x < 0) 0 else x
 
-  entrypoint f(x:int) = x
-  entrypoint g(x:int) = f(x) + 1
+  entrypoint f(x:int) = 1
   
