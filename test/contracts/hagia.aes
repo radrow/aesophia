@@ -6,4 +6,4 @@ contract C =
 //  entrypoint f(x:int) = x + 1
   entrypoint g() =
     let q = 0
-    q
+    q + 1
