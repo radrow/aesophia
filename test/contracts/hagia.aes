@@ -3,7 +3,7 @@ contract C =
 
 //  entrypoint chuj(x : int) = if(x < 0) 0 else x
 
-  entrypoint f(x:int) = x + 1
-  entrypoint g(y) =
-    let q = f(-1)
-    1 + q
+//  entrypoint f(x:int) = x + 1
+  entrypoint g() =
+    let q = 0
+    q
