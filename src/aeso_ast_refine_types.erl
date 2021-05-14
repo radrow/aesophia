@@ -530,6 +530,12 @@ solve(Assg, AllCs, [C|Rest]) ->
         true  -> ?DBG("CONSTR VALID"), solve(Assg, AllCs, Rest)
     end.
 
+scope_pred(Assg, Scope) ->
+    lists:concat(
+      [ apply_subst1(nu, {id, ann(), Var}, pred_of(Assg, Pred))
+        || {Var, {refined_t, _, _, Pred}} <- maps:to_list(Scope)
+      ]).
+
 valid_in({well_formed, _, _}, _) ->
     true; %% TODO
 valid_in({subtype, Subs, SupPredVar} = C, Assg) ->
@@ -539,7 +545,8 @@ valid_in({subtype, Subs, SupPredVar} = C, Assg) ->
       fun({#type_env{type_binds = Scope, path_pred = PathPred}, Subst, SubKVar}) ->
               VarPred = pred_of(Assg, SubKVar),
               ?DBG("SCOPE IN VALID: ~p", [Scope]),
-              ScopePred = [], %% TODO
+              ScopePred = scope_pred(Assg, Scope),
+              ?DBG("SCOPE PRED: ~s", [aeso_pretty:pp(predicate, ScopePred)]),
               SubPred = PathPred ++ VarPred ++ ScopePred,
               impl_holds(Scope, SubPred, apply_subst(Subst, KInfo#kinfo.curr_qs))
       end,
@@ -548,7 +555,7 @@ valid_in({subtype, Subs, SupPredVar} = C, Assg) ->
 valid_in({subtype, #type_env{type_binds = Scope, path_pred = PathPred},
           {refined_t, _, _, SubP}, {refined_t, _, _, SupP}} = C, Assg) when is_list(SupP) ->
     ?DBG("CHECKING VALID FOR RIGID SIMP SUB\n~s", [aeso_pretty:pp(constr, C)]),
-    ScopePred = [], %% TODO
+    ScopePred = scope_pred(Assg, Scope),
     SubPred = PathPred ++ pred_of(Assg, SubP) ++ ScopePred,
     case impl_holds(Scope, SubPred, pred_of(Assg, SupP)) of
         true -> ok;
@@ -593,7 +600,7 @@ subtype_implies(#type_env{type_binds=Scope, path_pred=PathPred},
             P -> P
         end,
     ?DBG("SCOPE: ~p\n", [Scope]),
-    ScopePred = [], %% TODO
+    ScopePred = scope_pred(Assg, Scope), %% TODO
     LPred = SubPred ++ ScopePred ++ PathPred,
     impl_holds(Scope, LPred, Q).
 
