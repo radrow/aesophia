@@ -94,10 +94,13 @@ bind_args(Args, Env) ->
 %%%% CONSTRAINT GENERATION
 
 
-fresh_id(Name) ->
+fresh_name(Name) ->
     I = get(id_supply),
     put(id_supply, I + 1),
-    {id, [], Name ++ "_" ++ integer_to_list(I)}.
+    Name ++ "_" ++ integer_to_list(I).
+fresh_id(Name) ->
+    N = fresh_name(Name),
+    {id, ann(), N}.
 
 switch_variance(covariant) ->
     contravariant;
@@ -165,7 +168,6 @@ constr_letfun(Env0, {letfun, Ann, Id = {id, _, Name}, Args, RetT, Body}, S) ->
 
     {{fun_decl, Ann, Id, DepSelfT}, S2}.
 
-
 constr_exprs(Env, Es, S) ->
     constr_exprs(Env, Es, [], S).
 constr_exprs(_, [], Acc, S) ->
@@ -189,8 +191,15 @@ constr_expr(Env, {typed, Ann, {app, Ann1, F, Args}, RetT}, S)
 constr_expr(Env, {typed, _, Expr, T}, S) ->
     constr_expr(Env, Expr, T, S);
 constr_expr(_, X, _) ->
-    error({todo, X}).
+    error({untyped, X}).
 
+constr_expr(Env, {block, _, Stmts}, T, S) ->
+    constr_expr(Env, Stmts, T, S);
+constr_expr(Env, {typed, _, E, T1}, T2, S) ->
+    case T1 == T2 of
+        true -> constr_expr(Env, E, T1, S);
+        false -> error({"wtf, internal type mismatch", T1, T2})
+    end;
 constr_expr(Env, Expr = {id, _, Name}, T, S) ->
     case get_var(Env, Name) of
         undefined ->
@@ -199,7 +208,7 @@ constr_expr(Env, Expr = {id, _, Name}, T, S) ->
             {{refined_t, ann(), T, [Eq]}, S};
         {refined_t, Ann, B, P} = T1 ->
             Eq = ?op(nu, '==', Expr), %% IF THIS IS THE ONLY Q THEN IT WORKS BETTER
-            { {refined_t, Ann, B, [Eq]}
+            { {refined_t, Ann, B, P}
             %% , [{subtype, Env, {refined_t, Ann, B, [Eq]}, T1}|S] %% FIXME Flip?
             , S
             };
@@ -244,7 +253,7 @@ constr_expr(_Env, Expr = {CmpOp, Ann}, {fun_t, _, _, [OpLT, OpRT], RetT = ?int_t
                                    '^'   -> [?op(nu, '>=', ?int(0))];
                                    _     -> []
                                end)}
-       ], ?refined(RetT, [?op(nu, '==', {app, [{format, infix}|Ann], Expr, [OpLV, OpRV]})])
+       ], ?refined(RetT, [ ?op(nu, '==', {app, [{format, infix}|Ann], Expr, [OpLV, OpRV]})])
       }
     , S
     };
@@ -277,9 +286,48 @@ constr_expr(Env, {'if', _, Cond, Then, Else}, T, S0) ->
       | S3
       ]
     };
+constr_expr(Env, [E], _, S) ->
+    constr_expr(Env, E, S);
+constr_expr(Env0, [{letval, _, {typed, _, {id, _, Name}, VarT}, Val}|Rest], T, S0) ->
+    DepVarT = ?refined(VarT, fresh_template(Name)),
+    {ValT, S1} = constr_expr(Env0, Val, S0),
+    Env1 = bind_var(Name, ValT, Env0),
+    {RestT, S2} = constr_expr(Env1, Rest, T, S1),
+    {DepVarT,
+     [ {well_formed, Env0, ValT}
+     , {well_formed, Env1, RestT}
+     , {well_formed, Env0, DepVarT}
+     , {subtype, Env1, RestT, DepVarT}
+     | S2
+     ]
+    };
+constr_expr(Env, [], T, S) ->
+    {T, S};
 constr_expr(_, E, A, B) ->
     error({todo, E, A, B}).
 
+%% a_normalize_expr(Expr = {typed, _, _, Type}, Cont) ->
+%%     case is_smt_expr(Expr) of
+%%         true -> Expr;
+%%         false ->
+%%             Var = fresh_id("anorm_" ++ atom_to_list(element(1, Expr))),
+%%             VarTypes = {typed, ann(), Var, Type},
+%%             {block, ann(),
+%%              [{letval, ann(), VarTyped, Expr}
+%%              , Cont(VarTyped)
+%%              ]
+%%             }
+%%     end.
+
+%% a_normalize_exprs(Exprs, Cont) ->
+%%     a_normalize_exprs(Exprs, [], Cont).
+%% a_normalize_exprs([], Acc, Cont) ->
+%%     Cont(lists:reverse(Acc));
+%% a_normalize_exprs([Expr|Rest], Acc, Cont) ->
+%%     a_normalize_expr(
+%%       Expr,
+%%       fun(V) -> a_normalize_exprs(Rest, [V|Acc], Cont) end
+%%      ).
 
 %%%% Substitution
 
@@ -369,11 +417,12 @@ filter_obvious([H|T], Acc) ->
     end.
 
 cmp_qualifiers(Thing) ->
-    [ ?op(nu, '=<', Thing)
-    , ?op(nu, '>=', Thing)
-    , ?op(nu, '>', Thing)
-    , ?op(nu, '<', Thing)
-    ].
+    [].
+    %% [ ?op(nu, '=<', Thing)
+    %% , ?op(nu, '>=', Thing)
+    %% , ?op(nu, '>', Thing)
+    %% , ?op(nu, '<', Thing)
+    %% ].
 
 eq_qualifiers(Thing) ->
     [ ?op(nu, '==', Thing)
@@ -388,7 +437,7 @@ plus_int_qualifiers(Int, Thing) ->
     int_qualifiers(?op(Thing, '+', Int)) ++ int_qualifiers(?op(Thing, '-', Int)).
 
 var_int_qualifiers(Var) ->
-    int_qualifiers({id, ann(), Var}) ++ plusminus_int_qualifiers(?int(1), {id, ann(), Var}).
+    int_qualifiers({id, ann(), Var}) ++ plus_int_qualifiers(?int(1), {id, ann(), Var}).
 
 inst_pred_int(Scope) ->
     lists:concat(
@@ -445,8 +494,8 @@ pred_of(Assg, Var = {ltvar, _}) ->
     (assg_of(Assg, Var))#kinfo.curr_qs;
 pred_of(_, P) when is_list(P) ->
     P;
-pred_of(Assg, {template, _, P}) ->
-    pred_of(Assg, P);
+pred_of(Assg, {template, Subst, P}) ->
+    apply_subst(Subst, pred_of(Assg, P));
 pred_of(Assg, {refined_t, _, _, P}) ->
     pred_of(Assg, P).
 
@@ -487,11 +536,12 @@ valid_in({subtype, Subs, SupPredVar} = C, Assg) ->
     KInfo = assg_of(Assg, SupPredVar),
     ?DBG("CHECKING VALID FOR COMP SUB\n~s", [aeso_pretty:pp(constr, C)]),
     lists:all(
-      fun({#type_env{type_binds = Scope, path_pred = PathPred}, _Subst, SubKVar}) ->
+      fun({#type_env{type_binds = Scope, path_pred = PathPred}, Subst, SubKVar}) ->
               VarPred = pred_of(Assg, SubKVar),
+              ?DBG("SCOPE IN VALID: ~p", [Scope]),
               ScopePred = [], %% TODO
               SubPred = PathPred ++ VarPred ++ ScopePred,
-              impl_holds(Scope, SubPred, KInfo#kinfo.curr_qs) %% FIXME all or curr?
+              impl_holds(Scope, SubPred, apply_subst(Subst, KInfo#kinfo.curr_qs))
       end,
       Subs
      );
@@ -506,7 +556,7 @@ valid_in({subtype, #type_env{type_binds = Scope, path_pred = PathPred},
             ?DBG("**** CONTRADICTION"),
             throw(contradict)
     end,
-    true; %% TODO !!!!
+    true; %% TODO !!!! TODO what to do?
 valid_in({subtype, _, T, T}, _) ->
     true.
 
@@ -518,6 +568,7 @@ weaken({subtype, Subs, SubPredVar}, Assg) ->
                lists:all(fun({Env, Subst, Sub}) ->
                                  ?DBG("CHECKING SUB"),
                                  Valid = subtype_implies(Env, Sub, apply_subst(Subst, Q), Assg),
+                                 ?DBG("ENV: ~p", [Env]),
                                  case Valid of
                                      true -> ?DBG("SUB VALID");
                                      false -> ?DBG("SUB INVALID")
@@ -537,10 +588,11 @@ subtype_implies(#type_env{type_binds=Scope, path_pred=PathPred},
                ) ->
     SubPred =
         case Template of
-            {template, _Subst, KVar} -> %% TODO Why do we skip Subst?
-                (assg_of(Assg, KVar))#kinfo.curr_qs;
+            {template, Subst, KVar} ->
+                apply_subst(Subst, (assg_of(Assg, KVar))#kinfo.curr_qs);
             P -> P
         end,
+    ?DBG("SCOPE: ~p\n", [Scope]),
     ScopePred = [], %% TODO
     LPred = SubPred ++ ScopePred ++ PathPred,
     impl_holds(Scope, LPred, Q).
@@ -558,7 +610,6 @@ impl_holds(Scope, Assump, Concl) when is_map(Scope) ->
 impl_holds(_, _, []) -> true;
 impl_holds(Scope, Assump, Concl) when is_list(Scope) ->
     ConclExpr  = make_conjunction(Concl),
-    %% ?DBG("SCOPE:\n~p", [Scope]),
     ?DBG("IMPL;\n* ASSUMPTION: ~s\n* CONCLUSION: ~s", [aeso_pretty:pp(expr, make_conjunction(Assump)), aeso_pretty:pp(expr, ConclExpr)]),
     aeso_smt:scoped(
       fun() ->
@@ -597,8 +648,6 @@ is_smt_expr(Expr) ->
 
 expr_to_smt({id, _, Var}) ->
     {var, Var};
-expr_to_smt({qid, _, L}) ->
-    {var, lists:last(L)}; %% FIXME
 expr_to_smt({bool, _, true}) ->
     {var, "true"};
 expr_to_smt({bool, _, false}) ->
@@ -641,7 +690,7 @@ apply_assg(Assg, T) when is_tuple(T) ->
 apply_assg(_, X) -> X.
 
 %% this is absolutely heuristic
-simplify_pred(Scope, Pred) -> Pred;
+%% simplify_pred(Scope, Pred) -> Pred;
 simplify_pred(Scope, Pred) ->
     simplify_pred(Scope, [], Pred).
 simplify_pred(_Scope, Prev, []) ->
