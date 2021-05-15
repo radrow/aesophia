@@ -101,6 +101,8 @@ fresh_name(Name) ->
 fresh_id(Name) ->
     N = fresh_name(Name),
     {id, ann(), N}.
+fresh_id(Name, Type) ->
+    {typed, ann(), fresh_id(Name), Type}.
 
 switch_variance(covariant) ->
     contravariant;
@@ -154,7 +156,9 @@ constr_letfun(Env0, {letfun, Ann, Id = {id, _, Name}, Args, RetT, Body}, S) ->
           || {typed, _, ArgName = {id, _, StrName}, T} <- Args
         ],
     Env1 = bind_args(ArgsT, Env0),
-    {DepRetT, S1} = constr_expr(Env1, Body, S),
+    Body1 = a_normalize(Body),
+    ?DBG("NORMALIZED:\n~s\n\nTO\n\n~s\n\n\n", [aeso_pretty:pp(expr, Body), aeso_pretty:pp(expr, Body1)]),
+    {DepRetT, S1} = constr_expr(Env1, Body1, S),
     DepSelfT =
         { dep_fun_t, Ann, []
         , ArgsT
@@ -182,6 +186,7 @@ constr_exprs(Env, [H|T], Acc, S0) ->
 -define(int(I), {int, ann(), I}).
 -define(int_tp, {id, _, "int"}).
 -define(bool_tp, {id, _, "bool"}).
+-define(typed(Expr, Type), {typed, element(2, Expr), Expr, Type}).
 
 constr_expr(Env, {typed, Ann, {app, Ann1, F, Args}, RetT}, S)
   when element(1, F) =/= typed ->
@@ -203,7 +208,6 @@ constr_expr(Env, {typed, _, E, T1}, T2, S) ->
 constr_expr(Env, Expr = {id, _, Name}, T, S) ->
     case get_var(Env, Name) of
         undefined ->
-            ?DBG("UNDEF VAR ~s", [Name]),
             Eq = ?op(nu, '==', Expr),
             {{refined_t, ann(), T, [Eq]}, S};
         {refined_t, Ann, B, P} = T1 ->
@@ -272,7 +276,7 @@ constr_expr(Env, {app, _, F, Args}, _, S0) ->
     ArgSubst = [{X, Expr} || {{X, _}, Expr} <- lists:zip(ArgsFT, Args)],
     { apply_subst(ArgSubst, RetT)
     , [{subtype, Env, ArgT, ArgFT} || {{_, ArgFT}, ArgT} <- lists:zip(ArgsFT, ArgsT)] ++
-      [{well_formed, Env, ExprT} | S2]
+      S2
     };
 constr_expr(Env, {'if', _, Cond, Then, Else}, T, S0) ->
     ExprT = ?refined(T, fresh_template("if")),
@@ -294,40 +298,18 @@ constr_expr(Env0, [{letval, _, {typed, _, {id, _, Name}, VarT}, Val}|Rest], T, S
     Env1 = bind_var(Name, ValT, Env0),
     {RestT, S2} = constr_expr(Env1, Rest, T, S1),
     {DepVarT,
-     [ {well_formed, Env0, ValT}
-     , {well_formed, Env1, RestT}
-     , {well_formed, Env0, DepVarT}
+     [ {well_formed, Env0, DepVarT}
      , {subtype, Env1, RestT, DepVarT}
      | S2
      ]
     };
+constr_expr(Env, [Expr|Rest], T, S0) ->
+    {_, S1} = constr_expr(Env, Expr, S0),
+    constr_expr(Env, Rest, T, S0);
 constr_expr(Env, [], T, S) ->
     {T, S};
 constr_expr(_, E, A, B) ->
     error({todo, E, A, B}).
-
-%% a_normalize_expr(Expr = {typed, _, _, Type}, Cont) ->
-%%     case is_smt_expr(Expr) of
-%%         true -> Expr;
-%%         false ->
-%%             Var = fresh_id("anorm_" ++ atom_to_list(element(1, Expr))),
-%%             VarTypes = {typed, ann(), Var, Type},
-%%             {block, ann(),
-%%              [{letval, ann(), VarTyped, Expr}
-%%              , Cont(VarTyped)
-%%              ]
-%%             }
-%%     end.
-
-%% a_normalize_exprs(Exprs, Cont) ->
-%%     a_normalize_exprs(Exprs, [], Cont).
-%% a_normalize_exprs([], Acc, Cont) ->
-%%     Cont(lists:reverse(Acc));
-%% a_normalize_exprs([Expr|Rest], Acc, Cont) ->
-%%     a_normalize_expr(
-%%       Expr,
-%%       fun(V) -> a_normalize_exprs(Rest, [V|Acc], Cont) end
-%%      ).
 
 %%%% Substitution
 
@@ -460,6 +442,7 @@ init_assg(Cs) ->
     lists:foldl(
       fun({well_formed, Env, {refined_t, _, BaseT, {template, _, LV}}}, Acc) ->
               AllQs = inst_pred(BaseT, maps:to_list(Env#type_env.type_binds)),
+              ?DBG("INIT ASSG OF ~p:\n~s", [LV, aeso_pretty:pp(predicate, AllQs)]),
               Acc#{LV => #kinfo{base = BaseT, env = Env, curr_qs = AllQs}};
          (X, Acc) -> Acc
       end, #{}, Cs).
@@ -472,6 +455,7 @@ group_subtypes(Cs) ->
     SubtsMap =
         lists:foldl(
           fun ({subtype, Env, T, {refined_t, _, _, {template, Subst, LV}}}, Map) ->
+                  ?DBG("GROUPING SUB IN ~p\nOF\n~p\n:>\n~p", [Env, LV, T]),
                   maps:put(LV, [{Env, Subst, T}|maps:get(LV, Map, [])], Map)
           end, #{}, Subts
          ),
@@ -505,7 +489,6 @@ solve(_Env, Cs) ->
     Assg0 = solve(init_assg(Cs), Cs, Cs),
     maps:map(fun
                  (K, V = #kinfo{env = KEnv, base = Base, curr_qs = Qs}) ->
-                     ?DBG("SIMPLIFYNIG ~p", [K]),
                      V#kinfo{
                        curr_qs =
                            simplify_pred(
@@ -543,6 +526,7 @@ valid_in({subtype, Subs, SupPredVar} = C, Assg) ->
     ?DBG("CHECKING VALID FOR COMP SUB\n~s", [aeso_pretty:pp(constr, C)]),
     lists:all(
       fun({#type_env{type_binds = Scope, path_pred = PathPred}, Subst, SubKVar}) ->
+              ?DBG("SUBST IN VALID: ~p", [Subst]),
               VarPred = pred_of(Assg, SubKVar),
               ?DBG("SCOPE IN VALID: ~p", [Scope]),
               ScopePred = scope_pred(Assg, Scope),
@@ -600,7 +584,7 @@ subtype_implies(#type_env{type_binds=Scope, path_pred=PathPred},
             P -> P
         end,
     ?DBG("SCOPE: ~p\n", [Scope]),
-    ScopePred = scope_pred(Assg, Scope), %% TODO
+    ScopePred = scope_pred(Assg, Scope),
     LPred = SubPred ++ ScopePred ++ PathPred,
     impl_holds(Scope, LPred, Q).
 
@@ -697,7 +681,6 @@ apply_assg(Assg, T) when is_tuple(T) ->
 apply_assg(_, X) -> X.
 
 %% this is absolutely heuristic
-%% simplify_pred(Scope, Pred) -> Pred;
 simplify_pred(Scope, Pred) ->
     simplify_pred(Scope, [], Pred).
 simplify_pred(_Scope, Prev, []) ->
@@ -709,3 +692,88 @@ simplify_pred(Scope, Prev, [Q|Post]) ->
         false ->
             simplify_pred(Scope, [Q|Prev], Post)
     end.
+
+a_normalize(Expr = {typed, Ann, _, Type}) ->
+    {Expr1, Decls} = a_normalize(Expr, []),
+    case Decls of
+        [] -> Expr1;
+        _ -> ?typed({block, ann(), lists:reverse([Expr1|Decls])}, Type)
+    end.
+
+a_normalize({typed, Ann, Expr, Type}, Decls) ->
+    a_normalize(Expr, Type, Decls);
+a_normalize(Expr = {Op, _}, Decls) when is_atom(Op) ->
+    {Expr, Decls};
+a_normalize(L, Decls) when is_list(L) ->
+    a_normalize_list(L, [], Decls).
+
+a_normalize({app, Ann, Fun, Args}, Type, Decls0) ->
+    {Fun1,  Decls1} = a_normalize_to_simpl(Fun, Decls0),
+    {Args1, Decls2} = a_normalize_to_simpl(Args, Decls1),
+    {?typed({app, Ann, Fun1, Args1}, Type),
+     Decls2
+    };
+a_normalize({'if', Ann, Cond, Then, Else}, Type, Decls0) ->
+    {Cond1, Decls1} = a_normalize_to_simpl(Cond, Decls0),
+    Then1 = a_normalize(Then),
+    Else1 = a_normalize(Else),
+    {?typed({'if', Ann, Cond1, Then1, Else1}, Type),
+     Decls1
+    };
+a_normalize({block, Ann, Stmts}, Type, Decls0) ->
+    {Stmts1, Decls1} = a_normalize(Stmts, Decls0),
+    {?typed({block, Ann, Stmts1}, Type),
+     Decls1
+    };
+a_normalize(Expr, Type, Decls) ->
+    {?typed(Expr, Type),
+     Decls
+    }.
+
+a_normalize_list([], Acc, Decls) ->
+    {lists:reverse(Acc), Decls};
+a_normalize_list([{letval, Ann, Pat, Body}|Rest], Acc, Decls0) ->
+    {Body1, Decls1} = a_normalize(Body, Decls0),
+    a_normalize_list(Rest, Acc, [{letval, Ann, Pat, Body1}|Decls1]);
+a_normalize_list([Expr|Rest], Acc, Decls0) ->
+    {Expr1, Decls1} = a_normalize(Expr, Decls0),
+    a_normalize_list(Rest, [Expr1|Acc], Decls1).
+
+
+a_normalize_to_simpl({typed, Ann, Expr, Type}, Decls) ->
+    a_normalize_to_simpl(Expr, Type, Decls);
+a_normalize_to_simpl(Expr = {Op, _}, Decls) when is_atom(Op) ->
+    {Expr, Decls};
+a_normalize_to_simpl(L, Decls) when is_list(L) ->
+    a_normalize_to_simpl_list(L, [], Decls).
+
+
+a_normalize_to_simpl(Expr = {id, _, _}, Type, Decls) ->
+    {?typed(Expr, Type), Decls};
+a_normalize_to_simpl(Expr = {qid, _, _}, Type, Decls) ->
+    {?typed(Expr, Type), Decls};
+a_normalize_to_simpl(Expr = {con, _, _}, Type, Decls) ->
+    {?typed(Expr, Type), Decls};
+a_normalize_to_simpl(Expr = {qcon, _, _}, Type, Decls) ->
+    {?typed(Expr, Type), Decls};
+a_normalize_to_simpl(Expr = {int, _, _}, Type, Decls) ->
+    {?typed(Expr, Type), Decls};
+a_normalize_to_simpl(Expr = {bool, _, _}, Type, Decls) ->
+    {?typed(Expr, Type), Decls};
+a_normalize_to_simpl(Expr = {Op, _}, Type, Decls) when is_atom(Op) ->
+    {?typed(Expr, Type), Decls};
+a_normalize_to_simpl(Expr, Type, Decls0) ->
+    {Expr1, Decls1} = a_normalize(Expr, Type, Decls0),
+    Var = fresh_id("anorm_" ++ atom_to_list(element(1, Expr)), Type),
+    {Var,
+     [{letval, ann(), Var, Expr1}|Decls1]
+    }.
+
+a_normalize_to_simpl_list([], Acc, Decls) ->
+    {lists:reverse(Acc), Decls};
+a_normalize_to_simpl_list([{letval, Ann, Pat, Body}|Rest], Acc, Decls0) ->
+    {Body1, Decls1} = a_normalize_to_simpl(Body, Decls0),
+    a_normalize_to_simpl_list(Rest, Acc, [{letval, Ann, Pat, Body1}|Decls1]);
+a_normalize_to_simpl_list([Expr|Rest], Acc, Decls0) ->
+    {Expr1, Decls1} = a_normalize_to_simpl(Expr, Decls0),
+    a_normalize_to_simpl_list(Rest, [Expr1|Acc], Decls1).
