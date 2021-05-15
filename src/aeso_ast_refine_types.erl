@@ -10,7 +10,6 @@
 %% Type imports
 -type predicate()   :: aeso_syntax:predicate().
 -type expr()        :: aeso_syntax:expr().
--type type()        :: aeso_syntax:type().
 -type dep_type(Q)   :: aeso_syntax:dep_type(Q).
 -type id()          :: aeso_syntax:id().
 -type qid()         :: aeso_syntax:qid().
@@ -60,7 +59,7 @@
                 | {well_formed, env(), lutype()}.
 
 %% Information about ltvar
--record(ltinfo, {base :: aeso_syntax:type(), curr_qs :: predicate(), env :: env()}).
+-record(ltinfo, {base :: aeso_syntax:type(), predicate :: predicate(), env :: env()}).
 -type ltinfo() :: #ltinfo{}.
 
 %% Position in type
@@ -303,7 +302,7 @@ constr_letfun(Env0, {letfun, Ann, Id = {id, _, Name}, Args, _RetT, Body}, S) ->
         , ArgsT
         , DepRetT
         },
-    GlobalFunType = maps:get(Name, Env0#env.type_binds),
+    GlobalFunType = type_of(Env1, Name),
     S2 = [ {subtype, Env1, DepSelfT, GlobalFunType}
          , {well_formed, Env1, GlobalFunType}
          | S1
@@ -311,13 +310,6 @@ constr_letfun(Env0, {letfun, Ann, Id = {id, _, Name}, Args, _RetT, Body}, S) ->
 
     {{fun_decl, Ann, Id, DepSelfT}, S2}.
 
-constr_exprs(Env, Es, S) ->
-    constr_exprs(Env, Es, [], S).
-constr_exprs(_, [], Acc, S) ->
-    {lists:reverse(Acc), S};
-constr_exprs(Env, [H|T], Acc, S0) ->
-    {H1, S1} = constr_expr(Env, H, S0),
-    constr_exprs(Env, T, [H1|Acc], S1).
 
 -define(refined(T, Q), {refined_t, element(2, T), T, Q}).
 -define(op(A, Op, B), {app, [{format, infix}|ann()], {Op, ann()}, [A, B]}).
@@ -326,6 +318,14 @@ constr_exprs(Env, [H|T], Acc, S0) ->
 -define(int_tp, {id, _, "int"}).
 -define(bool_tp, {id, _, "bool"}).
 -define(typed(Expr, Type), {typed, element(2, Expr), Expr, Type}).
+
+constr_expr_list(Env, Es, S) ->
+    constr_expr_list(Env, Es, [], S).
+constr_expr_list(_, [], Acc, S) ->
+    {lists:reverse(Acc), S};
+constr_expr_list(Env, [H|T], Acc, S0) ->
+    {H1, S1} = constr_expr(Env, H, S0),
+    constr_expr_list(Env, T, [H1|Acc], S1).
 
 constr_expr(Env, {typed, Ann, {app, Ann1, F, Args}, RetT}, S)
   when element(1, F) =/= typed ->
@@ -344,8 +344,8 @@ constr_expr(Env, {typed, _, E, T1}, T2, S) ->
         true -> constr_expr(Env, E, T1, S);
         false -> error({"wtf, internal type mismatch", T1, T2})
     end;
-constr_expr(Env, Expr = {id, _, Name}, T, S) ->
-    case get_var(Env, Name) of
+constr_expr(Env, Expr = {id, _, _}, T, S) ->
+    case type_of(Env, Expr) of
         undefined ->
             Eq = ?op(nu, '==', Expr),
             {{refined_t, ann(), T, [Eq]}, S};
@@ -410,8 +410,8 @@ constr_expr(_Env, Expr = {'-', Ann}, _, S) ->
     , S
     };
 constr_expr(Env, {app, _, F, Args}, _, S0) ->
-    {ExprT = {dep_fun_t, _, _, ArgsFT, RetT}, S1} = constr_expr(Env, F, S0),
-    {ArgsT, S2} = constr_exprs(Env, Args, S1),
+    {{dep_fun_t, _, _, ArgsFT, RetT}, S1} = constr_expr(Env, F, S0),
+    {ArgsT, S2} = constr_expr_list(Env, Args, S1),
     ArgSubst = [{X, Expr} || {{X, _}, Expr} <- lists:zip(ArgsFT, Args)],
     { apply_subst(ArgSubst, RetT)
     , [{subtype, Env, ArgT, ArgFT} || {{_, ArgFT}, ArgT} <- lists:zip(ArgsFT, ArgsT)] ++
@@ -444,8 +444,8 @@ constr_expr(Env0, [{letval, _, {typed, _, {id, _, Name}, VarT}, Val}|Rest], T, S
     };
 constr_expr(Env, [Expr|Rest], T, S0) ->
     {_, S1} = constr_expr(Env, Expr, S0),
-    constr_expr(Env, Rest, T, S0);
-constr_expr(Env, [], T, S) ->
+    constr_expr(Env, Rest, T, S1);
+constr_expr(_Env, [], T, S) ->
     {T, S};
 constr_expr(_, E, A, B) ->
     error({todo, E, A, B}).
@@ -504,10 +504,8 @@ simplify1(C = {subtype, Env0, SubT, SupT}) ->
                 [ {subtype, Env0, ArgSupT, ArgSubT} %% contravariant!
                  || {{_, ArgSubT}, {_, ArgSupT}} <- lists:zip(ArgsSub, ArgsSup)
                 ],
-            Env1 = Env0#env{
-                     type_binds =
-                         maps:merge(maps:from_list([{Id, T} || {{id, _, Id}, T} <- ArgsSup]), Env0#env.type_binds)
-                    },
+            Env1 =
+                bind_vars([{Id, T} || {{id, _, Id}, T} <- ArgsSup], Env0),
             simplify([{subtype, Env1, RetSub, RetSup}|Contra]);
         _ -> [C]
     end;
@@ -518,10 +516,8 @@ simplify1(C = {well_formed, Env0, T}) ->
                 [ {well_formed, Env0, ArgT}
                   || {_, ArgT} <- Args
                 ],
-            Env1 = Env0#env{
-                     type_binds =
-                         maps:merge(maps:from_list([{Id, T1} || {{id, _, Id}, T1} <- Args]), Env0#env.type_binds)
-                    },
+            Env1 =
+                bind_vars([{Id, ArgT} || {{id, _, Id}, ArgT} <- Args], Env0),
             simplify([{well_formed, Env1, Ret}|FromArgs]);
         _ -> [C]
     end.
@@ -580,10 +576,10 @@ inst_pred(BaseT, Scope) ->
 init_assg(Cs) ->
     lists:foldl(
       fun({well_formed, Env, {refined_t, _, BaseT, {template, _, LV}}}, Acc) ->
-              AllQs = inst_pred(BaseT, maps:to_list(Env#env.type_binds)),
+              AllQs = inst_pred(BaseT, maps:to_list(Env#env.var_env)),
               ?DBG("INIT ASSG OF ~p:\n~s", [LV, aeso_pretty:pp(predicate, AllQs)]),
-              Acc#{LV => #ltinfo{base = BaseT, env = Env, curr_qs = AllQs}};
-         (X, Acc) -> Acc
+              Acc#{LV => #ltinfo{base = BaseT, env = Env, predicate = AllQs}};
+         (_, Acc) -> Acc
       end, #{}, Cs).
 
 
@@ -604,18 +600,18 @@ group_subtypes(Cs) ->
 
 assg_of(Assg, Var = {ltvar, _}) ->
     case maps:get(Var, Assg, undef) of
-        undef ->
-            #ltinfo
-                { base = {id, ann(), "int"} %% FIXME NOT ONLY INT
-                , curr_qs = []
-                , env = init_env()
-                };
+        undef -> error({undef_assg, Var});
+            %% #ltinfo
+            %%     { base = {id, ann(), "int"} %% FIXME NOT ONLY INT
+            %%     , predicate = []
+            %%     , env = init_env()
+            %%     };
         A -> A
     end.
 
 pred_of(Assg, Var = {ltvar, _}) ->
-    (assg_of(Assg, Var))#ltinfo.curr_qs;
-pred_of(_, P) when is_list(P) ->
+    (assg_of(Assg, Var))#ltinfo.predicate;
+pred_of(_, P) when is_list(P)   ->
     P;
 pred_of(Assg, {template, Subst, P}) ->
     apply_subst(Subst, pred_of(Assg, P));
@@ -627,9 +623,9 @@ pred_of(Assg, {refined_t, _, _, P}) ->
 solve(_Env, Cs) ->
     Assg0 = solve(init_assg(Cs), Cs, Cs),
     maps:map(fun
-                 (K, V = #ltinfo{env = KEnv, base = Base, curr_qs = Qs}) ->
+                 (K, V = #ltinfo{env = KEnv, base = Base, predicate = Qs}) ->
                      V#ltinfo{
-                       curr_qs =
+                       predicate =
                            simplify_pred(
                              maps:put(nu, Base, KEnv#env.type_binds),
                              Qs
@@ -642,7 +638,7 @@ solve(Assg, AllCs, [C|Rest]) ->
     ?DBG("SOLVING:\n~s", [aeso_pretty:pp(constr, C)]),
     case C of
         {subtype, _, R = {ltvar, _}} ->
-            ?DBG("ASSG OF ~p: ~s", [R, aeso_pretty:pp(predicate, (assg_of(Assg, R))#ltinfo.curr_qs)]);
+            ?DBG("ASSG OF ~p: ~s", [R, aeso_pretty:pp(predicate, (assg_of(Assg, R))#ltinfo.predicate)]);
         _ -> ok
     end,
     case valid_in(C, Assg) of
@@ -671,7 +667,7 @@ valid_in({subtype, Subs, SupPredVar} = C, Assg) ->
               ScopePred = scope_pred(Assg, Scope),
               ?DBG("SCOPE PRED: ~s", [aeso_pretty:pp(predicate, ScopePred)]),
               SubPred = PathPred ++ VarPred ++ ScopePred,
-              impl_holds(Scope, SubPred, apply_subst(Subst, Ltinfo#ltinfo.curr_qs))
+              impl_holds(Scope, SubPred, apply_subst(Subst, Ltinfo#ltinfo.predicate))
       end,
       Subs
      );
@@ -694,7 +690,7 @@ weaken({subtype, Subs, SubPredVar}, Assg) ->
     ?DBG("**** WEAKENING SUB FOR ~p", [SubPredVar]),
     Ltinfo = assg_of(Assg, SubPredVar),
     Filtered =
-        [ Q || Q <- Ltinfo#ltinfo.curr_qs,
+        [ Q || Q <- Ltinfo#ltinfo.predicate,
                lists:all(fun({Env, Subst, Sub}) ->
                                  ?DBG("CHECKING SUB"),
                                  Valid = subtype_implies(Env, Sub, apply_subst(Subst, Q), Assg),
@@ -707,9 +703,9 @@ weaken({subtype, Subs, SubPredVar}, Assg) ->
                          end, Subs)
         ],
     ?DBG("**** WEAKENED\n* FROM ~s\n* TO ~s",
-         [aeso_pretty:pp(predicate, Ltinfo#ltinfo.curr_qs), aeso_pretty:pp(predicate, Filtered)]),
+         [aeso_pretty:pp(predicate, Ltinfo#ltinfo.predicate), aeso_pretty:pp(predicate, Filtered)]),
     NewLtinfo = Ltinfo#ltinfo{
-                 curr_qs = Filtered
+                 predicate = Filtered
                 },
     Assg#{SubPredVar => NewLtinfo}.
 
@@ -719,7 +715,7 @@ subtype_implies(#env{type_binds=Scope, path_pred=PathPred},
     SubPred =
         case Template of
             {template, Subst, KVar} ->
-                apply_subst(Subst, (assg_of(Assg, KVar))#ltinfo.curr_qs);
+                apply_subst(Subst, (assg_of(Assg, KVar))#ltinfo.predicate);
             P -> P
         end,
     ?DBG("SCOPE: ~p\n", [Scope]),
@@ -806,10 +802,10 @@ expr_to_smt(nu) -> {var, "nu__"};
 expr_to_smt(E) -> throw({not_smt_expr, E}).
 
 apply_assg(Assg, Var = {ltvar, _}) ->
-    case Assg of
-        #{Var := #ltinfo{curr_qs = P}} ->
+    case maps:get(Var, Assg, false) of
+        #ltinfo{predicate = P} ->
             P;
-        _ -> []
+        false -> []
     end;
 apply_assg(Assg, {template, S, T}) ->
     apply_assg(Assg, apply_subst(S, T));
