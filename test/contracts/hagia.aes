@@ -5,5 +5,5 @@ contract C =
 
   entrypoint f(x:int) = x + 1
   entrypoint g() =
-    let q = 1
-    f(0)
+    let q = 2 ^ 2
+    q

@@ -17,9 +17,10 @@
                                         | {template, [subst()], ltvar()}).
 
 -record(type_env,
-        { type_binds :: maps:map(string(), aeso_syntax:liquid_type())
-        , path_pred :: predicate()
-        , interesting_integers :: [integer()]
+        { type_binds = #{} :: maps:map(string(), aeso_syntax:liquid_type())
+        , path_pred = []  :: predicate()
+        , interesting_integers = [] :: [integer()]
+        , current_scope = toplevel :: string() | toplevel
         }).
 -type type_env() :: #type_env{}.
 
@@ -46,15 +47,27 @@ init_refiner() ->
 %%%% ENVIRONMENT
 
 ann() -> [{origin, hagia}].
+ann(L) -> [{origin, hagia}|L].
 
 -spec init_type_env() -> type_env().
 init_type_env() ->
     #type_env{
        type_binds =
-           #{%"value" => {refined_t, ann(), {id, ann(), "int"}, [{app, ann(), {'>=', ann()}, [nu, {int, ann(), 123}]}]}
+           #{"value" => {refined_t, ann(), {id, ann(), "int"}, [{app, ann([{format, infix}]), {'>=', ann()}, [nu, {int, ann(), 0}]}]}
            },
-       path_pred = [],
        interesting_integers = [0, 1]
+      }.
+
+merge_type_env( #type_env{type_binds = TB1, path_pred = P1, interesting_integers = I1}
+              , #type_env{type_binds = TB2, path_pred = P2, interesting_integers = I2,
+                          current_scope = Scope
+                         }
+              ) ->
+    #type_env{
+       type_binds = maps:merge(TB1, TB2),
+       path_pred = P1 ++ P2,
+       interesting_integers = lists:usort(I1 ++ I2),
+       current_scope = Scope
       }.
 
 -spec fresh_ltvar(string()) -> ltvar().
@@ -130,7 +143,7 @@ decorate_base_types(Variance, Hint, T) when is_tuple(T) ->
     list_to_tuple(decorate_base_types(Variance, Hint, tuple_to_list(T)));
 decorate_base_types(_, _, X) -> X.
 
-constr_con({contract, Ann, Con, Defs}) ->
+constr_con({contract, Ann, Con = {con, _, ConName}, Defs}) ->
     EnvDefs =
         maps:from_list(
           [ begin
@@ -143,7 +156,8 @@ constr_con({contract, Ann, Con, Defs}) ->
             end
             || {letfun, FAnn, {id, _, Name}, Args, RetT, _} <- Defs
           ]),
-    Env1 = #type_env{type_binds = EnvDefs, path_pred = []},
+    Env1 = merge_type_env(init_type_env(),
+                          #type_env{type_binds = EnvDefs, current_scope = ConName }),
     {Defs1, Ss} = lists:unzip(
                    [constr_letfun(Env1, Def, []) || Def <- Defs]
                   ),
@@ -399,12 +413,12 @@ filter_obvious([H|T], Acc) ->
     end.
 
 cmp_qualifiers(Thing) ->
-    [].
-    %% [ ?op(nu, '=<', Thing)
-    %% , ?op(nu, '>=', Thing)
-    %% , ?op(nu, '>', Thing)
-    %% , ?op(nu, '<', Thing)
-    %% ].
+    %% [].
+    [ ?op(nu, '=<', Thing)
+    , ?op(nu, '>=', Thing)
+    , ?op(nu, '>', Thing)
+    , ?op(nu, '<', Thing)
+    ].
 
 eq_qualifiers(Thing) ->
     [ ?op(nu, '==', Thing)
@@ -604,11 +618,8 @@ impl_holds(Scope, Assump, Concl) when is_list(Scope) ->
     ?DBG("IMPL;\n* ASSUMPTION: ~s\n* CONCLUSION: ~s", [aeso_pretty:pp(expr, make_conjunction(Assump)), aeso_pretty:pp(expr, ConclExpr)]),
     aeso_smt:scoped(
       fun() ->
-              [try aeso_smt:declare_const({var, Var}, type_to_smt(T)) %% FIXME this is cancer
-               catch _:_ -> %%?DBG("BAD VAR ~p : ~p", [Var, T])
-                       ok
-               end
-               || {Var, T} <- Scope
+              [aeso_smt:declare_const({var, Var}, type_to_smt(T))
+               || {Var, T} <- Scope, element(1, T) =/= dep_fun_t
               ],
               aeso_smt:declare_const({var, "nu__"}, {var, "Int"}), %% FIXME
               [ aeso_smt:assert(expr_to_smt(Expr))
@@ -628,7 +639,7 @@ type_to_smt({refined_t, _, T, _}) ->
 type_to_smt(?int_tp) ->
     {var, "Int"};
 type_to_smt(T) ->
-    error({type_not_smtable, T}).
+    error({not_smt_type, T}).
 
 is_smt_expr(Expr) ->
     try expr_to_smt(Expr) of
@@ -639,6 +650,8 @@ is_smt_expr(Expr) ->
 
 expr_to_smt({id, _, Var}) ->
     {var, Var};
+expr_to_smt({qid, _, QVar}) ->
+    {var, string:join(QVar, "__")};
 expr_to_smt({bool, _, true}) ->
     {var, "true"};
 expr_to_smt({bool, _, false}) ->

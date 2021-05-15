@@ -362,7 +362,7 @@ pred_expr(Nu, Expr) ->
 pred_val(Nu, nu) -> name(Nu);
 pred_val(_, Expr) -> expr(Expr).
 
-constr_env({type_env, Scope, GuardPreds, _}) ->
+constr_env({type_env, Scope, GuardPreds, _, _}) ->
     above(
       [ par(punctuate(
               text(","),
