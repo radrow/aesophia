@@ -5,126 +5,249 @@
 -define(DBG(A, B), ?debugFmt(A, B)).
 -define(DBG(A), ?debugMsg(A)).
 
+%% -- Types --------------------------------------------------------------------
+
+%% Type imports
+-type predicate()   :: aeso_syntax:predicate().
+-type expr()        :: aeso_syntax:expr().
+-type type()        :: aeso_syntax:type().
+-type dep_type(Q)   :: aeso_syntax:dep_type(Q).
+-type id()          :: aeso_syntax:id().
+-type qid()         :: aeso_syntax:qid().
+-type con()         :: aeso_syntax:con().
+-type qcon()        :: aeso_syntax:qcon().
+-type ann()         :: aeso_syntax:ann().
+
+-type type_id() :: id() | qid() | con() | qcon().
+
+%% Names
+-type name() :: string().
+-type qname() :: [name()].
+
 %% Liquid type variable
--type ltvar() :: {ltvar, string()}.
+-type ltvar() :: {ltvar, name()}.
 
 %% Substitution of a variable with an expression
--type subst() :: {string(), aeso_syntax:expr()}.
+-type subst() :: {name(), expr()}.
 
--type predicate() :: aeso_syntax:predicate().
+%% Uninstantiated predicate template
+-type template() :: {template, [subst()], ltvar()}.
 
--type template() :: aeso_syntax:dep_type( predicate()
-                                        | {template, [subst()], ltvar()}).
+%% Liquid type, possibly uninstantiated
+-type lutype() :: dep_type( predicate() | template() ).
 
--record(type_env,
-        { type_binds = #{} :: maps:map(string(), aeso_syntax:liquid_type())
-        , path_pred = []  :: predicate()
-        , interesting_integers = [] :: [integer()]
-        , current_scope = toplevel :: string() | toplevel
+-type fun_env() :: #{name() => template()}.
+-type var_env() :: #{name() => template()}.
+
+-record(scope, {fun_env = #{} :: fun_env()}).
+-type scope() :: #scope{}.
+
+-record(env,
+        { scopes           = #{[] => #scope{}} :: #{qname() => scope()}
+        , var_env          = #{}               :: var_env()
+        , path_pred        = []                :: predicate()
+        , interesting_ints = []                :: [integer()]
+        , namespace        = []                :: qname()
         }).
--type type_env() :: #type_env{}.
+-type env() :: #env{}.
 
--type constr() :: {subtype, type_env(), template(), template()}
-                | {well_formed, type_env(), template()}.
+%% Grouped subtype constraint
+-type subtype_constr() :: {subtype, [{env(), subst(), lutype()}], ltvar()}.
 
-%% Grouped subtype
--type subtype_constr() :: {subtype, [{type_env(), subst(), template()}], ltvar()}.
+%% Constraint
+-type constr() :: {subtype, env(), lutype(), lutype()}
+                | subtype_constr()
+                | {well_formed, env(), lutype()}.
 
--record(kinfo, {base :: aeso_syntax:type(), curr_qs :: predicate(), env :: type_env()}).
--type kinfo() :: #kinfo{}.
+%% Information about ltvar
+-record(ltinfo, {base :: aeso_syntax:type(), curr_qs :: predicate(), env :: env()}).
+-type ltinfo() :: #ltinfo{}.
 
+%% Position in type
 -type variance() :: contravariant | covariant.
 
-%%%% INIT
+-spec ann() -> ann().
+ann() -> [{origin, hagia}].
+-spec ann(ann()) -> ann().
+ann(L) -> [{origin, hagia}|L].
+
+%% -- Name manipulation --------------------------------------------------------
+
+-spec name(aeso_syntax:id() | aeso_syntax:con()) -> name().
+name({_, _, X}) -> X.
+
+-spec qname(type_id()) -> qname().
+qname({id,   _, X})  -> [X];
+qname({qid,  _, Xs}) -> Xs;
+qname({con,  _, X})  -> [X];
+qname({qcon, _, Xs}) -> Xs.
+
+-spec qid(ann(), qname()) -> aeso_syntax:id() | aeso_syntax:qid().
+qid(Ann, [X]) -> {id, Ann, X};
+qid(Ann, Xs)  -> {qid, Ann, Xs}.
+
+-spec qcon(ann(), qname()) -> aeso_syntax:con() | aeso_syntax:qcon().
+qcon(Ann, [X]) -> {con, Ann, X};
+qcon(Ann, Xs)  -> {qcon, Ann, Xs}.
+
+-spec set_qname(qname(), type_id()) -> type_id().
+set_qname(Xs, {id,   Ann, _}) -> qid(Ann, Xs);
+set_qname(Xs, {qid,  Ann, _}) -> qid(Ann, Xs);
+set_qname(Xs, {con,  Ann, _}) -> qcon(Ann, Xs);
+set_qname(Xs, {qcon, Ann, _}) -> qcon(Ann, Xs).
 
 
+%% -- Environment ---------------------------------------------------------------------
+
+-spec push_scope(aeso_syntax:con(), env()) -> env().
+push_scope(Con, Env) ->
+    Name = name(Con),
+    New  = Env#env.namespace ++ [Name],
+    Env#env{ namespace = New, scopes = (Env#env.scopes)#{ New => #scope{} } }.
+
+-spec pop_scope(env()) -> env().
+pop_scope(Env) ->
+    Env#env{ namespace = lists:droplast(Env#env.namespace) }.
+
+
+-spec get_scope(env(), qname()) -> false | scope().
+get_scope(#env{ scopes = Scopes }, Name) ->
+    maps:get(Name, Scopes, false).
+
+-spec on_current_scope(env(), fun((scope()) -> scope())) -> env().
+on_current_scope(Env = #env{ namespace = NS, scopes = Scopes }, Fun) ->
+    Scope = maps:get(NS, Scopes),
+    Env#env{ scopes = Scopes#{ NS => Fun(Scope) } }.
+
+-spec on_scopes(env(), fun((scope()) -> scope())) -> env().
+on_scopes(Env = #env{ scopes = Scopes }, Fun) ->
+    Env#env{ scopes = maps:map(fun(_, Scope) -> Fun(Scope) end, Scopes) }.
+
+-spec bind_var(id(), lutype(), env()) -> env().
+bind_var({id, _, X}, T, Env) ->
+    Env#env{ var_env = (Env#env.var_env)#{X => T}}.
+
+-spec bind_vars([{id(), lutype()}], env()) -> env().
+bind_vars([], Env) -> Env;
+bind_vars([{X, T} | Vars], Env) ->
+    bind_vars(Vars, bind_var(X, T, Env)).
+
+-spec bind_fun(name(), lutype(), env()) -> env().
+bind_fun(X, Type, Env) ->
+    on_current_scope(Env, fun(Scope = #scope{ fun_env = Funs }) ->
+                                  Scope#scope{ fun_env = Funs#{X => Type} }
+                          end).
+
+-spec bind_funs([{name(), lutype()}], env()) -> env().
+bind_funs([], Env) -> Env;
+bind_funs([{Id, Type} | Rest], Env) ->
+    bind_funs(Rest, bind_fun(Id, Type, Env)).
+
+-spec assert(expr() | predicate(), env()) -> env().
+assert(L, Env = #env{path_pred = GP}) when is_list(L) ->
+    Env#env{path_pred = L ++ GP};
+assert(E, Env = #env{path_pred = GP}) ->
+    Env#env{path_pred = [E|GP]}.
+
+
+%% What scopes could a given name come from?
+-spec possible_scopes(env(), qname()) -> [qname()].
+possible_scopes(#env{ namespace = Current}, Name) ->
+    Qual = lists:droplast(Name),
+    [ lists:sublist(Current, I) ++ Qual || I <- lists:seq(0, length(Current)) ].
+
+%% Lookup in env. Currently only types of vars/funs. TODO: types
+-spec lookup_env(env(), term, qname()) -> false | {qname(), lutype()}.
+lookup_env(Env, Kind, Name) ->
+    Var = case Name of
+            [X] when Kind == term -> proplists:get_value(X, Env#env.var_env, false);
+            _                     -> false
+          end,
+    case Var of
+        false ->
+            Names = [ Qual ++ [lists:last(Name)] || Qual <- possible_scopes(Env, Name) ],
+            case [ Res || QName <- Names, Res <- [lookup_env1(Env, Kind, QName)], Res /= false] of
+                []    -> false;
+                [Res] -> Res;
+                Many  ->
+                    error({ambiguous_name, [Q || {Q, _} <- Many]})
+            end;
+        Type -> {Name, Type}
+    end.
+
+-spec lookup_env1(env(), term, qname()) -> false | {qname(), lutype()}.
+lookup_env1(#env{ scopes = Scopes }, Kind, QName) ->
+    Qual = lists:droplast(QName),
+    Name = lists:last(QName),
+    case maps:get(Qual, Scopes, false) of
+        false -> false;
+        #scope{ fun_env = Funs } ->
+            Defs = case Kind of
+                     term -> Funs
+                   end,
+            case proplists:get_value(Name, Defs, false) of
+                false -> false;
+                E -> {QName, E}
+            end
+    end.
+
+-spec type_of(env(), type_id()) -> lutype().
+type_of(Env, Id) ->
+    case lookup_env(Env, term, qname(Id)) of
+        false ->
+            error({unbound_variable, Id});
+        {QId, Ty} -> {set_qname(QId, Id), Ty}
+    end.
+
+
+%% -- Initialization -----------------------------------------------------------
+
+-spec init_refiner() -> ok.
 init_refiner() ->
     put(ltvar_supply, 0),
     put(id_supply, 0),
     ok.
 
+%% -- Fresh stuff --------------------------------------------------------------
 
-%%%% ENVIRONMENT
-
-ann() -> [{origin, hagia}].
-ann(L) -> [{origin, hagia}|L].
-
--spec init_type_env() -> type_env().
-init_type_env() ->
-    #type_env{
-       type_binds =
-           #{"value" => {refined_t, ann(), {id, ann(), "int"}, [{app, ann([{format, infix}]), {'>=', ann()}, [nu, {int, ann(), 0}]}]}
-           },
-       interesting_integers = [0, 1]
-      }.
-
-merge_type_env( #type_env{type_binds = TB1, path_pred = P1, interesting_integers = I1}
-              , #type_env{type_binds = TB2, path_pred = P2, interesting_integers = I2,
-                          current_scope = Scope
-                         }
-              ) ->
-    #type_env{
-       type_binds = maps:merge(TB1, TB2),
-       path_pred = P1 ++ P2,
-       interesting_integers = lists:usort(I1 ++ I2),
-       current_scope = Scope
-      }.
-
--spec fresh_ltvar(string()) -> ltvar().
+-spec fresh_ltvar(name()) -> ltvar().
 fresh_ltvar(Name) ->
     I = get(ltvar_supply),
     put(ltvar_supply, I + 1),
     {ltvar, Name ++ "_" ++ integer_to_list(I)}.
 
--spec fresh_template(string()) -> template().
+-spec fresh_template(name()) -> lutype().
 fresh_template(Name) -> fresh_template(covariant, Name).
 fresh_template(covariant, Name) -> {template, [], fresh_ltvar(Name)};
-fresh_template(contravariant, Name) -> [].
+fresh_template(contravariant, _) -> [].
 
-get_var(#type_env{type_binds = TB}, Name) ->
-    maps:get(Name, TB, undefined).
-
-
-bind_var(Name, T, TEnv = #type_env{type_binds = TB}) ->
-    TEnv#type_env{type_binds = maps:put(Name, T, TB)}.
-bind_vars(L, Env) ->
-    lists:foldl(
-      fun({Name, T}, Env0) -> bind_var(Name, T, Env0) end,
-      Env, L).
-
-assert(L, Env = #type_env{path_pred = GP}) when is_list(L) ->
-    Env#type_env{path_pred = L ++ GP};
-assert(E, Env = #type_env{path_pred = GP}) ->
-    Env#type_env{path_pred = [E|GP]}.
-
-bind_args(Args, Env) ->
-    lists:foldl(
-      fun({{id, _, Name}, T}, Env0) -> bind_var(Name, T, Env0)
-      end,
-      Env, Args).
-
-
-%%%% CONSTRAINT GENERATION
-
-
+-spec fresh_name(name()) -> name().
 fresh_name(Name) ->
     I = get(id_supply),
     put(id_supply, I + 1),
     Name ++ "_" ++ integer_to_list(I).
+
+-spec fresh_id(name()) -> type_id().
 fresh_id(Name) ->
     N = fresh_name(Name),
     {id, ann(), N}.
 fresh_id(Name, Type) ->
     {typed, ann(), fresh_id(Name), Type}.
 
+
+%% -- Constraint generation ----------------------------------------------------
+
+-spec switch_variance(variance()) -> variance().
 switch_variance(covariant) ->
     contravariant;
 switch_variance(contravariant) ->
     covariant.
 
 %% Decorates base types with templates through the AST
+-spec decorate_base_types(name(), term()) -> term().
 decorate_base_types(Hint, Type) ->
     decorate_base_types(covariant, Hint, Type).
+-spec decorate_base_types(name(), variance(), term()) -> term().
 decorate_base_types(Variance, Hint, Type = {id, Ann, "int"}) ->
     {refined_t, Ann, Type, fresh_template(Variance, Hint)};
 decorate_base_types(Variance, Hint, Type = {id, Ann, "bool"}) ->
@@ -143,9 +266,11 @@ decorate_base_types(Variance, Hint, T) when is_tuple(T) ->
     list_to_tuple(decorate_base_types(Variance, Hint, tuple_to_list(T)));
 decorate_base_types(_, _, X) -> X.
 
-constr_con({contract, Ann, Con = {con, _, ConName}, Defs}) ->
-    EnvDefs =
-        maps:from_list(
+-spec constr_con(env(), aeso_syntax:decl()) -> {env(), aeso_syntax:decl(), [constr()]}.
+constr_con(Env0, {contract, Ann, Con, Defs}) ->
+    Env1 = push_scope(Con, Env0),
+    Env2 =
+        bind_funs(
           [ begin
                 ArgsT =
                     [ {ArgName, decorate_base_types(contravariant, "arg_" ++ StrName, T)}
@@ -154,22 +279,22 @@ constr_con({contract, Ann, Con = {con, _, ConName}, Defs}) ->
                 TypeDep = {dep_fun_t, FAnn, [], ArgsT, decorate_base_types("ret", RetT)},
                 {Name, TypeDep}
             end
-            || {letfun, FAnn, {id, _, Name}, Args, RetT, _} <- Defs
-          ]),
-    Env1 = merge_type_env(init_type_env(),
-                          #type_env{type_binds = EnvDefs, current_scope = ConName }),
+           || {letfun, FAnn, {id, _, Name}, Args, RetT, _} <- Defs
+          ],
+          Env1),
     {Defs1, Ss} = lists:unzip(
-                   [constr_letfun(Env1, Def, []) || Def <- Defs]
+                   [constr_letfun(Env2, Def, []) || Def <- Defs]
                   ),
     S = lists:flatten(Ss),
-    {{contract, Ann, Con, Defs1}, Env1, S}.
+    {Env2, {contract, Ann, Con, Defs1}, S}.
 
-constr_letfun(Env0, {letfun, Ann, Id = {id, _, Name}, Args, RetT, Body}, S) ->
+-spec constr_letfun(env(), aeso_syntax:letfun(), [constr()]) -> {aeso_syntax:fundecl(), [constr()]}.
+constr_letfun(Env0, {letfun, Ann, Id = {id, _, Name}, Args, _RetT, Body}, S) ->
     ArgsT =
         [ {ArgName, decorate_base_types(contravariant, "argi_" ++ StrName, T)}
           || {typed, _, ArgName = {id, _, StrName}, T} <- Args
         ],
-    Env1 = bind_args(ArgsT, Env0),
+    Env1 = bind_vars(ArgsT, Env0),
     Body1 = a_normalize(Body),
     ?DBG("NORMALIZED:\n~s\n\nTO\n\n~s\n\n\n", [aeso_pretty:pp(expr, Body), aeso_pretty:pp(expr, Body1)]),
     {DepRetT, S1} = constr_expr(Env1, Body1, S),
@@ -178,7 +303,7 @@ constr_letfun(Env0, {letfun, Ann, Id = {id, _, Name}, Args, RetT, Body}, S) ->
         , ArgsT
         , DepRetT
         },
-    GlobalFunType = maps:get(Name, Env0#type_env.type_binds),
+    GlobalFunType = maps:get(Name, Env0#env.type_binds),
     S2 = [ {subtype, Env1, DepSelfT, GlobalFunType}
          , {well_formed, Env1, GlobalFunType}
          | S1
@@ -379,9 +504,9 @@ simplify1(C = {subtype, Env0, SubT, SupT}) ->
                 [ {subtype, Env0, ArgSupT, ArgSubT} %% contravariant!
                  || {{_, ArgSubT}, {_, ArgSupT}} <- lists:zip(ArgsSub, ArgsSup)
                 ],
-            Env1 = Env0#type_env{
+            Env1 = Env0#env{
                      type_binds =
-                         maps:merge(maps:from_list([{Id, T} || {{id, _, Id}, T} <- ArgsSup]), Env0#type_env.type_binds)
+                         maps:merge(maps:from_list([{Id, T} || {{id, _, Id}, T} <- ArgsSup]), Env0#env.type_binds)
                     },
             simplify([{subtype, Env1, RetSub, RetSup}|Contra]);
         _ -> [C]
@@ -393,9 +518,9 @@ simplify1(C = {well_formed, Env0, T}) ->
                 [ {well_formed, Env0, ArgT}
                   || {_, ArgT} <- Args
                 ],
-            Env1 = Env0#type_env{
+            Env1 = Env0#env{
                      type_binds =
-                         maps:merge(maps:from_list([{Id, T1} || {{id, _, Id}, T1} <- Args]), Env0#type_env.type_binds)
+                         maps:merge(maps:from_list([{Id, T1} || {{id, _, Id}, T1} <- Args]), Env0#env.type_binds)
                     },
             simplify([{well_formed, Env1, Ret}|FromArgs]);
         _ -> [C]
@@ -455,9 +580,9 @@ inst_pred(BaseT, Scope) ->
 init_assg(Cs) ->
     lists:foldl(
       fun({well_formed, Env, {refined_t, _, BaseT, {template, _, LV}}}, Acc) ->
-              AllQs = inst_pred(BaseT, maps:to_list(Env#type_env.type_binds)),
+              AllQs = inst_pred(BaseT, maps:to_list(Env#env.type_binds)),
               ?DBG("INIT ASSG OF ~p:\n~s", [LV, aeso_pretty:pp(predicate, AllQs)]),
-              Acc#{LV => #kinfo{base = BaseT, env = Env, curr_qs = AllQs}};
+              Acc#{LV => #ltinfo{base = BaseT, env = Env, curr_qs = AllQs}};
          (X, Acc) -> Acc
       end, #{}, Cs).
 
@@ -480,16 +605,16 @@ group_subtypes(Cs) ->
 assg_of(Assg, Var = {ltvar, _}) ->
     case maps:get(Var, Assg, undef) of
         undef ->
-            #kinfo
+            #ltinfo
                 { base = {id, ann(), "int"} %% FIXME NOT ONLY INT
                 , curr_qs = []
-                , env = init_type_env()
+                , env = init_env()
                 };
         A -> A
     end.
 
 pred_of(Assg, Var = {ltvar, _}) ->
-    (assg_of(Assg, Var))#kinfo.curr_qs;
+    (assg_of(Assg, Var))#ltinfo.curr_qs;
 pred_of(_, P) when is_list(P) ->
     P;
 pred_of(Assg, {template, Subst, P}) ->
@@ -502,11 +627,11 @@ pred_of(Assg, {refined_t, _, _, P}) ->
 solve(_Env, Cs) ->
     Assg0 = solve(init_assg(Cs), Cs, Cs),
     maps:map(fun
-                 (K, V = #kinfo{env = KEnv, base = Base, curr_qs = Qs}) ->
-                     V#kinfo{
+                 (K, V = #ltinfo{env = KEnv, base = Base, curr_qs = Qs}) ->
+                     V#ltinfo{
                        curr_qs =
                            simplify_pred(
-                             maps:put(nu, Base, KEnv#type_env.type_binds),
+                             maps:put(nu, Base, KEnv#env.type_binds),
                              Qs
                             )
                       }
@@ -517,7 +642,7 @@ solve(Assg, AllCs, [C|Rest]) ->
     ?DBG("SOLVING:\n~s", [aeso_pretty:pp(constr, C)]),
     case C of
         {subtype, _, R = {ltvar, _}} ->
-            ?DBG("ASSG OF ~p: ~s", [R, aeso_pretty:pp(predicate, (assg_of(Assg, R))#kinfo.curr_qs)]);
+            ?DBG("ASSG OF ~p: ~s", [R, aeso_pretty:pp(predicate, (assg_of(Assg, R))#ltinfo.curr_qs)]);
         _ -> ok
     end,
     case valid_in(C, Assg) of
@@ -536,21 +661,21 @@ scope_pred(Assg, Scope) ->
 valid_in({well_formed, _, _}, _) ->
     true; %% TODO
 valid_in({subtype, Subs, SupPredVar} = C, Assg) ->
-    KInfo = assg_of(Assg, SupPredVar),
+    Ltinfo = assg_of(Assg, SupPredVar),
     ?DBG("CHECKING VALID FOR COMP SUB\n~s", [aeso_pretty:pp(constr, C)]),
     lists:all(
-      fun({#type_env{type_binds = Scope, path_pred = PathPred}, Subst, SubKVar}) ->
+      fun({#env{type_binds = Scope, path_pred = PathPred}, Subst, SubKVar}) ->
               ?DBG("SUBST IN VALID: ~p", [Subst]),
               VarPred = pred_of(Assg, SubKVar),
               ?DBG("SCOPE IN VALID: ~p", [Scope]),
               ScopePred = scope_pred(Assg, Scope),
               ?DBG("SCOPE PRED: ~s", [aeso_pretty:pp(predicate, ScopePred)]),
               SubPred = PathPred ++ VarPred ++ ScopePred,
-              impl_holds(Scope, SubPred, apply_subst(Subst, KInfo#kinfo.curr_qs))
+              impl_holds(Scope, SubPred, apply_subst(Subst, Ltinfo#ltinfo.curr_qs))
       end,
       Subs
      );
-valid_in({subtype, #type_env{type_binds = Scope, path_pred = PathPred},
+valid_in({subtype, #env{type_binds = Scope, path_pred = PathPred},
           {refined_t, _, _, SubP}, {refined_t, _, _, SupP}} = C, Assg) when is_list(SupP) ->
     ?DBG("CHECKING VALID FOR RIGID SIMP SUB\n~s", [aeso_pretty:pp(constr, C)]),
     ScopePred = scope_pred(Assg, Scope),
@@ -567,9 +692,9 @@ valid_in({subtype, _, T, T}, _) ->
 
 weaken({subtype, Subs, SubPredVar}, Assg) ->
     ?DBG("**** WEAKENING SUB FOR ~p", [SubPredVar]),
-    KInfo = assg_of(Assg, SubPredVar),
+    Ltinfo = assg_of(Assg, SubPredVar),
     Filtered =
-        [ Q || Q <- KInfo#kinfo.curr_qs,
+        [ Q || Q <- Ltinfo#ltinfo.curr_qs,
                lists:all(fun({Env, Subst, Sub}) ->
                                  ?DBG("CHECKING SUB"),
                                  Valid = subtype_implies(Env, Sub, apply_subst(Subst, Q), Assg),
@@ -582,19 +707,19 @@ weaken({subtype, Subs, SubPredVar}, Assg) ->
                          end, Subs)
         ],
     ?DBG("**** WEAKENED\n* FROM ~s\n* TO ~s",
-         [aeso_pretty:pp(predicate, KInfo#kinfo.curr_qs), aeso_pretty:pp(predicate, Filtered)]),
-    NewKInfo = KInfo#kinfo{
+         [aeso_pretty:pp(predicate, Ltinfo#ltinfo.curr_qs), aeso_pretty:pp(predicate, Filtered)]),
+    NewLtinfo = Ltinfo#ltinfo{
                  curr_qs = Filtered
                 },
-    Assg#{SubPredVar => NewKInfo}.
+    Assg#{SubPredVar => NewLtinfo}.
 
-subtype_implies(#type_env{type_binds=Scope, path_pred=PathPred},
+subtype_implies(#env{type_binds=Scope, path_pred=PathPred},
                 {refined_t, _, _, Template}, Q, Assg
                ) ->
     SubPred =
         case Template of
             {template, Subst, KVar} ->
-                apply_subst(Subst, (assg_of(Assg, KVar))#kinfo.curr_qs);
+                apply_subst(Subst, (assg_of(Assg, KVar))#ltinfo.curr_qs);
             P -> P
         end,
     ?DBG("SCOPE: ~p\n", [Scope]),
@@ -682,7 +807,7 @@ expr_to_smt(E) -> throw({not_smt_expr, E}).
 
 apply_assg(Assg, Var = {ltvar, _}) ->
     case Assg of
-        #{Var := #kinfo{curr_qs = P}} ->
+        #{Var := #ltinfo{curr_qs = P}} ->
             P;
         _ -> []
     end;

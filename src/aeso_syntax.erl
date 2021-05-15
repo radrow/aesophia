@@ -17,6 +17,7 @@
 -export_type([arg/0, field_t/0, constructor_t/0, named_arg_t/0]).
 -export_type([type/0, constant/0, expr/0, arg_expr/0, field/1, stmt/0, alt/0, lvalue/0, elim/0, pat/0]).
 -export_type([ast/0]).
+-export_type([predicate/0, liquid_type/0, dep_type/1]).
 
 -type ast() :: [decl()].
 
@@ -80,14 +81,8 @@
               | con() | qcon()  %% contracts
               | tvar().
 
-%% Liquid value – either a Sophia expression or nu
--type pred_val() :: expr() | nu.
-%% Single assertion. TODO: aeso_syntax:expr()
--type pred_expr() :: {eq, pred_val(), pred_val()}
-                   | {lt, pred_val(), pred_val()}
-                   | {neg, pred_expr()}.
 %% Predicate for a liquid type
--type predicate() :: [pred_expr()].
+-type predicate() :: [expr()].
 
 %% Dependent type
 -type dep_type(Qual)
