@@ -234,9 +234,6 @@ type_binds(#env{var_env = VEnv, scopes = Scopes}) ->
             {Var, Type} <- maps:to_list(FEnv)
         ].
 
-init_env() ->
-    #env{
-      }.
 
 %% -- Initialization -----------------------------------------------------------
 
@@ -245,6 +242,12 @@ init_refiner() ->
     put(ltvar_supply, 0),
     put(id_supply, 0),
     ok.
+
+
+init_env() ->
+    #env{
+      }.
+
 
 %% -- Fresh stuff --------------------------------------------------------------
 
@@ -490,7 +493,24 @@ constr_expr(_Env, [], T, S) ->
 constr_expr(_, E, A, B) ->
     error({todo, E, A, B}).
 
-%%%% Substitution
+
+group_subtypes(Cs) ->
+    Subts = [C || C = {subtype, _, _, {refined_t, _, _, {template, _, _}}} <- Cs],
+    WFs = Cs -- Subts,
+
+    SubtsMap =
+        lists:foldl(
+          fun ({subtype, Env, T, {refined_t, _, Base, {template, Subst, LV}}}, Map) ->
+                  ?DBG("GROUPING SUB IN ~p\nOF\n~p\n:>\n~p", [Env, LV, T]),
+                  maps:put(LV, {Base, [{Env, Subst, T}|element(2, maps:get(LV, Map, {{}, []}))]}, Map)
+          end, #{}, Subts
+         ),
+    WFs ++ [ {subtype_group, Ts, Base, LV}
+             || {LV, {Base, Ts}} <- maps:to_list(SubtsMap)
+           ].
+
+
+%% -- Substitution -------------------------------------------------------------
 
 apply_subst1({id, _, X}, Expr, {id, _, X}) ->
     Expr;
@@ -523,53 +543,7 @@ apply_subst(Subs, Q) when is_list(Subs) ->
     lists:foldl(fun({X, Expr}, Q0) -> apply_subst1(X, Expr, Q0) end, Q, Subs).
 
 
-%% Solving
-
-simplify(L) when is_list(L) ->
-    simplify(L, []).
-simplify([H|T], Acc) ->
-    HC = simplify1(H),
-    simplify(T, HC ++ Acc);
-simplify([], Acc) ->
-    filter_obvious(Acc).
-
-simplify1(C = {subtype, Env0, SubT, SupT}) ->
-    case {SubT, SupT} of
-        { {dep_fun_t, _, _, ArgsSub, RetSub}
-        , {dep_fun_t, _, _, ArgsSup, RetSup}
-        } ->
-            Contra =
-                [ {subtype, Env0, ArgSupT, ArgSubT} %% contravariant!
-                 || {{_, ArgSubT}, {_, ArgSupT}} <- lists:zip(ArgsSub, ArgsSup)
-                ],
-            Env1 =
-                bind_vars([{Id, T} || {Id, T} <- ArgsSup], Env0),
-            simplify([{subtype, Env1, RetSub, RetSup}|Contra]);
-        _ -> [C]
-    end;
-simplify1(C = {well_formed, Env0, T}) ->
-    case T of
-        {dep_fun_t, _, _, Args, Ret} ->
-            FromArgs =
-                [ {well_formed, Env0, ArgT}
-                  || {_, ArgT} <- Args
-                ],
-            Env1 =
-                bind_vars([{Id, ArgT} || {Id, ArgT} <- Args], Env0),
-            simplify([{well_formed, Env1, Ret}|FromArgs]);
-        _ -> [C]
-    end.
-
-filter_obvious(L) ->
-    filter_obvious(L, []).
-filter_obvious([], Acc) ->
-    Acc;
-filter_obvious([H|T], Acc) ->
-    case H of
-        {well_formed, _, {refined_t, _, _, []}} ->
-            filter_obvious(T, Acc);
-         _ -> filter_obvious(T, [H|Acc])
-    end.
+%% -- Assignments --------------------------------------------------------------
 
 cmp_qualifiers(Thing) ->
     %% [].
@@ -620,21 +594,6 @@ init_assg(Cs) ->
          (_, Acc) -> Acc
       end, #{}, Cs).
 
-group_subtypes(Cs) ->
-    Subts = [C || C = {subtype, _, _, {refined_t, _, _, {template, _, _}}} <- Cs],
-    WFs = Cs -- Subts,
-
-    SubtsMap =
-        lists:foldl(
-          fun ({subtype, Env, T, {refined_t, _, Base, {template, Subst, LV}}}, Map) ->
-                  ?DBG("GROUPING SUB IN ~p\nOF\n~p\n:>\n~p", [Env, LV, T]),
-                  maps:put(LV, {Base, [{Env, Subst, T}|element(2, maps:get(LV, Map, {{}, []}))]}, Map)
-          end, #{}, Subts
-         ),
-    WFs ++ [ {subtype_group, Ts, Base, LV}
-            || {LV, {Base, Ts}} <- maps:to_list(SubtsMap)
-           ].
-
 assg_of(Assg, Var = {ltvar, _}) ->
     case maps:get(Var, Assg, undef) of
         undef -> error({undef_assg, Var});
@@ -645,6 +604,21 @@ assg_of(Assg, Var = {ltvar, _}) ->
             %%     };
         A -> A
     end.
+
+
+apply_assg(Assg, Var = {ltvar, _}) ->
+    case maps:get(Var, Assg, false) of
+        #ltinfo{predicate = P} ->
+            P;
+        false -> []
+    end;
+apply_assg(Assg, {template, S, T}) ->
+    apply_assg(Assg, apply_subst(S, T));
+apply_assg(Assg, [H|T]) -> [apply_assg(Assg, H)|apply_assg(Assg, T)];
+apply_assg(Assg, T) when is_tuple(T) ->
+    list_to_tuple(apply_assg(Assg, tuple_to_list(T)));
+apply_assg(_, X) -> X.
+
 
 pred_of(Assg, Var = {ltvar, _}) ->
     (assg_of(Assg, Var))#ltinfo.predicate;
@@ -662,6 +636,53 @@ pred_of(Assg, Env = #env{path_pred = PathPred}) ->
         ],
     ScopePred ++ PathPred.
 
+%% -- Solving ------------------------------------------------------------------
+
+simplify(L) when is_list(L) ->
+    simplify(L, []).
+simplify([H|T], Acc) ->
+    HC = simplify1(H),
+    simplify(T, HC ++ Acc);
+simplify([], Acc) ->
+    filter_obvious(Acc).
+
+simplify1(C = {subtype, Env0, SubT, SupT}) ->
+    case {SubT, SupT} of
+        { {dep_fun_t, _, _, ArgsSub, RetSub}
+        , {dep_fun_t, _, _, ArgsSup, RetSup}
+        } ->
+            Contra =
+                [ {subtype, Env0, ArgSupT, ArgSubT} %% contravariant!
+                 || {{_, ArgSubT}, {_, ArgSupT}} <- lists:zip(ArgsSub, ArgsSup)
+                ],
+            Env1 =
+                bind_vars([{Id, T} || {Id, T} <- ArgsSup], Env0),
+            simplify([{subtype, Env1, RetSub, RetSup}|Contra]);
+        _ -> [C]
+    end;
+simplify1(C = {well_formed, Env0, T}) ->
+    case T of
+        {dep_fun_t, _, _, Args, Ret} ->
+            FromArgs =
+                [ {well_formed, Env0, ArgT}
+                  || {_, ArgT} <- Args
+                ],
+            Env1 =
+                bind_vars([{Id, ArgT} || {Id, ArgT} <- Args], Env0),
+            simplify([{well_formed, Env1, Ret}|FromArgs]);
+        _ -> [C]
+    end.
+
+filter_obvious(L) ->
+    filter_obvious(L, []).
+filter_obvious([], Acc) ->
+    Acc;
+filter_obvious([H|T], Acc) ->
+    case H of
+        {well_formed, _, {refined_t, _, _, []}} ->
+            filter_obvious(T, Acc);
+         _ -> filter_obvious(T, [H|Acc])
+    end.
 
 solve(_Env, Cs) ->
     Assg0 = solve(init_assg(Cs), Cs, Cs),
@@ -759,6 +780,8 @@ subtype_implies(Env, {refined_t, _, _, Template}, Q, Assg) ->
     impl_holds(Env, AssumpPred, Q).
 
 
+%% -- SMT Solving --------------------------------------------------------------
+
 impl_holds(Env, Assump, Concl) when not is_list(Concl) ->
     impl_holds(Env, Assump, [Concl]);
 impl_holds(Env, Assump, Concl) when not is_list(Assump) ->
@@ -835,18 +858,8 @@ expr_to_smt({'^', _})  -> "^";
 expr_to_smt({'mod', _})  -> "mod";
 expr_to_smt(E) -> throw({not_smt_expr, E}).
 
-apply_assg(Assg, Var = {ltvar, _}) ->
-    case maps:get(Var, Assg, false) of
-        #ltinfo{predicate = P} ->
-            P;
-        false -> []
-    end;
-apply_assg(Assg, {template, S, T}) ->
-    apply_assg(Assg, apply_subst(S, T));
-apply_assg(Assg, [H|T]) -> [apply_assg(Assg, H)|apply_assg(Assg, T)];
-apply_assg(Assg, T) when is_tuple(T) ->
-    list_to_tuple(apply_assg(Assg, tuple_to_list(T)));
-apply_assg(_, X) -> X.
+
+%% -- Simplification -----------------------------------------------------------
 
 flip_op('>') ->
     '<';
@@ -906,6 +919,9 @@ simplify_pred(Scope, Prev, [Q|Post]) ->
         false ->
             simplify_pred(Scope, [Q|Prev], Post)
     end.
+
+
+%% -- A-Normalization ----------------------------------------------------------
 
 %% A-Normalization – No compound expr may consist of compound exprs
 a_normalize(Expr = {typed, Ann, _, Type}) ->
