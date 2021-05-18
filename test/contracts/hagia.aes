@@ -1,6 +1,6 @@
 contract C =
-  entrypoint max(x : int, y : int) = if(x < y) y else x
+  entrypoint f(x:int) = 1 / x
 
-//  entrypoint chuj(x : int) = if(x < 0) 0 else x
 
-  entrypoint f(x:int) = 1 / (if(x == 0) 1 else x)
+
+
