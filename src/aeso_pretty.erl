@@ -286,9 +286,9 @@ dep_type({refined_t, _, BaseType, []}) ->
     type(BaseType);
 dep_type({refined_t, _, BaseType, Pred}) ->
     beside(
-      [ text("{$nu :")
+      [ text("{")
       , type(BaseType)
-      , text("|")
+      , text(" | ")
       , predicate(Pred)
       , text("}")
       ]);
@@ -354,13 +354,14 @@ pred_expr(Nu, Expr) ->
 pred_val(Nu, nu) -> name(Nu);
 pred_val(_, Expr) -> expr(Expr).
 
-constr_env({type_env, Scope, GuardPreds, _, _}) ->
+constr_env(Env) ->
     above(
       [ par(punctuate(
               text(","),
-              [beside([text(Var), text(" : "), type(T)]) || {Var, T} <- maps:to_list(Scope)])
+              [beside([expr(Var), text(" : "), type(T)])
+               || {Var, T} <- aeso_ast_refine_types:type_binds(Env)])
            )
-      , predicate(GuardPreds)
+      %% , predicate(GuardPreds) %% FIXME
       ]).
 
 under_constr_env(Env, X) ->
@@ -374,7 +375,7 @@ constr({well_formed, Env, T}) ->
     under_constr_env(Env, dep_type(T));
 constr({subtype, Env, T1, T2}) ->
     under_constr_env(Env, beside([dep_type(T1), text(" <: "), dep_type(T2)]));
-constr({subtype, Subs, {ltvar, T}}) when is_list(Subs) ->
+constr({subtype_group, Subs, _, {ltvar, T}}) when is_list(Subs) ->
     above([ text(T)
           | [ beside([text("  :> "), constr_env(Env), text(" |- "), dep_type(T1)])
              || {Env, _, T1} <- Subs
