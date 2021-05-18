@@ -316,7 +316,7 @@ dep_type(T = {tvar, _, _}) ->
 predicate({template, _, {ltvar, Var}}) -> text(Var);
 predicate([]) -> text("true");
 predicate(L) when is_list(L) ->
-    par(punctuate(text("/\\"), [expr(E) || E <- L]));
+    par(punctuate(text(" &&"), [expr(E) || E <- L]));
 predicate(P) ->
     predicate({id, [], "$nu"}, P).
 predicate(Nu, Constraints) when is_list(Constraints) ->
