@@ -32,10 +32,10 @@
 -type qcon()        :: aeso_syntax:qcon().
 -type ann()         :: aeso_syntax:ann().
 
--type type_id() :: id() | qid() | con() | qcon() | nu.
+-type type_id() :: id() | qid() | con() | qcon().
 
 %% Names
--type name() :: string() | nu.
+-type name() :: string().
 -type qname() :: [name()].
 
 %% Liquid type variable
@@ -51,7 +51,7 @@
 -type lutype() :: dep_type( predicate() | template() ).
 
 -type fun_env() :: #{name() => template()}.
--type var_env() :: #{name() | nu => template()}.
+-type var_env() :: #{name() => template()}.
 
 -record(scope, {fun_env = #{} :: fun_env()}).
 -type scope() :: #scope{}.
@@ -90,6 +90,7 @@ ann(L) -> [{origin, hagia}|L].
 
 nu() ->
     {id, ann(), "$nu"}.
+-define(nu_p, {id, _, "$nu"}).
 
 %% -- Name manipulation --------------------------------------------------------
 
@@ -285,9 +286,7 @@ switch_variance(contravariant) ->
 decorate_base_types(Hint, Type) ->
     decorate_base_types(covariant, Hint, Type).
 -spec decorate_base_types(name(), variance(), term()) -> term().
-decorate_base_types(Variance, Hint, Type = {id, Ann, "int"}) ->
-    {refined_t, Ann, Type, fresh_template(Variance, Hint)};
-decorate_base_types(Variance, Hint, Type = {id, Ann, "bool"}) ->
+decorate_base_types(Variance, Hint, Type = {id, Ann, _}) ->
     {refined_t, Ann, Type, fresh_template(Variance, Hint)};
 decorate_base_types(Variance, Hint, {fun_t, Ann, Named, Args, Ret}) ->
     { dep_fun_t, Ann, Named
@@ -335,6 +334,7 @@ constr_letfun(Env0, {letfun, Ann, Id = {id, _, Name}, Args, _RetT, Body}, S) ->
     Body1 = a_normalize(Body),
     ?DBG("NORMALIZED:\n~s\n\nTO\n\n~s\n\n\n", [aeso_pretty:pp(expr, Body), aeso_pretty:pp(expr, Body1)]),
     {DepRetT, S1} = constr_expr(Env1, Body1, S),
+    ?DBG("DEP RET: ~p", [DepRetT]),
     DepSelfT =
         { dep_fun_t, Ann, []
         , ArgsT
@@ -389,7 +389,8 @@ constr_expr(Env, Expr = {id, _, _}, _T, S) ->
         %%     {{refined_t, ann(), T, [Eq]}, S};
         {_, {refined_t, Ann, B, P}} ->
             Eq = ?op(nu(), '==', Expr), %% IF THIS IS THE ONLY Q THEN IT WORKS BETTER
-            { {refined_t, Ann, B, P}
+            {{refined_t, Ann, B, [Eq]}
+            %% { {refined_t, Ann, B, P}
             %% , [{subtype, Env, {refined_t, Ann, B, [Eq]}, T1}|S] %% FIXME Flip?
             , S
             };
@@ -460,6 +461,7 @@ constr_expr(Env, {'if', _, Cond, Then, Else}, T, S0) ->
     {_, S1} = constr_expr(Env, Cond, S0),
     {ThenT, S2} = constr_expr(assert(Cond, Env), Then, S1),
     {ElseT, S3} = constr_expr(assert(?op('!', Cond), Env),Else, S2),
+    ?DBG("IF TYPE ~p", [ExprT]),
     { ExprT
     , [ {well_formed, Env, ExprT}
       , {subtype, assert(Cond, Env), ThenT, ExprT}
@@ -470,7 +472,7 @@ constr_expr(Env, {'if', _, Cond, Then, Else}, T, S0) ->
 constr_expr(Env, [E], _, S) ->
     constr_expr(Env, E, S);
 constr_expr(Env0, [{letval, _, {typed, _, Id = {id, _, Name}, VarT}, Val}|Rest], T, S0) ->
-    DepVarT = ?refined(VarT, fresh_template(Name)),
+    DepVarT = ?refined(T, fresh_template(Name)),
     {ValT, S1} = constr_expr(Env0, Val, S0),
     Env1 = bind_var(Id, ValT, Env0),
     {RestT, S2} = constr_expr(Env1, Rest, T, S1),
@@ -846,9 +848,55 @@ apply_assg(Assg, T) when is_tuple(T) ->
     list_to_tuple(apply_assg(Assg, tuple_to_list(T)));
 apply_assg(_, X) -> X.
 
+flip_op('>') ->
+    '<';
+flip_op('<') ->
+    '>';
+flip_op('>=') ->
+    '=<';
+flip_op('=<') ->
+    '>=';
+flip_op('==') ->
+    '==';
+flip_op('!=') ->
+    '!=';
+flip_op('+') ->
+    '+';
+flip_op('*') ->
+    '*';
+flip_op(_) ->
+    no_flip.
+
+sort_preds_by_meaningfulness(Preds0) ->
+    Preds1 = %% Move nu to the left side if it makes sense
+        [ case {R, flip_op(Op)} of
+              {?nu_p, FlipOp} when FlipOp =/= no_flip ->
+                  {app, Ann, {FlipOp, OpAnn}, [R, L]};
+              _ -> Q
+          end
+         || Q = {app, Ann, {Op, OpAnn}, [L, R]} <- Preds0
+        ],
+    OpList =
+        lists:zip(lists:reverse(['==', '>', '<', '>=', '=<', '!=']), lists:seq(1, 6)),
+    Cmp = fun ({app, _, {OpL, _}, [LL, LR]}, {app, _, {OpR, _}, [RL, RR]}) ->
+                  SimplBonus = fun SB(?nu_p)        -> 100000;
+                                   SB({int, _, _})  -> 10000;
+                                   SB({bool, _, _}) -> 10000;
+                                   SB({id, _, _})   -> 1000;
+                                   SB({qid, _, _})  -> 100;
+                                   SB({typed, _, E, _}) -> SB(E);
+                                   SB(_) -> 0
+                               end,
+                  ValueL = proplists:get_value(OpL, OpList, 0) + SimplBonus(LL) + SimplBonus(LR),
+                  ValueR = proplists:get_value(OpR, OpList, 0) + SimplBonus(RL) + SimplBonus(RR),
+                  ValueL =< ValueR;
+              (_, _) -> true
+          end,
+    lists:sort(Cmp, Preds1).
+
 %% this is absolutely heuristic
 simplify_pred(Scope, Pred) ->
-    simplify_pred(Scope, [], Pred).
+    simplify_pred(Scope, [], sort_preds_by_meaningfulness(Pred)).
 simplify_pred(_Scope, Prev, []) ->
     Prev;
 simplify_pred(Scope, Prev, [Q|Post]) ->
@@ -907,7 +955,7 @@ a_normalize_list([Expr|Rest], Acc, Decls0) ->
     a_normalize_list(Rest, [Expr1|Acc], Decls1).
 
 
-a_normalize_to_simpl({typed, Ann, Expr, Type}, Decls) ->
+a_normalize_to_simpl({typed, _, Expr, Type}, Decls) ->
     a_normalize_to_simpl(Expr, Type, Decls);
 a_normalize_to_simpl(Expr = {Op, _}, Decls) when is_atom(Op) ->
     {Expr, Decls};
