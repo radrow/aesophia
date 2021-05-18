@@ -52,14 +52,15 @@ gen_constraints(Name) ->
     Ast = aeso_parser:string(ContractString, sets:new(), []),
     {_, _, TAst} = aeso_ast_infer_types:infer(Ast, [return_env]),
     [ begin
-          InitEnv = aeso_ast_refine_types:init_env(),
-          {Env, {contract, _, _, Defs}, Cs} = aeso_ast_refine_types:constr_con(InitEnv, Con),
+          Env0 = aeso_ast_refine_types:init_env(),
+          Env1 = aeso_ast_refine_types:with_cool_ints_from(Ast, Env0),
+          {Env2, {contract, _, _, Defs}, Cs} = aeso_ast_refine_types:constr_con(Env1, Con),
           Cs1 = aeso_ast_refine_types:simplify(Cs),
           Cs2 = aeso_ast_refine_types:group_subtypes(Cs1),
-          Assg = aeso_ast_refine_types:solve(Env, Cs2),
+          Assg = aeso_ast_refine_types:solve(Env2, Cs2),
           io:format("\n\n**** EXTERNAL:\n"),
           [ io:format("~s : ~s\n", [aeso_pretty:pp(expr, Expr), aeso_pretty:pp(dep_type, aeso_ast_refine_types:apply_assg(Assg, T))])
-           || {Expr, T} <- aeso_ast_refine_types:type_binds(Env)
+           || {Expr, T} <- aeso_ast_refine_types:type_binds(Env2)
           ],
           io:format("\n\n**** INTERNAL:\n"),
           [ io:format("_ : ~s\n", [aeso_pretty:pp(decl, aeso_ast_refine_types:apply_assg(Assg, T))])

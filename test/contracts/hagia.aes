@@ -1,5 +1,6 @@
 contract C =
-  entrypoint f(x:int) = 1 / x
+  entrypoint g(x:int) = if(x == 123) 0 else x
+  entrypoint f(x:int) = 1 / (g(x) - 123)
 
 
 

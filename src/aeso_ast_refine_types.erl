@@ -60,7 +60,7 @@
         { scopes           = #{[] => #scope{}} :: #{qname() => scope()}
         , var_env          = #{}               :: var_env()
         , path_pred        = []                :: predicate()
-        , interesting_ints = []                :: [integer()]
+        , cool_ints        = []                :: [integer()]
         , namespace        = []                :: qname()
         }).
 -type env() :: #env{}.
@@ -247,6 +247,21 @@ init_refiner() ->
 init_env() ->
     #env{
       }.
+
+find_cool_ints(Expr) ->
+    sets:to_list(find_cool_ints(Expr, sets:from_list([0, 1, -1]))).
+find_cool_ints({int, _, I}, Acc) ->
+    sets:add_element(-I, sets:add_element(I, Acc));
+find_cool_ints([H|T], Acc0) ->
+    Acc1 = find_cool_ints(H, Acc0),
+    find_cool_ints(T, Acc1);
+find_cool_ints(T, Acc) when is_tuple(T) ->
+    find_cool_ints(tuple_to_list(T), Acc);
+find_cool_ints(_, Acc) ->
+    Acc.
+
+with_cool_ints_from(AST, Env = #env{cool_ints = CI}) ->
+    Env#env{cool_ints = find_cool_ints(AST) ++ CI}.
 
 
 %% -- Fresh stuff --------------------------------------------------------------
@@ -568,27 +583,27 @@ plus_int_qualifiers(Int, Thing) ->
 var_int_qualifiers(Var) ->
     int_qualifiers({id, ann(), Var}) ++ plus_int_qualifiers(?int(1), {id, ann(), Var}).
 
-inst_pred_int(Scope) ->
+inst_pred_int(Env) ->
     lists:concat(
-      [ int_qualifiers(?int(0)) %% 0 is quite probable to be relevant
-      , int_qualifiers(?int(1)) %% 1 as well
-      , [ Q || {Var, {refined_t, _, ?int_tp, _}} <- Scope,
+      [ [Q || CoolInt <- Env#env.cool_ints,
+              Q <- int_qualifiers(?int(CoolInt))]
+      , [ Q || {Var, {refined_t, _, ?int_tp, _}} <- maps:to_list(Env#env.var_env),
                Q <- var_int_qualifiers(Var)
         ]
       ]
      ).
 
-inst_pred(BaseT, Scope) ->
+inst_pred(BaseT, Env) ->
     case BaseT of
         ?int_tp ->
-            inst_pred_int(Scope);
+            inst_pred_int(Env);
         _ -> []
     end.
 
 init_assg(Cs) ->
     lists:foldl(
       fun({well_formed, Env, {refined_t, _, BaseT, {template, _, LV}}}, Acc) ->
-              AllQs = inst_pred(BaseT, maps:to_list(Env#env.var_env)),
+              AllQs = inst_pred(BaseT, Env),
               ?DBG("INIT ASSG OF ~p:\n~s", [LV, aeso_pretty:pp(predicate, AllQs)]),
               Acc#{LV => #ltinfo{base = BaseT, env = Env, predicate = AllQs}};
          (_, Acc) -> Acc
@@ -789,7 +804,6 @@ impl_holds(Env, Assump, Concl) when not is_list(Assump) ->
 impl_holds(_, _, []) -> true;
 impl_holds(Env, Assump, Concl) ->
     ConclExpr  = {app, ann(), {'&&', ann()}, Concl}, %% Improper sophia expr but who cares
-    ?DBG("HEH\n~p", [Assump]),
     ?DBG("IMPL;\n* ASSUMPTION: ~s\n* CONCLUSION: ~s",
          [ string:join([aeso_pretty:pp(expr, E)|| E <- Assump], " /\\ ")
          , string:join([aeso_pretty:pp(expr, E)|| E <- Concl],  " /\\ ")
