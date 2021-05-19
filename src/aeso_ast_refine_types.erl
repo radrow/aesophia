@@ -349,11 +349,12 @@ constr_con(Env0, {contract, Ann, Con, Defs}) ->
 -spec constr_letfun(env(), aeso_syntax:letfun(), [constr()]) -> {aeso_syntax:fundecl(), [constr()]}.
 constr_letfun(Env0, {letfun, Ann, Id = {id, _, _}, Args, _RetT, Body}, S) ->
     ArgsT =
-        [ {ArgName, fresh_liquid(contravariant, "argi_" ++ StrName, T)}
-          || {typed, _, ArgName = {id, _, StrName}, T} <- Args
+        [ {ArgId, fresh_liquid(contravariant, "argi_" ++ ArgName, T)}
+          || {typed, _, ArgId = {id, _, ArgName}, T} <- Args
         ],
     Env1 = bind_vars(ArgsT, Env0),
     Body1 = a_normalize(Body),
+    ?DBG("NORMALIZED:\n~p\n\nTO\n\n~p\n\n\n", [Body, Body1]),
     ?DBG("NORMALIZED:\n~s\n\nTO\n\n~s\n\n\n", [aeso_pretty:pp(expr, Body), aeso_pretty:pp(expr, Body1)]),
     {DepRetT, S1} = constr_expr(Env1, Body1, S),
     DepSelfT =
@@ -492,6 +493,21 @@ constr_expr(Env, {'if', _, Cond, Then, Else}, T, S0) ->
       | S3
       ]
     };
+constr_expr(Env, {lam, _, Args, Body}, {fun_t, TAnn, _, _, RetT}, S0) ->
+    DepArgsT =
+        [ {ArgId, fresh_liquid(contravariant, "argl_" ++ ArgName, ArgT)}
+         || {arg, _, ArgId = {id, _, ArgName}, ArgT} <- Args
+        ],
+    DepRetT = fresh_liquid("lam_ret", RetT),
+    ExprT = {dep_fun_t, TAnn, [], DepArgsT, DepRetT},
+    EnvBody = bind_vars(DepArgsT, Env),
+    {BodyT, S1} = constr_expr(EnvBody, Body, S0),
+    {ExprT,
+     [ {well_formed, Env, ExprT}
+     , {subtype, EnvBody, BodyT, DepRetT}
+     | S1
+     ]
+    };
 constr_expr(Env, [E], _, S) ->
     constr_expr(Env, E, S);
 constr_expr(Env0, [{letval, _, {typed, _, Id = {id, _, Name}, _}, Val}|Rest], T, S0) ->
@@ -505,23 +521,22 @@ constr_expr(Env0, [{letval, _, {typed, _, Id = {id, _, Name}, _}, Val}|Rest], T,
      | S2
      ]
     };
-constr_expr(Env0, [{letfun, Ann, Id = {id, _, Name}, Args, RetT, Body}|Rest], T, S0) ->
-    ExprT = fresh_liquid(Name, T),
-    ArgsT =
-        [ {ArgName, fresh_liquid(contravariant, "argi_" ++ StrName, ArgT)}
-          || {typed, _, ArgName = {id, _, StrName}, ArgT} <- Args
-        ],
-    Env1Body = bind_vars(ArgsT, Env0),
-    {DepRetT, S1} = constr_expr(Env1Body, Body, S0),
-    FunT = {dep_fun_t, Ann, [], ArgsT, DepRetT},
-    Env1Rest = bind_var(Id, FunT, Env0),
-    {RestT, S2} = constr_expr(Env1Rest, Rest, T, S1),
-    {ExprT,
-     [ {well_formed, Env0, ExprT}
-     , {subtype, Env1Rest, RestT, ExprT}
-     | S2
-     ]
-    };
+constr_expr(Env0, [{letfun, Ann, Id, Args, RetT, Body}|Rest], T, S0) ->
+    ArgsTypes = [ArgT || {typed, _, _, ArgT} <- Args],
+    ExprT = {fun_t, Ann, [], ArgsTypes, RetT},
+    constr_expr(
+      Env0,
+      [ {letval, Ann, ?typed(Id, ExprT),
+         ?typed(
+            {lam, Ann,
+             [ {arg, ArgAnn, ArgId, ArgT}
+               || {typed, ArgAnn, ArgId, ArgT} <- Args
+             ], Body},
+            ExprT)
+           }
+      | Rest
+      ], T, S0
+     );
 constr_expr(Env, [Expr|Rest], T, S0) ->
     {_, S1} = constr_expr(Env, Expr, S0),
     constr_expr(Env, Rest, T, S1);
@@ -738,6 +753,7 @@ solve(_Env, Cs) ->
 solve(Assg, _, []) ->
     Assg;
 solve(Assg, AllCs, [C|Rest]) ->
+    ?DBG("XDDDD ~p", [C]),
     ?DBG("SOLVING:\n~s", [aeso_pretty:pp(constr, C)]),
     case C of
         {subtype_group, _, _, R = {ltvar, _}} ->
@@ -1004,11 +1020,8 @@ a_normalize({switch, Ann, Expr, Alts}, Type, Decls0) ->
     };
 a_normalize({lam, Ann, Args, Body}, Type, Decls0) ->
     Body1 = a_normalize(Body),
-    Var = fresh_id("anorm_lam"),
-    {?typed(Var, Type),
-     [ {letfun, Ann, Var, Args, Body1}
-     | Decls0
-     ]
+    {?typed({lam, Ann, Args, Body1}, Type),
+     Decls0
     };
 a_normalize({block, Ann, Stmts}, Type, Decls0) ->
     {Stmts1, Decls1} = a_normalize(Stmts, Decls0),
