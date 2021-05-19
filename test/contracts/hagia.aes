@@ -1,6 +1,14 @@
+
+
 contract C =
-  entrypoint g(x:int) = if(x == 123) 0 else x
-  entrypoint f(x:int) = 1 / (g(x) - 123)
+  entrypoint f(x:int) =
+    let g(y) = y + 1 
+    g(x)
+
+
+
+
+
 
 
 
