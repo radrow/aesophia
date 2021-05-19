@@ -2,7 +2,7 @@
 
 contract C =
   entrypoint f(x:int) =
-    let g(y) = y + 1 
+    let g = (x) => x + 1
     g(x)
 
 
