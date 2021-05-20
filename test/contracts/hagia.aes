@@ -2,8 +2,9 @@
 
 contract C =
   entrypoint f(x:int) =
-    let g(x) = x + 1
-    g(x)
+    switch(x)
+      0 => 0
+      x => x
 
 
 
