@@ -2,10 +2,8 @@
 
 contract C =
   entrypoint f(x:int) =
-    switch(x)
-      0 => 0
-      _ => 0
-      x => x
+    switch(x == 1)
+      b => if(b) 1 else x
 
 
 

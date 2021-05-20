@@ -231,12 +231,16 @@ type_of(Env, Id) ->
 -spec type_binds(env()) -> [{expr(), lutype()}].
 type_binds(#env{var_env = VEnv, scopes = Scopes}) ->
     [ {qid([Var]), Type}
-     || {Var, Type} <- maps:to_list(VEnv)
+      || {Var, Type} <- maps:to_list(VEnv)
     ] ++
         [ {qid(ScopePath ++ [Var]), Type}
-         || {ScopePath, #scope{fun_env = FEnv}} <- maps:to_list(Scopes),
-            {Var, Type} <- maps:to_list(FEnv)
+          || {ScopePath, #scope{fun_env = FEnv}} <- maps:to_list(Scopes),
+             {Var, Type} <- maps:to_list(FEnv)
         ].
+
+-spec path_pred(env()) -> predicate().
+path_pred(#env{path_pred = PathPred}) ->
+    PathPred.
 
 
 %% -- Initialization -----------------------------------------------------------
@@ -496,8 +500,8 @@ constr_expr(Env, {'if', _, Cond, Then, Else}, T, S0) ->
       | S3
       ]
     };
-constr_expr(Env, {switch, _, Switched, Alts}, ?int_tp = T, S0) ->
-    ExprT = fresh_liquid("switch", ?int_t),
+constr_expr(Env, {switch, _, Switched = {typed, _, _, ?int_tp}, Alts}, T, S0) ->
+    ExprT = fresh_liquid("switch_int", T),
     {_, S1} = constr_expr(Env, Switched, S0),
     AltsS =
         [ case Pat of
@@ -513,6 +517,37 @@ constr_expr(Env, {switch, _, Switched, Alts}, ?int_tp = T, S0) ->
                   [{subtype, Env, CaseT1, ExprT}|SC];
               {typed, _, {int, _, _}, _} ->
                   Env1 = assert(?op(Switched, '==', Pat), Env),
+                  {CaseT1, SC} =
+                      constr_expr(Env1, Case, T, []),
+                  [{subtype, Env1, CaseT1, ExprT}|SC]
+          end
+         || {'case', CaseAnn, Pat, Case} <- Alts
+        ],
+    S2 = lists:concat(AltsS) ++ S1,
+    {ExprT
+    , [{well_formed, Env, ExprT}|S2]
+    };
+constr_expr(Env, {switch, _, Switched = {typed, _, _, ?bool_tp}, Alts}, T, S0) ->
+    ExprT = fresh_liquid("switch_bool", T),
+    {_, S1} = constr_expr(Env, Switched, S0),
+    AltsS =
+        [ case Pat of
+              {typed, _, {id, _, "_"}, _} ->
+                  {CaseT1, SC} =
+                      constr_expr(Env, Case, T, []),
+                  [{subtype, Env, CaseT1, ExprT}|SC];
+              {typed, _, {id, _, _}, _} ->
+                  {CaseT1, SC} =
+                      constr_expr(
+                        Env, {block, CaseAnn, [{letval, CaseAnn, Pat, Switched}, Case]},
+                        T, []),
+                  [{subtype, Env, CaseT1, ExprT}|SC];
+              {typed, _, {bool, _, Bool}, _} ->
+                  Env1 = assert(case Bool of
+                                    true -> Switched;
+                                    false -> ?op('!', Switched)
+                                end
+                               , Env),
                   {CaseT1, SC} =
                       constr_expr(Env1, Case, T, []),
                   [{subtype, Env1, CaseT1, ExprT}|SC]
@@ -768,6 +803,7 @@ filter_obvious([H|T], Acc) ->
     end.
 
 solve(_Env, Cs) ->
+    ?DBG("CONSTRAINTS:\n~s", [string:join([aeso_pretty:pp(constr, C)||C <- Cs], "\n\n")]),
     Assg0 = solve(init_assg(Cs), Cs, Cs),
     maps:map(fun
                  (_K, V = #ltinfo{env = KEnv, base = BaseType, predicate = Qs}) ->
