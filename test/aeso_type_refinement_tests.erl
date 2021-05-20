@@ -37,22 +37,30 @@ constraints_gen_test_() ->
     aeso_ast_refine_types:init_refiner(),
     [ {"Testing liquid template generation of " ++ ContractName,
        fun() ->
-               try gen_constraints(ContractName) of
+               try run_refine(ContractName) of
                    {ok, AST} ->
                        io:format("~s", [aeso_pretty:pp(decls, AST)]), error(success);
+                   {error, {contradict, Assump, Promise}} ->
+                       io:format("Could not prove the promise\n  ~s\n"
+                                 "from the assumption\n  ~s\n",
+                                 [aeso_pretty:pp(predicate, Promise), aeso_pretty:pp(predicate, Assump)]
+                                ),
+                       error(contradict);
                    {error, ErrBin} ->
                        io:format("\n~s", [ErrBin]),
                        error(ErrBin)
                catch E:T:S -> io:format("\n\n\n***** CHUJ 8===>\n~p: ~p\nstack:\n~p\n", [E, T, S]), error(T)
                end
            end} || ContractName <- compilable_contracts()].
-gen_constraints(Name) ->
+
+
+run_refine(Name) ->
     io:format("no elo\n\n"),
     ContractString = aeso_test_utils:read_contract(Name),
     Ast = aeso_parser:string(ContractString, sets:new(), []),
     {_, _, TAst} = aeso_ast_infer_types:infer(Ast, [return_env]),
     RAst = aeso_ast_refine_types:refine_ast(TAst),
-    {ok, RAst}.
+    RAst.
 
 %% compilable_contracts() -> [ContractName].
 %%  The currently compilable contracts.

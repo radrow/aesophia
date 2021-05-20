@@ -473,9 +473,9 @@ refine_ast(AST) ->
     try solve(Env2, CS2) of
         Assg ->
             AST2 = apply_assg(Assg, AST1),
-            AST2
-    catch throw:{contradict, C} ->
-            {error, {contradics, C}}
+            {ok, AST2}
+    catch throw:{contradict, As, Conc} ->
+            {error, {contradict, As, Conc}}
     end.
 
 
@@ -997,15 +997,17 @@ valid_in({subtype, Env,
     SubPred = pred_of(Assg, SubP),
     EnvPred = pred_of(Assg, Env),
     AssumpPred = EnvPred ++ SubPred,
-    case impl_holds(bind_var(nu(), Base, Env), AssumpPred, pred_of(Assg, SupP)) of
+    ConclPred = pred_of(Assg, SupP),
+    case impl_holds(bind_var(nu(), Base, Env), AssumpPred, ConclPred) of
         true -> true;
         false ->
             ?DBG("**** CONTRADICTION"),
-            throw({contradict, C})
+            throw({contradict, SubPred, ConclPred})
     end;
 valid_in(C = {subtype, _, _, _}, _) -> %% We trust the typechecker
     ?DBG("SKIPPING SUBTYPE: ~s", [aeso_pretty:pp(constr, C)]),
     true.
+
 
 weaken({subtype_group, Subs, Base, SubPredVar}, Assg) ->
     ?DBG("**** WEAKENING SUB FOR ~p", [SubPredVar]),
