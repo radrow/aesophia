@@ -296,11 +296,11 @@ dep_type({dep_fun_t, _, Named, Args, Ret}) ->
     follow
       ( hsep(
           [args_type(Named)] ++
-          [ beside([text("{"), name(Name), text(":"), dep_type(DT), text("}")])
+          [ beside([text("{"), name(Name), text(":"), type(DT), text("}")])
             || {Name, DT} <- Args]
           ++ [text("=>")]
           )
-      , dep_type(Ret)
+      , type(Ret)
       );
 dep_type(T = {tvar, _, _}) ->
     name(T).
