@@ -4,6 +4,8 @@ contract C =
   entrypoint f(x:int) =
     Call.gas_price
 
+  entrypoint aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa(x) = x + 1
+
 
 
 

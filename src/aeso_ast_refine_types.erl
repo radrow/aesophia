@@ -48,6 +48,10 @@
 %% Type imports
 -type predicate()   :: aeso_syntax:predicate().
 -type expr()        :: aeso_syntax:expr().
+-type decl()        :: aeso_syntax:decl().
+-type letfun()      :: aeso_syntax:letfun().
+-type fundecl()     :: aeso_syntax:fundecl().
+-type ast()         :: aeso_syntax:ast().
 -type type()        :: aeso_syntax:type().
 -type dep_type(Q)   :: aeso_syntax:dep_type(Q).
 -type id()          :: aeso_syntax:id().
@@ -155,9 +159,16 @@ set_qname(Xs, {qcon, Ann, _}) -> qcon(Ann, Xs).
 
 -spec push_scope(aeso_syntax:con(), env()) -> env().
 push_scope(Con, Env) ->
-    Name = name(Con),
-    New  = Env#env.namespace ++ [Name],
-    Env#env{ namespace = New, scopes = (Env#env.scopes)#{ New => #scope{} } }.
+    Name   = name(Con),
+    New    = Env#env.namespace ++ [Name],
+    Scopes = Env#env.scopes,
+    Env#env{ namespace = New,
+             scopes =
+                 case maps:get(New, Scopes, undefined) of
+                     undefined -> Scopes#{ New => #scope{} };
+                     _         -> Scopes
+                 end
+           }.
 
 -spec pop_scope(env()) -> env().
 pop_scope(Env) ->
@@ -280,7 +291,6 @@ init_refiner() ->
     put(id_supply, 0),
     ok.
 
-
 init_env() ->
     Ann     = ann(),
     Bool    = {id, Ann, "bool"},
@@ -343,8 +353,11 @@ init_env() ->
         { fun_env = MkDefs(
                    [{"to_int", DFun1({id("bytes"), Bytes(any)}, ?d_nonneg_int)}]) },
 
+    TopScope = #scope{fun_env = #{}},
+
     #env{ scopes =
-            #{ ["Chain"]    => ChainScope
+            #{ []           => TopScope
+             , ["Chain"]    => ChainScope
              , ["Contract"] => ContractScope
              , ["Call"]     => CallScope
              , ["String"]   => StringScope
@@ -366,6 +379,29 @@ find_cool_ints(_, Acc) ->
 
 with_cool_ints_from(AST, Env = #env{cool_ints = CI}) ->
     Env#env{cool_ints = find_cool_ints(AST) ++ CI}.
+
+-spec bind_ast_funs(ast(), env()) -> env().
+bind_ast_funs(AST, Env) ->
+    lists:foldr(
+      fun({HEAD, _, Con, Defs}, Env0)
+            when HEAD =:= namespace orelse HEAD =:= contract orelse HEAD =:= contract_main ->
+              Env1 = push_scope(Con, Env0),
+              Env2 = bind_funs(
+                       [ begin
+                             ArgsT =
+                                 [ {ArgName, fresh_liquid(contravariant, "arg_" ++ StrName, T)}
+                                   || {typed, _, ArgName = {id, _, StrName}, T} <- Args
+                                 ],
+                             TypeDep = {dep_fun_t, FAnn, [], ArgsT, fresh_liquid("ret", RetT)},
+                             {Name, TypeDep}
+                         end
+                         || {letfun, FAnn, {id, _, Name}, Args, RetT, _} <- Defs
+                       ],
+                       Env1),
+              Env3 = pop_scope(Env2),
+              Env3
+      end,
+     Env, AST).
 
 
 %% -- Fresh stuff --------------------------------------------------------------
@@ -416,9 +452,6 @@ fresh_liquid(Variance, Hint, T) when is_tuple(T) ->
     list_to_tuple(fresh_liquid(Variance, Hint, tuple_to_list(T)));
 fresh_liquid(_, _, X) -> X.
 
-
-%% -- Constraint generation ----------------------------------------------------
-
 -spec switch_variance(variance()) -> variance().
 switch_variance(covariant) ->
     contravariant;
@@ -427,29 +460,51 @@ switch_variance(contravariant) ->
 switch_variance(forced_covariant) ->
     forced_covariant.
 
--spec constr_con(env(), aeso_syntax:decl()) -> {env(), aeso_syntax:decl(), [constr()]}.
-constr_con(Env0, {contract, Ann, Con, Defs}) ->
-    Env1 = push_scope(Con, Env0),
-    Env2 =
-        bind_funs(
-          [ begin
-                ArgsT =
-                    [ {ArgName, fresh_liquid(contravariant, "arg_" ++ StrName, T)}
-                      || {typed, _, ArgName = {id, _, StrName}, T} <- Args
-                    ],
-                TypeDep = {dep_fun_t, FAnn, [], ArgsT, fresh_liquid("ret", RetT)},
-                {Name, TypeDep}
-            end
-           || {letfun, FAnn, {id, _, Name}, Args, RetT, _} <- Defs
-          ],
-          Env1),
-    {Defs1, Ss} = lists:unzip(
-                   [constr_letfun(Env2, Def, []) || Def <- Defs]
-                  ),
-    S = lists:flatten(Ss),
-    {Env2, {contract, Ann, Con, Defs1}, S}.
 
--spec constr_letfun(env(), aeso_syntax:letfun(), [constr()]) -> {aeso_syntax:fundecl(), [constr()]}.
+%% -- Entrypoint ---------------------------------------------------------------
+
+refine_ast(AST) ->
+    Env0 = init_env(),
+    Env1 = with_cool_ints_from(AST, Env0),
+    Env2 = bind_ast_funs(AST, Env1),
+    {AST1, CS0} = constr_ast(Env2, AST),
+    CS1 = simplify(CS0),
+    CS2 = group_subtypes(CS1),
+    try solve(Env2, CS2) of
+        Assg ->
+            AST2 = apply_assg(Assg, AST1),
+            AST2
+    catch throw:{contradict, C} ->
+            {error, {contradics, C}}
+    end.
+
+
+%% -- Constraint generation ----------------------------------------------------
+
+-spec constr_ast(env(), ast()) -> {ast(), [constr()]}.
+constr_ast(Env, AST) ->
+    lists:foldr(
+      fun(Def, {Decls, S00}) ->
+              {Decl, S01} = constr_con(Env, Def, S00),
+              {[Decl|Decls], S01}
+      end,
+      {[], []}, AST
+     ).
+
+-spec constr_con(env(), decl(), [constr()]) -> {decl(), [constr()]}.
+constr_con(Env0, {contract, Ann, Con, Defs}, S0) ->
+    Env1 = push_scope(Con, Env0),
+    {Defs1, S1} =
+        lists:foldr(
+          fun(Def, {Decls, S00}) ->
+                  {Decl, S01} = constr_letfun(Env1, Def, S00),
+                  {[Decl|Decls], S01}
+          end,
+          {[], S0}, Defs
+         ),
+    {{contract, Ann, Con, Defs1}, S1}.
+
+-spec constr_letfun(env(), letfun(), [constr()]) -> {fundecl(), [constr()]}.
 constr_letfun(Env0, {letfun, Ann, Id = {id, _, _}, Args, _RetT, Body}, S0) ->
     ArgsT =
         [ {ArgId, fresh_liquid(contravariant, "argi_" ++ ArgName, T)}
@@ -839,6 +894,17 @@ pred_of(Assg, Env = #env{path_pred = PathPred}) ->
 pred_of(_, _) ->
     [].
 
+simplify_assg(Assg) ->
+    maps:map(fun(_K, V = #ltinfo{env = KEnv, base = BaseType, predicate = Qs}) ->
+                     V#ltinfo{
+                       predicate =
+                           simplify_pred(
+                             bind_var(nu(), BaseType, KEnv),
+                             Qs
+                            )
+                      }
+             end, Assg).
+
 %% -- Solving ------------------------------------------------------------------
 
 simplify(L) when is_list(L) ->
@@ -890,16 +956,7 @@ filter_obvious([H|T], Acc) ->
 solve(_Env, Cs) ->
     ?DBG("CONSTRAINTS:\n~s", [string:join([aeso_pretty:pp(constr, C)||C <- Cs], "\n\n")]),
     Assg0 = solve(init_assg(Cs), Cs, Cs),
-    maps:map(fun
-                 (_K, V = #ltinfo{env = KEnv, base = BaseType, predicate = Qs}) ->
-                     V#ltinfo{
-                       predicate =
-                           simplify_pred(
-                             bind_var(nu(), BaseType, KEnv),
-                             Qs
-                            )
-                      }
-            end, Assg0).
+    simplify_assg(Assg0).
 solve(Assg, _, []) ->
     Assg;
 solve(Assg, AllCs, [C|Rest]) ->
