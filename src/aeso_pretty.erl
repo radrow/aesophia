@@ -369,7 +369,7 @@ constr_env(Env) ->
               [beside([expr(Var), text(" : "), type(T)])
                || {Var, T} <- aeso_ast_refine_types:type_binds(Env)])
            )
-      %% , predicate(GuardPreds) %% FIXME
+      , predicate(aeso_ast_refine_types:path_pred(Env))
       ]).
 
 under_constr_env(Env, X) ->
