@@ -19,6 +19,30 @@
 -define(DBG(A, B), ?debugFmt(?DBG_COLOR(A), B)).
 -define(DBG(A), ?debugMsg(?DBG_COLOR(A))).
 
+
+-define(refined(T, Q), {refined_t, element(2, T), T, Q}).
+-define(op(A, Op, B), {app, [{format, infix}|ann()], {Op, ann()}, [A, B]}).
+-define(op(Op, B), {app, [{format, prefix}|ann()], {Op, ann()}, [B]}).
+
+-define(int(I), {int, ann(), I}).
+-define(int_tp, {id, _, "int"}).
+-define(int_t, {id, ann(), "int"}).
+
+-define(d_pos_int, ?refined(?int_t, [?op(nu(), '>', ?int(0))])).
+-define(d_nonneg_int, ?refined(?int_t, [?op(nu(), '>=', ?int(0))])).
+-define(d_nonzero_int, ?refined(?int_t, [?op(nu(), '!=', ?int(0))])).
+
+-define(bool(B), {bool, _, B}).
+-define(bool_tp, {id, _, "bool"}).
+-define(bool_t, {id, ann(), "bool"}).
+
+-define(string(S), {string, _, S}).
+-define(string_tp, {id, _, "string"}).
+-define(string_t, {id, ann(), "string"}).
+
+-define(typed(Expr, Type), {typed, element(2, Expr), Expr, Type}).
+
+
 %% -- Types --------------------------------------------------------------------
 
 %% Type imports
@@ -108,6 +132,11 @@ qid(X) when is_list(X) ->
 -spec qid(ann(), qname()) -> aeso_syntax:id() | aeso_syntax:qid().
 qid(Ann, [X]) -> {id, Ann, X};
 qid(Ann, Xs) when is_list(Xs) -> {qid, Ann, Xs}.
+
+id(X) ->
+    id(ann(), X).
+id(Ann, X) ->
+    {id, Ann, X}.
 
 qcon(X) ->
     qcon(ann(), X).
@@ -224,7 +253,7 @@ lookup_env1(#env{ scopes = Scopes }, Kind, QName) ->
 type_of(Env, Id) ->
     case lookup_env(Env, term, qname(Id)) of
         false ->
-            error({unbound_variable, Id});
+            undefined;
         {QId, Ty} -> {set_qname(QId, Id), Ty}
     end.
 
@@ -253,8 +282,75 @@ init_refiner() ->
 
 
 init_env() ->
-    #env{
-      }.
+    Ann     = ann(),
+    Bool    = {id, Ann, "bool"},
+    String  = {id, Ann, "string"},
+    Address = {id, Ann, "address"},
+    Hash    = {id, Ann, "hash"},
+    Bits    = {id, Ann, "bits"},
+    Bytes   = fun(Len) -> {bytes_t, Ann, Len} end,
+    Unit    = {tuple_t, Ann, []},
+    Option  = fun(T) -> {app_t, Ann, {id, Ann, "option"}, [T]} end,
+    DFun    = fun(Ts, T) -> {dep_fun_t, Ann, [], Ts, T} end,
+    DFun1   = fun(S, T) -> DFun([S], T) end,
+    %% Lambda    = fun(Ts, T) -> {fun_t, Ann, [], Ts, T} end,
+    %% Lambda1   = fun(S, T) -> Lambda([S], T) end,
+    StateDFun  = fun(Ts, T) -> {dep_fun_t, [stateful|Ann], [], Ts, T} end,
+
+    MkDefs = fun maps:from_list/1,
+
+    ChainScope = #scope
+        { fun_env = MkDefs(
+                     %% Spend transaction.
+                    [{"spend",        StateDFun([{id("addr"), Address}, ?d_nonneg_int], Unit)},
+                     %% Chain environment
+                     {"balance",      DFun1({id("addr"), Address}, ?d_nonneg_int)},
+                     {"block_hash",   DFun1(?d_nonneg_int, Option(Hash))},
+                     {"timestamp",    ?d_pos_int},
+                     {"block_height", ?d_pos_int},
+                     {"difficulty",   ?d_nonneg_int},
+                     {"gas_limit",    ?d_pos_int}])
+        },
+
+    ContractScope = #scope
+        { fun_env = MkDefs(
+                    [{"balance", ?d_nonneg_int}]) },
+
+    CallScope = #scope
+        { fun_env = MkDefs(
+                    [{"value",     ?d_nonneg_int},
+                     {"gas_price", ?d_pos_int},
+                     {"gas_left",  DFun([], ?d_pos_int)}])
+        },
+
+    %% Strings
+    StringScope = #scope
+        { fun_env = MkDefs(
+                     [{"length",  DFun1({id("str"), String}, ?d_nonneg_int)}])
+        },
+
+    %% Bits
+    BitsScope = #scope
+        { fun_env = MkDefs(
+                     [{"set",          DFun([{id("bits"), Bits}, ?d_nonneg_int], Bits)},
+                      {"clear",        DFun([{id("bits"), Bits}, ?d_nonneg_int], Bits)},
+                      {"test",         DFun([{id("bits"), Bits}, ?d_nonneg_int], Bool)},
+                      {"sum",          DFun1({id("bits"), Bits}, ?d_nonneg_int)}])
+                     },
+
+    %% Bytes
+    BytesScope = #scope
+        { fun_env = MkDefs(
+                   [{"to_int", DFun1({id("bytes"), Bytes(any)}, ?d_nonneg_int)}]) },
+
+    #env{ scopes =
+            #{ ["Chain"]    => ChainScope
+             , ["Contract"] => ContractScope
+             , ["Call"]     => CallScope
+             , ["String"]   => StringScope
+             , ["Bits"]     => BitsScope
+             , ["Bytes"]    => BytesScope
+             } }.
 
 find_cool_ints(Expr) ->
     sets:to_list(find_cool_ints(Expr, sets:from_list([0, 1, -1]))).
@@ -378,16 +474,6 @@ constr_letfun(Env0, {letfun, Ann, Id = {id, _, _}, Args, _RetT, Body}, S0) ->
     {{fun_decl, Ann, Id, DepSelfT}, S3}.
 
 
--define(refined(T, Q), {refined_t, element(2, T), T, Q}).
--define(op(A, Op, B), {app, [{format, infix}|ann()], {Op, ann()}, [A, B]}).
--define(op(Op, B), {app, [{format, prefix}|ann()], {Op, ann()}, [B]}).
--define(int(I), {int, ann(), I}).
--define(int_tp, {id, _, "int"}).
--define(int_t, {id, ann(), "int"}).
--define(bool_tp, {id, _, "bool"}).
--define(bool_t, {id, ann(), "bool"}).
--define(typed(Expr, Type), {typed, element(2, Expr), Expr, Type}).
-
 constr_expr_list(Env, Es, S) ->
     constr_expr_list(Env, Es, [], S).
 constr_expr_list(_, [], Acc, S) ->
@@ -413,11 +499,12 @@ constr_expr(Env, {typed, _, E, T1}, T2, S) ->
         true -> constr_expr(Env, E, T1, S);
         false -> error({"wtf, internal type mismatch", T1, T2})
     end;
-constr_expr(Env, Expr = {id, _, _}, _T, S) ->
+constr_expr(Env, Expr = {IdHead, _, _}, T, S)
+  when IdHead =:= id orelse IdHead =:= qid ->
     case type_of(Env, Expr) of
-        %% undefined ->
-        %%     Eq = ?op(nu(), '==', Expr),
-        %%     {{refined_t, ann(), T, [Eq]}, S};
+        undefined ->
+            Eq = ?op(nu(), '==', Expr),
+            {{refined_t, ann(), T, [Eq]}, S};
         {_, {refined_t, Ann, B, P}} ->
             Eq = ?op(nu(), '==', Expr), %% IF THIS IS THE ONLY Q THEN IT WORKS BETTER
             {{refined_t, Ann, B, [Eq]}
@@ -427,8 +514,6 @@ constr_expr(Env, Expr = {id, _, _}, _T, S) ->
             };
         {_, T1} -> {T1, S}
     end;
-constr_expr(Env, {qid, Ann, Qid}, T, S) ->
-    constr_expr(Env, {id, Ann, lists:last(Qid)}, T, S); %% FIXME
 constr_expr(_Env, I = {int, _, _}, T = ?int_tp, S) ->
     {?refined(T, [?op(nu(), '==', I)]), S};
 constr_expr(_Env, {bool, _, B}, T, S) ->
