@@ -39,7 +39,7 @@ constraints_gen_test_() ->
        fun() ->
                try gen_constraints(ContractName) of
                    {ok, AST} ->
-                       io:format("~p", [AST]), error(success);
+                       io:format("~s", [aeso_pretty:pp(decls, AST)]), error(success);
                    {error, ErrBin} ->
                        io:format("\n~s", [ErrBin]),
                        error(ErrBin)
@@ -51,42 +51,8 @@ gen_constraints(Name) ->
     ContractString = aeso_test_utils:read_contract(Name),
     Ast = aeso_parser:string(ContractString, sets:new(), []),
     {_, _, TAst} = aeso_ast_infer_types:infer(Ast, [return_env]),
-    [ begin
-          Env0 = aeso_ast_refine_types:init_env(),
-          Env1 = aeso_ast_refine_types:with_cool_ints_from(Ast, Env0),
-          {Env2, {contract, _, _, Defs}, Cs} = aeso_ast_refine_types:constr_con(Env1, Con),
-          Cs1 = aeso_ast_refine_types:simplify(Cs),
-          Cs2 = aeso_ast_refine_types:group_subtypes(Cs1),
-          Assg = aeso_ast_refine_types:solve(Env2, Cs2),
-          io:format("\n\n**** EXTERNAL:\n"),
-          [ io:format("~s : ~s\n", [aeso_pretty:pp(expr, Expr), aeso_pretty:pp(dep_type, aeso_ast_refine_types:apply_assg(Assg, T))])
-           || {Expr, T} <- aeso_ast_refine_types:type_binds(Env2)
-          ],
-          io:format("\n\n**** INTERNAL:\n"),
-          [ io:format("_ : ~s\n", [aeso_pretty:pp(decl, aeso_ast_refine_types:apply_assg(Assg, T))])
-            || T <- Defs
-          ]
-      end
-     || Con <- TAst
-    ],
-    %% [ begin
-    %%       {T, Cs} = aeso_ast_refine_types:constr_letfun(aeso_ast_refine_types:init_type_env(), Decl, []),
-    %%       io:format("\n*** INFERRED\n\n~s\n\n",
-    %%                 [prettypr:format(aeso_pretty:dep_type(T))
-    %%                 ]),
-    %%       Cs1 = aeso_ast_refine_types:simplify(Cs),
-    %%       Cs2 = aeso_ast_refine_types:group_subtypes(Cs1),
-    %%       io:format("**** CONSTRAINTS ****\n\n"),
-    %%       [io:format("~s\n\n", [prettypr:format(aeso_pretty:constr(C))]) || C <- Cs],
-    %%       Assg = aeso_ast_refine_types:solve(Cs2),
-    %%       T1 = aeso_ast_refine_types:apply_assg(Assg, T),
-    %%       io:format("**** SOLVED ****\n\n~s\n", [aeso_pretty:pp(dep_type, T1)])
-    %%   end
-    %%   || {contract, _, _, Decls} <- TAst,
-    %%      Decl <- Decls,
-    %%     element(1, Decl) =:= letfun
-    %% ],
-    {ok, ok}.
+    RAst = aeso_ast_refine_types:refine_ast(TAst),
+    {ok, RAst}.
 
 %% compilable_contracts() -> [ContractName].
 %%  The currently compilable contracts.
