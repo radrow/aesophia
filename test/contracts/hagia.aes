@@ -2,7 +2,7 @@
 
 contract C =
   stateful entrypoint f(a, x:int) =
-    Chain.spend(a, x*x)
+    if(a < x) a else x
 
 
 

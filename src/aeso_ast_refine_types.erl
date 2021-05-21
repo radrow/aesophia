@@ -508,7 +508,7 @@ constr_con(Env0, {contract, Ann, Con, Defs}, S0) ->
     {{contract, Ann, Con, Defs1}, S1}.
 
 -spec constr_letfun(env(), letfun(), [constr()]) -> {fundecl(), [constr()]}.
-constr_letfun(Env0, {letfun, Ann, Id = {id, _, _}, Args, _RetT, Body}, S0) ->
+constr_letfun(Env0, {letfun, Ann, Id = {id, _, Name}, Args, RetT, Body}, S0) ->
     ArgsT =
         [ {ArgId, fresh_liquid(contravariant, "argi_" ++ ArgName, T)}
           || {typed, _, ArgId = {id, _, ArgName}, T} <- Args
@@ -517,7 +517,8 @@ constr_letfun(Env0, {letfun, Ann, Id = {id, _, _}, Args, _RetT, Body}, S0) ->
     Env1 = bind_vars(ArgsT, Env0),
     Body1 = a_normalize(Body),
     ?DBG("NORMALIZED:\n~s\n\nTO\n\n~s\n\n\n", [aeso_pretty:pp(expr, Body), aeso_pretty:pp(expr, Body1)]),
-    {DepRetT, S2} = constr_expr(Env1, Body1, S1),
+    DepRetT = fresh_liquid("ret_" ++ Name, RetT),
+    {BodyT, S2} = constr_expr(Env1, Body1, S1),
     DepSelfT =
         { dep_fun_t, Ann, []
         , ArgsT
@@ -525,7 +526,9 @@ constr_letfun(Env0, {letfun, Ann, Id = {id, _, _}, Args, _RetT, Body}, S0) ->
         },
     {_, GlobalFunType} = type_of(Env1, Id),
     S3 = [ {subtype, Env1, DepSelfT, GlobalFunType}
+         , {subtype, Env1, BodyT, DepRetT}
          , {well_formed, Env1, GlobalFunType}
+         , {well_formed, Env1, DepRetT}
          | S2
          ],
 
@@ -623,6 +626,7 @@ constr_expr(_Env, Expr = {'-', Ann}, _, S) ->
     , S
     };
 constr_expr(Env, {app, _, F, Args}, _, S0) ->
+    ?DBG("VARS IN APP ~p", [Env#env.var_env]),
     {{dep_fun_t, _, _, ArgsFT, RetT}, S1} = constr_expr(Env, F, S0),
     {ArgsT, S2} = constr_expr_list(Env, Args, S1),
     ArgSubst = [{X, Expr} || {{X, _}, Expr} <- lists:zip(ArgsFT, Args)],
@@ -772,6 +776,8 @@ group_subtypes(Cs) ->
 %% -- Substitution -------------------------------------------------------------
 
 apply_subst1({id, _, X}, Expr, {id, _, X}) ->
+    Expr;
+apply_subst1({qid, _, X}, Expr, {qid, _, X}) ->
     Expr;
 apply_subst1({ltvar, X}, Expr, {ltvar, X}) ->
     Expr;
@@ -1176,8 +1182,8 @@ sort_preds_by_meaningfulness(Preds0) ->
     OpList =
         lists:zip(lists:reverse(['==', '>', '<', '>=', '=<', '!=']), lists:seq(1, 6)),
     Cmp = fun ({app, _, {OpL, _}, [LL, LR]}, {app, _, {OpR, _}, [RL, RR]}) ->
-                  SimplBonus = fun SB(?nu_p)        -> 100000;
-                                   SB({int, _, _})  -> 10000;
+                  SimplBonus = fun SB(?nu_p)        -> 1000000000000000;
+                                   SB({int, _, I})  -> 100000 - abs(I);
                                    SB({bool, _, _}) -> 10000;
                                    SB({id, _, _})   -> 1000;
                                    SB({qid, _, _})  -> 100;
