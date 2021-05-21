@@ -96,5 +96,10 @@ compilable_contracts() ->
        , {"C", "trim"} => "$nu > -1 && $nu >= x"
        }
       }
+     },
+     {"test",
+      {success,
+       #{{"C", "f"} => something}
+      }
      }
     ].
