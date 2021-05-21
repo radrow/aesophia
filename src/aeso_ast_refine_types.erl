@@ -505,7 +505,18 @@ constr_con(Env0, {contract, Ann, Con, Defs}, S0) ->
           end,
           {[], S0}, Defs
          ),
-    {{contract, Ann, Con, Defs1}, S1}.
+    {{contract, Ann, Con, Defs1}, S1};
+constr_con(Env0, {namespace, Ann, Con, Defs}, S0) ->
+    Env1 = push_scope(Con, Env0),
+    {Defs1, S1} =
+        lists:foldr(
+          fun(Def, {Decls, S00}) ->
+                  {Decl, S01} = constr_letfun(Env1, Def, S00),
+                  {[Decl|Decls], S01}
+          end,
+          {[], S0}, Defs
+         ),
+    {{namespace, Ann, Con, Defs1}, S1}.
 
 -spec constr_letfun(env(), letfun(), [constr()]) -> {fundecl(), [constr()]}.
 constr_letfun(Env0, {letfun, Ann, Id = {id, _, Name}, Args, RetT, Body}, S0) ->
@@ -639,7 +650,6 @@ constr_expr(Env, {'if', _, Cond, Then, Else}, T, S0) ->
     {_, S1} = constr_expr(Env, Cond, S0),
     {ThenT, S2} = constr_expr(assert(Cond, Env), Then, S1),
     {ElseT, S3} = constr_expr(assert(?op('!', Cond), Env),Else, S2),
-    ?DBG("IF TYPE ~p", [ExprT]),
     { ExprT
     , [ {well_formed, Env, ExprT}
       , {subtype, assert(Cond, Env), ThenT, ExprT}
@@ -647,61 +657,10 @@ constr_expr(Env, {'if', _, Cond, Then, Else}, T, S0) ->
       | S3
       ]
     };
-constr_expr(Env, {switch, _, Switched = {typed, _, _, ?int_tp}, Alts}, T, S0) ->
-    ExprT = fresh_liquid("switch_int", T),
-    {_, S1} = constr_expr(Env, Switched, S0),
-    AltsS =
-        [ case Pat of
-              {typed, _, {id, _, "_"}, _} ->
-                  {CaseT1, SC} =
-                      constr_expr(Env, Case, T, []),
-                  [{subtype, Env, CaseT1, ExprT}|SC];
-              {typed, _, {id, _, _}, _} ->
-                  {CaseT1, SC} =
-                      constr_expr(
-                        Env, {block, CaseAnn, [{letval, CaseAnn, Pat, Switched}, Case]},
-                        T, []),
-                  [{subtype, Env, CaseT1, ExprT}|SC];
-              {typed, _, {int, _, _}, _} ->
-                  Env1 = assert(?op(Switched, '==', Pat), Env),
-                  {CaseT1, SC} =
-                      constr_expr(Env1, Case, T, []),
-                  [{subtype, Env1, CaseT1, ExprT}|SC]
-          end
-         || {'case', CaseAnn, Pat, Case} <- Alts
-        ],
-    S2 = lists:concat(AltsS) ++ S1,
-    {ExprT
-    , [{well_formed, Env, ExprT}|S2]
-    };
-constr_expr(Env, {switch, _, Switched = {typed, _, _, ?bool_tp}, Alts}, T, S0) ->
+constr_expr(Env, {switch, _, Switched, Alts}, T, S0) ->
     ExprT = fresh_liquid("switch_bool", T),
-    {_, S1} = constr_expr(Env, Switched, S0),
-    AltsS =
-        [ case Pat of
-              {typed, _, {id, _, "_"}, _} ->
-                  {CaseT1, SC} =
-                      constr_expr(Env, Case, T, []),
-                  [{subtype, Env, CaseT1, ExprT}|SC];
-              {typed, _, {id, _, _}, _} ->
-                  {CaseT1, SC} =
-                      constr_expr(
-                        Env, {block, CaseAnn, [{letval, CaseAnn, Pat, Switched}, Case]},
-                        T, []),
-                  [{subtype, Env, CaseT1, ExprT}|SC];
-              {typed, _, {bool, _, Bool}, _} ->
-                  Env1 = assert(case Bool of
-                                    true -> Switched;
-                                    false -> ?op('!', Switched)
-                                end
-                               , Env),
-                  {CaseT1, SC} =
-                      constr_expr(Env1, Case, T, []),
-                  [{subtype, Env1, CaseT1, ExprT}|SC]
-          end
-         || {'case', CaseAnn, Pat, Case} <- Alts
-        ],
-    S2 = lists:concat(AltsS) ++ S1,
+    {SwitchedT, S1} = constr_expr(Env, Switched, S0),
+    S2 = constr_cases(Env, Switched, SwitchedT, ExprT, Alts, S1),
     {ExprT
     , [{well_formed, Env, ExprT}|S2]
     };
@@ -722,10 +681,13 @@ constr_expr(Env, {lam, _, Args, Body}, {fun_t, TAnn, _, _, RetT}, S0) ->
     };
 constr_expr(Env, [E], _, S) ->
     constr_expr(Env, E, S);
-constr_expr(Env0, [{letval, _, {typed, _, Id = {id, _, Name}, _}, Val}|Rest], T, S0) ->
-    ExprT = fresh_liquid(Name, T), %% Required to have clean scoping
+constr_expr(Env0, [{letval, _, Pat, Val}|Rest], T, S0) ->
+    ExprT = fresh_liquid(case Pat of
+                             {typed, _, {id, _, Name}, _} -> Name;
+                             _ -> "pat"
+                         end, T), %% Required to have clean scoping
     {ValT, S1} = constr_expr(Env0, Val, S0),
-    Env1 = bind_var(Id, ValT, Env0),
+    {Env1, _} = match_to_pattern(Env0, Pat, Val, ValT),
     {RestT, S2} = constr_expr(Env1, Rest, T, S1),
     {ExprT,
      [ {well_formed, Env0, ExprT}
@@ -756,6 +718,45 @@ constr_expr(_Env, [], T, S) ->
     {T, S};
 constr_expr(_, E, A, B) ->
     error({todo, E, A, B}).
+
+constr_cases(Env, Switched, SwitchedT, ExprT, Alts, S) ->
+    constr_cases(Env, Switched, SwitchedT, ExprT, Alts, [], S).
+
+constr_cases(_Env, _Switched, _SwitchedT, _ExprT, [], _Previous, S) ->
+    %% NOTE here I can add pattern-exhausted constraint = previous -> false
+    S;
+constr_cases(Env, Switched, SwitchedT, ExprT,
+             [{'case', _, Pat, Case}|Rest], Previous, S0) ->
+    {EnvCase0, Pred} = match_to_pattern(Env, Pat, Switched, SwitchedT),
+    EnvCase1 = case Previous of
+                   [] -> EnvCase0;
+                   _ ->
+                       assert(
+                         ?op('!', {app, ann(), {'&&', ann()}, Previous}),
+                         EnvCase0)
+               end,
+    ?DBG("PATH PRED ~s", [aeso_pretty:pp(predicate, EnvCase1#env.path_pred)]),
+    {CaseDT, S1} = constr_expr(EnvCase1, Case, S0),
+    constr_cases(Env, Switched, SwitchedT, ExprT, Rest, Pred ++ Previous,
+                 [ {subtype, EnvCase1, CaseDT, ExprT}
+                 | S1
+                 ]
+                ).
+
+%% match_to_pattern computes
+%%   - Env which will bind variables
+%%   - Predicate to assert that match holds
+match_to_pattern(Env, Pat, Expr, Type) ->
+    {Env1, Pred} = match_to_pattern(Env, Pat, Expr, Type, []),
+    {assert(Pred, Env1), Pred}.
+match_to_pattern(Env, {typed, _, Pat, _}, Expr, Type, Pred) ->
+    match_to_pattern(Env, Pat, Expr, Type, Pred);
+match_to_pattern(Env, {id, _, "_"}, _Expr, _Type, Pred) ->
+    {Env, Pred};
+match_to_pattern(Env, Id = {id, _, _}, _Expr, Type, Pred) ->
+    {bind_var(Id, Type, Env), Pred};
+match_to_pattern(Env, I = {int, _, _}, Expr, _Type, Pred) ->
+    {Env, [?op(Expr, '==', I)|Pred]}.
 
 
 group_subtypes(Cs) ->
