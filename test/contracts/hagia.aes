@@ -1,8 +1,8 @@
 
 
 contract C =
-  entrypoint f(x:int) =
-    1 / x
+  stateful entrypoint f(a, x:int) =
+    Chain.spend(a, x*x)
 
 
 

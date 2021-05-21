@@ -190,7 +190,10 @@ on_scopes(Env = #env{ scopes = Scopes }, Fun) ->
 
 -spec bind_var(id(), lutype(), env()) -> env().
 bind_var(Id, T, Env) ->
-    Env#env{ var_env = (Env#env.var_env)#{name(Id) => T}}.
+    case is_smt_type(T) of
+        true -> Env#env{ var_env = (Env#env.var_env)#{name(Id) => T}};
+        false -> Env
+    end.
 
 -spec bind_nu(lutype(), env()) -> env().
 bind_nu(Type, Env) ->
@@ -312,10 +315,10 @@ init_env() ->
     ChainScope = #scope
         { fun_env = MkDefs(
                      %% Spend transaction.
-                    [{"spend",        StateDFun([{id("addr"), Address}, ?d_nonneg_int], Unit)},
+                    [{"spend",        StateDFun([{id("addr"), Address}, {id("amount"), ?d_nonneg_int}], Unit)},
                      %% Chain environment
                      {"balance",      DFun1({id("addr"), Address}, ?d_nonneg_int)},
-                     {"block_hash",   DFun1(?d_nonneg_int, Option(Hash))},
+                     {"block_hash",   DFun1({id("h"), ?d_nonneg_int}, Option(Hash))},
                      {"timestamp",    ?d_pos_int},
                      {"block_height", ?d_pos_int},
                      {"difficulty",   ?d_nonneg_int},
@@ -1015,7 +1018,6 @@ weaken({subtype_group, Subs, Base, SubPredVar}, Assg) ->
     Filtered =
         [ Q || Q <- Ltinfo#ltinfo.predicate,
                lists:all(fun({Env, Subst, Sub}) ->
-                                 ?DBG("CHECKING SUB"),
                                  Valid = subtype_implies(
                                            bind_var(nu(), Base, Env),
                                            Sub, apply_subst(Subst, Q), Assg),
@@ -1045,6 +1047,7 @@ subtype_implies(Env, {refined_t, _, _, Template}, Q, Assg) ->
         end,
     EnvPred = pred_of(Assg, Env),
     AssumpPred = EnvPred ++ SubPred,
+    ?DBG("APRED ~p", [AssumpPred]),
     impl_holds(Env, AssumpPred, Q).
 
 
@@ -1058,25 +1061,39 @@ impl_holds(_, _, []) -> true;
 impl_holds(Env, Assump, Concl) ->
     ConclExpr  = {app, ann(), {'&&', ann()}, Concl}, %% Improper sophia expr but who cares
     ?DBG("IMPL;\n* ASSUMPTION: ~s\n* CONCLUSION: ~s",
-         [ string:join([aeso_pretty:pp(expr, E)|| E <- Assump], " /\\ ")
-         , string:join([aeso_pretty:pp(expr, E)|| E <- Concl],  " /\\ ")
+         [ string:join([aeso_pretty:pp(expr, E)|| E <- Assump], " && ")
+         , string:join([aeso_pretty:pp(expr, E)|| E <- Concl],  " && ")
          ]),
     aeso_smt:scoped(
       fun() ->
-              [ aeso_smt:declare_const(expr_to_smt(Var), type_to_smt(T))
-                || {Var, T} <- type_binds(Env), element(1, T) =/= dep_fun_t
+              [ begin
+                    aeso_smt:declare_const(expr_to_smt(Var), type_to_smt(T))
+                end
+                || {Var, T} <- type_binds(Env), element(1, T) =/= dep_fun_t,
+                   is_smt_expr(Var),
+                   is_smt_type(T)
               ],
               [ aeso_smt:assert(expr_to_smt(Expr))
                 || Expr <- Assump
               ],
               aeso_smt:assert(expr_to_smt(?op('!', ConclExpr))),
-              Res = not aeso_smt:check_sat(),
-              case Res of
-                  true -> ?DBG("TRUE");
-                  false  -> ?DBG("FALSE")
-              end,
-              Res
+              case aeso_smt:check_sat() of
+                  {error, Err} -> throw({smt_error, Err});
+                  Res ->
+                      case Res of
+                          true -> ?DBG("FALSE");
+                          false  -> ?DBG("HOLDS")
+                      end,
+                      not Res
+              end
       end).
+
+is_smt_type(Expr) ->
+    try type_to_smt(Expr) of
+        _ -> true
+    catch throw:{not_smt_type, _} ->
+            false
+    end.
 
 type_to_smt({refined_t, _, T, _}) ->
     type_to_smt(T);
@@ -1085,19 +1102,19 @@ type_to_smt(?bool_tp) ->
 type_to_smt(?int_tp) ->
     {var, "Int"};
 type_to_smt(T) ->
-    error({not_smt_type, T}).
+    throw({not_smt_type, T}).
 
 is_smt_expr(Expr) ->
     try expr_to_smt(Expr) of
         _ -> true
-    catch throw:_ ->
+    catch throw:{not_smt_expr, _} ->
             false
     end.
 
 expr_to_smt({id, _, Var}) ->
     {var, Var};
 expr_to_smt({qid, _, QVar}) ->
-    {var, string:join(QVar, "__")};
+    {var, string:join(QVar, ".")};
 expr_to_smt({bool, _, true}) ->
     {var, "true"};
 expr_to_smt({bool, _, false}) ->

@@ -2,25 +2,23 @@
 
 -compile([export_all]).
 
--include_lib("eunit/include/eunit.hrl").
-
 -type formula() :: {var, string()}
                  | {int, integer()}
                  | {app, string(), [formula()]}
                    .
--type formulae() :: [formula()].
 
 start_z3() ->
-    PortOpts = [exit_status, {line,1000000}],
+    PortOpts = [exit_status, {line, 100000}],
     Port = open_port({spawn, "z3 -in"}, PortOpts),
-    put(z3_connection, Port),
+    persistent_term:put(z3_connection, Port),
     ok.
 
 stop_z3() ->
-    port_close(get(z3_connection)).
+    port_close(persistent_term:get(z3_connection)),
+    persistent_term:erase(z3_connection).
 
 get_z3() ->
-    Z3 = get(z3_connection),
+    Z3 = persistent_term:get(z3_connection, undefined),
     if Z3 =:= undefined -> throw(z3_disconnected);
        true -> ok
     end,
@@ -29,7 +27,7 @@ get_z3() ->
 send_z3(Query) ->
     Z3 = get_z3(),
     QueryStr = pp_formula(Query),
-    %% io:format("Z3> ~s\n", [QueryStr]),
+    %% io:format("Z3> ~s ~p\n", [QueryStr, self()]),
     port_command(Z3, binary:list_to_bin(QueryStr ++ "\n")).
 
 check_sat() ->
@@ -37,8 +35,7 @@ check_sat() ->
     receive
         {_, {data, {eol, Resp}}} ->
             case string:trim(Resp) of
-                "sat" ->
-                    true;
+                "sat"   -> true;
                 "unsat" -> false;
                 X -> {error, {bad_answer, X}}
             end

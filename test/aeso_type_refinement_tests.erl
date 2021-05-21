@@ -11,30 +11,41 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
-run_test(Test) ->
-    TestFun = list_to_atom(lists:concat([Test, "_test_"])),
-    [ begin
-          io:format("~s\n", [Label]),
-          Fun()
-      end || {Label, Fun} <- ?MODULE:TestFun() ],
+setup() ->
+    io:format("STARGIN... "),
+    aeso_smt:start_z3(),
+    aeso_ast_refine_types:init_refiner(),
     ok.
 
-solver_test_() ->
-    aeso_smt:start_z3(),
-    [ { "SMT solver test"
+unsetup(_) ->
+    io:format("STUPP"),
+    aeso_smt:stop_z3(),
+    ok.
+
+hagia_test_() ->
+    {inorder,
+     {foreach, local, fun setup/0, fun unsetup/1,
+      [ {timeout, 10, smt_solver_test_group()}
+      , {timeout, 10, refiner_test_group()}
+      ]
+     }
+    }.
+
+smt_solver_test_group() ->
+    [ { "x == x"
       , fun() ->
-              ?assert(aeso_ast_refine_types:impl_holds(
-                        aeso_ast_refine_types:bind_var(
-                          {id, [], "x"}, {id, [], "int"},
-                          aeso_ast_refine_types:init_env()),
-                        [],
-                        [{app, [], {'==', []}, [{id, [], "x"}, {id, [], "x"}]}]))
-      end
+                io:format("aAAA"),
+                ?assert(aeso_ast_refine_types:impl_holds(
+                          aeso_ast_refine_types:bind_var(
+                            {id, [], "x"}, {id, [], "int"},
+                            aeso_ast_refine_types:init_env()),
+                          [],
+                          [{app, [], {'==', []}, [{id, [], "x"}, {id, [], "x"}]}]))
+        end
       }
     ].
 
-constraints_gen_test_() ->
-    aeso_ast_refine_types:init_refiner(),
+refiner_test_group() ->
     [ {"Testing liquid template generation of " ++ ContractName,
        fun() ->
                try run_refine(ContractName) of
@@ -42,7 +53,7 @@ constraints_gen_test_() ->
                        io:format("~s", [aeso_pretty:pp(decls, AST)]), error(success);
                    {error, {contradict, Assump, Promise}} ->
                        io:format("Could not prove the promise\n  ~s\n"
-                                 "from the assumption\n  ~s\n",
+                                    "from the assumption\n  ~s\n",
                                  [aeso_pretty:pp(predicate, Promise), aeso_pretty:pp(predicate, Assump)]
                                 ),
                        error(contradict);
@@ -51,7 +62,7 @@ constraints_gen_test_() ->
                        error(ErrBin)
                catch E:T:S -> io:format("\n\n\n***** CHUJ 8===>\n~p: ~p\nstack:\n~p\n", [E, T, S]), error(T)
                end
-           end} || ContractName <- compilable_contracts()].
+       end} || ContractName <- compilable_contracts()].
 
 
 run_refine(Name) ->
