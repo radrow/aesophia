@@ -380,7 +380,9 @@ constr({subtype_group, Subs, _, {ltvar, T}}) when is_list(Subs) ->
           | [ beside([text("  :> "), constr_env(Env), text(" |- "), type(T1)])
              || {Env, _, _, T1} <- Subs
             ]
-          ]).
+          ]);
+constr({unreachable, _, Env}) ->
+    under_constr_env(Env, text("false")).
 
 -spec args_type([aeso_syntax:type()]) -> doc().
 args_type(Args) ->
