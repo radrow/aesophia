@@ -99,7 +99,8 @@
 %% Constraint
 -type constr() :: {subtype, ann(), env(), lutype(), lutype()}
                 | subtype_group()
-                | {well_formed, env(), lutype()}.
+                | {well_formed, env(), lutype()}
+                | {unreachable, ann(), env()}.
 
 %% Information about ltvar
 -record(ltinfo, {base :: type(), predicate :: predicate(), env :: env()}).
@@ -477,8 +478,8 @@ refine_ast(AST) ->
         Assg ->
             AST2 = apply_assg(Assg, AST1),
             {ok, AST2}
-    catch throw:{contradict, Ann, As, Conc} ->
-            {error, {contradict, Ann, As, Conc}}
+    catch throw:E ->
+            {error, E}
     end.
 
 
@@ -721,16 +722,20 @@ constr_expr(_, E, A, B) ->
 
 constr_cases(_Env, _Switched, _SwitchedT, _ExprT, Alts, S) ->
     constr_cases(_Env, _Switched, _SwitchedT, _ExprT, Alts, 0, S).
-constr_cases(_Env, _Switched, _SwitchedT, _ExprT, [], _N, S) ->
-    %% NOTE here I can add pattern-exhausted constraint = previous -> false
-    S;
+constr_cases(Env, Switched, _SwitchedT, _ExprT, [], _N, S) ->
+    [{unreachable, aeso_syntax:get_ann(Switched), Env}|S];
 constr_cases(Env0, Switched, SwitchedT, ExprT,
              [{'case', Ann, Pat, Case}|Rest], N, S0) ->
     {EnvCase, Pred} = match_to_pattern(Env0, Pat, Switched, SwitchedT),
     ?DBG("NEW PRED ~s", [aeso_pretty:pp(predicate, Pred)]),
     Env1 = case Pred of
                [] -> assert(?bool(false), Env0);
-               _ -> assert(?op('!', {app, ann(), {'&&', ann()}, Pred}), Env0)
+               [H|T] ->
+                   PredExpr = lists:foldl(
+                                fun(E, Acc) -> ?op(E, '&&', Acc)
+                                end, H, T
+                               ),
+                   assert(?op('!',  PredExpr), Env0)
            end,
     {CaseDT, S1} = constr_expr(EnvCase, Case, S0),
     constr_cases(Env1, Switched, SwitchedT, ExprT, Rest,
@@ -946,7 +951,9 @@ simplify1(C = {well_formed, Env0, T}) ->
                 bind_vars([{Id, ArgT} || {Id, ArgT} <- Args], Env0),
             simplify([{well_formed, Env1, Ret}|FromArgs]);
         _ -> [C]
-    end.
+    end;
+simplify1(C = {unreachable, _, _}) ->
+    [C].
 
 filter_obvious(L) ->
     filter_obvious(L, []).
@@ -962,6 +969,7 @@ filter_obvious([H|T], Acc) ->
 solve(_Env, Cs) ->
     ?DBG("CONSTRAINTS:\n~s", [string:join([aeso_pretty:pp(constr, C)||C <- Cs], "\n\n")]),
     Assg0 = solve(init_assg(Cs), Cs, Cs),
+    check_unreachable(Assg0, Cs),
     simplify_assg(Assg0).
 solve(Assg, _, []) ->
     Assg;
@@ -1013,6 +1021,8 @@ valid_in({subtype, Ann, Env,
     end;
 valid_in(C = {subtype, _, _, _, _}, _) -> %% We trust the typechecker
     ?DBG("SKIPPING SUBTYPE: ~s", [aeso_pretty:pp(constr, C)]),
+    true;
+valid_in(_, _) ->
     true.
 
 
@@ -1052,6 +1062,17 @@ subtype_implies(Env, {refined_t, _, _, Template}, Q, Assg) ->
     AssumpPred = EnvPred ++ SubPred,
     ?DBG("APRED ~p", [AssumpPred]),
     impl_holds(Env, AssumpPred, Q).
+
+check_unreachable(Assg, [{unreachable, Ann, Env}|Rest]) ->
+    Pred = pred_of(Assg, Env),
+    case impl_holds(Env, Pred, [?bool(false)]) of
+        true -> check_unreachable(Assg, Rest);
+        false -> throw({unreachable, Ann, Env#env.path_pred})
+    end;
+check_unreachable(Assg, [_|Rest]) ->
+    check_unreachable(Assg, Rest);
+check_unreachable(_, []) ->
+    ok.
 
 
 %% -- SMT Solving --------------------------------------------------------------
