@@ -54,10 +54,18 @@ refiner_test_group() ->
                    {{error, {contradict, Assump, Promise}}, {contradict, ExAssump, ExPromise}} ->
                        ?assertEqual(ExAssump, Assump),
                        ?assertEqual(ExPromise, Promise);
-                   {{error, {contradict, Assump, Promise}}, _} ->
-                       io:format("Could not prove the promise\n  ~s\n"
-                                 "from the assumption\n  ~s\n",
-                                 [aeso_pretty:pp(predicate, Promise), aeso_pretty:pp(predicate, Assump)]
+                   {{error, {contradict, Ann, Assump, Promise}}, _} ->
+                       io:format("Could not prove the promise created at ~s ~p:~p\n"
+                                 "~s:\n"
+                                 "  ~s\n"
+                                 "from the assumption\n"
+                                 "  ~s\n",
+                                 [aeso_syntax:get_ann(file, Ann, ""),
+                                  aeso_syntax:get_ann(line, Ann, 0),
+                                  aeso_syntax:get_ann(col, Ann, 0),
+                                  pp_context(aeso_syntax:get_ann(context, Ann, none)),
+                                  aeso_pretty:pp(predicate, Promise),
+                                  aeso_pretty:pp(predicate, Assump)]
                                 ),
                        error(contradict);
                    {{error, ErrBin}, _} ->
@@ -103,3 +111,38 @@ compilable_contracts() ->
       }
      }
     ].
+
+
+pp_context(none) ->
+    "";
+pp_context({app, Ann, {typed, _, Fun, _}, N}) ->
+    io_lib:format(
+      "arising from an application of ~p to its ~s argument",
+      [ aeso_pretty:pp(expr, Fun)
+      , case aeso_syntax:get_ann(format, Ann, prefix) of
+            prefix -> case abs(N rem 10) of
+                          1 -> integer_to_list(N) ++ "st";
+                          2 -> integer_to_list(N) ++ "nd";
+                          3 -> integer_to_list(N) ++ "rd";
+                          _ -> integer_to_list(N) ++ "th"
+                      end;
+            infix -> case N of
+                         1 -> "left";
+                         2 -> "right"
+                     end
+        end
+      ]);
+pp_context(then) ->
+    "arising from the assumption of the `if` condition";
+pp_context(else) ->
+    "arising from the negation of the `if` condition";
+pp_context({switch, N}) ->
+    io_lib:format(
+      "arising from the assumption of triggering of the ~s branch of `switch`",
+      case abs(N rem 10) of
+          1 -> integer_to_list(N) ++ "st";
+          2 -> integer_to_list(N) ++ "nd";
+          3 -> integer_to_list(N) ++ "rd";
+          _ -> integer_to_list(N) ++ "th"
+      end
+     ).
