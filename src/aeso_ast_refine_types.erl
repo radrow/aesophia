@@ -32,7 +32,7 @@
 -define(d_nonneg_int, ?refined(?int_t, [?op(nu(), '>=', ?int(0))])).
 -define(d_nonzero_int, ?refined(?int_t, [?op(nu(), '!=', ?int(0))])).
 
--define(bool(B), {bool, _, B}).
+-define(bool(B), {bool, ann(), B}).
 -define(bool_tp, {id, _, "bool"}).
 -define(bool_t, {id, ann(), "bool"}).
 
@@ -719,26 +719,20 @@ constr_expr(_Env, [], T, S) ->
 constr_expr(_, E, A, B) ->
     error({todo, E, A, B}).
 
-constr_cases(Env, Switched, SwitchedT, ExprT, Alts, S) ->
-    constr_cases(Env, Switched, SwitchedT, ExprT, Alts, [], S).
-
-constr_cases(_Env, _Switched, _SwitchedT, _ExprT, [], _Previous, S) ->
+constr_cases(_Env, _Switched, _SwitchedT, _ExprT, [], S) ->
     %% NOTE here I can add pattern-exhausted constraint = previous -> false
     S;
-constr_cases(Env, Switched, SwitchedT, ExprT,
-             [{'case', _, Pat, Case}|Rest], Previous, S0) ->
-    {EnvCase0, Pred} = match_to_pattern(Env, Pat, Switched, SwitchedT),
-    EnvCase1 = case Previous of
-                   [] -> EnvCase0;
-                   _ ->
-                       assert(
-                         ?op('!', {app, ann(), {'&&', ann()}, Previous}),
-                         EnvCase0)
-               end,
-    ?DBG("PATH PRED ~s", [aeso_pretty:pp(predicate, EnvCase1#env.path_pred)]),
-    {CaseDT, S1} = constr_expr(EnvCase1, Case, S0),
-    constr_cases(Env, Switched, SwitchedT, ExprT, Rest, Pred ++ Previous,
-                 [ {subtype, EnvCase1, CaseDT, ExprT}
+constr_cases(Env0, Switched, SwitchedT, ExprT,
+             [{'case', _, Pat, Case}|Rest], S0) ->
+    {EnvCase, Pred} = match_to_pattern(Env0, Pat, Switched, SwitchedT),
+    ?DBG("NEW PRED ~s", [aeso_pretty:pp(predicate, Pred)]),
+    Env1 = case Pred of
+               [] -> assert(?bool(false), Env0);
+               _ -> assert(?op('!', {app, ann(), {'&&', ann()}, Pred}), Env0)
+           end,
+    {CaseDT, S1} = constr_expr(EnvCase, Case, S0),
+    constr_cases(Env1, Switched, SwitchedT, ExprT, Rest,
+                 [ {subtype, EnvCase, CaseDT, ExprT}
                  | S1
                  ]
                 ).

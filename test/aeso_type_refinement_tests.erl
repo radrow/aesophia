@@ -57,7 +57,7 @@ refiner_test_group() ->
                    {{error, {contradict, Assump, Promise}}, _} ->
                        io:format("Could not prove the promise\n  ~s\n"
                                  "from the assumption\n  ~s\n",
-                                 [aeso_prettyy:pp(predicate, Promise), aeso_pretty:pp(predicate, Assump)]
+                                 [aeso_pretty:pp(predicate, Promise), aeso_pretty:pp(predicate, Assump)]
                                 ),
                        error(contradict);
                    {{error, ErrBin}, _} ->
