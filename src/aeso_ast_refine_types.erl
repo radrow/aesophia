@@ -94,10 +94,10 @@
 -type env() :: #env{}.
 
 %% Grouped subtype constraint
--type subtype_group() :: {subtype_group, [{env(), subst(), lutype()}], type(), ltvar()}.
+-type subtype_group() :: {subtype_group, [{env(), ann(), subst(), lutype()}], type(), ltvar()}.
 
 %% Constraint
--type constr() :: {subtype, env(), lutype(), lutype()}
+-type constr() :: {subtype, ann(), env(), lutype(), lutype()}
                 | subtype_group()
                 | {well_formed, env(), lutype()}.
 
@@ -296,7 +296,7 @@ init_refiner() ->
 
 init_env() ->
     Ann     = ann(),
-    Bool    = {id, Ann, "bool"},
+    Bool    = ?bool_t,
     String  = {id, Ann, "string"},
     Address = {id, Ann, "address"},
     Hash    = {id, Ann, "hash"},
@@ -477,8 +477,8 @@ refine_ast(AST) ->
         Assg ->
             AST2 = apply_assg(Assg, AST1),
             {ok, AST2}
-    catch throw:{contradict, As, Conc} ->
-            {error, {contradict, As, Conc}}
+    catch throw:{contradict, Ann, As, Conc} ->
+            {error, {contradict, Ann, As, Conc}}
     end.
 
 
@@ -536,8 +536,8 @@ constr_letfun(Env0, {letfun, Ann, Id = {id, _, Name}, Args, RetT, Body}, S0) ->
         , DepRetT
         },
     {_, GlobalFunType} = type_of(Env1, Id),
-    S3 = [ {subtype, Env1, DepSelfT, GlobalFunType}
-         , {subtype, Env1, BodyT, DepRetT}
+    S3 = [ {subtype, Ann, Env1, DepSelfT, GlobalFunType}
+         , {subtype, Ann, Env1, BodyT, DepRetT}
          , {well_formed, Env1, GlobalFunType}
          , {well_formed, Env1, DepRetT}
          | S2
@@ -636,13 +636,13 @@ constr_expr(_Env, Expr = {'-', Ann}, _, S) ->
       }
     , S
     };
-constr_expr(Env, {app, _, F, Args}, _, S0) ->
-    ?DBG("VARS IN APP ~p", [Env#env.var_env]),
+constr_expr(Env, {app, Ann, F, Args}, _, S0) ->
     {{dep_fun_t, _, _, ArgsFT, RetT}, S1} = constr_expr(Env, F, S0),
     {ArgsT, S2} = constr_expr_list(Env, Args, S1),
     ArgSubst = [{X, Expr} || {{X, _}, Expr} <- lists:zip(ArgsFT, Args)],
     { apply_subst(ArgSubst, RetT)
-    , [{subtype, Env, ArgT, ArgFT} || {{_, ArgFT}, ArgT} <- lists:zip(ArgsFT, ArgsT)] ++
+    , [{subtype, [{context, {app, Ann, F, N}}|aeso_syntax:get_ann(ArgT)],
+        Env, ArgT, ArgFT} || {{_, ArgFT}, ArgT, N} <- lists:zip3(ArgsFT, ArgsT, lists:seq(1, length(ArgsT)))] ++
       S2
     };
 constr_expr(Env, {'if', _, Cond, Then, Else}, T, S0) ->
@@ -652,8 +652,8 @@ constr_expr(Env, {'if', _, Cond, Then, Else}, T, S0) ->
     {ElseT, S3} = constr_expr(assert(?op('!', Cond), Env),Else, S2),
     { ExprT
     , [ {well_formed, Env, ExprT}
-      , {subtype, assert(Cond, Env), ThenT, ExprT}
-      , {subtype, assert(?op('!', Cond), Env), ElseT, ExprT}
+      , {subtype, [{context, then}|aeso_syntax:get_ann(Then)], assert(Cond, Env), ThenT, ExprT}
+      , {subtype, [{context, else}|aeso_syntax:get_ann(Else)], assert(?op('!', Cond), Env), ElseT, ExprT}
       | S3
       ]
     };
@@ -664,7 +664,7 @@ constr_expr(Env, {switch, _, Switched, Alts}, T, S0) ->
     {ExprT
     , [{well_formed, Env, ExprT}|S2]
     };
-constr_expr(Env, {lam, _, Args, Body}, {fun_t, TAnn, _, _, RetT}, S0) ->
+constr_expr(Env, {lam, Ann, Args, Body}, {fun_t, TAnn, _, _, RetT}, S0) ->
     DepArgsT =
         [ {ArgId, fresh_liquid(contravariant, "argl_" ++ ArgName, ArgT)}
          || {arg, _, ArgId = {id, _, ArgName}, ArgT} <- Args
@@ -675,13 +675,13 @@ constr_expr(Env, {lam, _, Args, Body}, {fun_t, TAnn, _, _, RetT}, S0) ->
     {BodyT, S1} = constr_expr(EnvBody, Body, S0),
     {ExprT,
      [ {well_formed, Env, ExprT}
-     , {subtype, EnvBody, BodyT, DepRetT}
+     , {subtype, Ann, EnvBody, BodyT, DepRetT}
      | S1
      ]
     };
 constr_expr(Env, [E], _, S) ->
     constr_expr(Env, E, S);
-constr_expr(Env0, [{letval, _, Pat, Val}|Rest], T, S0) ->
+constr_expr(Env0, [{letval, Ann, Pat, Val}|Rest], T, S0) ->
     ExprT = fresh_liquid(case Pat of
                              {typed, _, {id, _, Name}, _} -> Name;
                              _ -> "pat"
@@ -691,7 +691,7 @@ constr_expr(Env0, [{letval, _, Pat, Val}|Rest], T, S0) ->
     {RestT, S2} = constr_expr(Env1, Rest, T, S1),
     {ExprT,
      [ {well_formed, Env0, ExprT}
-     , {subtype, Env1, RestT, ExprT}
+     , {subtype, Ann, Env1, RestT, ExprT}
      | S2
      ]
     };
@@ -719,11 +719,13 @@ constr_expr(_Env, [], T, S) ->
 constr_expr(_, E, A, B) ->
     error({todo, E, A, B}).
 
-constr_cases(_Env, _Switched, _SwitchedT, _ExprT, [], S) ->
+constr_cases(_Env, _Switched, _SwitchedT, _ExprT, Alts, S) ->
+    constr_cases(_Env, _Switched, _SwitchedT, _ExprT, Alts, 0, S).
+constr_cases(_Env, _Switched, _SwitchedT, _ExprT, [], _N, S) ->
     %% NOTE here I can add pattern-exhausted constraint = previous -> false
     S;
 constr_cases(Env0, Switched, SwitchedT, ExprT,
-             [{'case', _, Pat, Case}|Rest], S0) ->
+             [{'case', Ann, Pat, Case}|Rest], N, S0) ->
     {EnvCase, Pred} = match_to_pattern(Env0, Pat, Switched, SwitchedT),
     ?DBG("NEW PRED ~s", [aeso_pretty:pp(predicate, Pred)]),
     Env1 = case Pred of
@@ -732,7 +734,7 @@ constr_cases(Env0, Switched, SwitchedT, ExprT,
            end,
     {CaseDT, S1} = constr_expr(EnvCase, Case, S0),
     constr_cases(Env1, Switched, SwitchedT, ExprT, Rest,
-                 [ {subtype, EnvCase, CaseDT, ExprT}
+                 [ {subtype, [{context, {switch, N}}|Ann], EnvCase, CaseDT, ExprT}
                  | S1
                  ]
                 ).
@@ -754,13 +756,13 @@ match_to_pattern(Env, I = {int, _, _}, Expr, _Type, Pred) ->
 
 
 group_subtypes(Cs) ->
-    Subts = [C || C = {subtype, _, _, {refined_t, _, _, {template, _, _}}} <- Cs],
+    Subts = [C || C = {subtype, _, _, _, {refined_t, _, _, {template, _, _}}} <- Cs],
     Rest = Cs -- Subts,
 
     SubtsMap =
         lists:foldl(
-          fun ({subtype, Env, T, {refined_t, _, Base, {template, Subst, LV}}}, Map) ->
-                  maps:put(LV, {Base, [{Env, Subst, T}|element(2, maps:get(LV, Map, {{}, []}))]}, Map)
+          fun ({subtype, Ann, Env, T, {refined_t, _, Base, {template, Subst, LV}}}, Map) ->
+                  maps:put(LV, {Base, [{Env, Ann, Subst, T}|element(2, maps:get(LV, Map, {{}, []}))]}, Map)
           end, #{}, Subts
          ),
     Rest ++ [ {subtype_group, Ts, Base, LV}
@@ -919,18 +921,18 @@ simplify([H|T], Acc) ->
 simplify([], Acc) ->
     filter_obvious(Acc).
 
-simplify1(C = {subtype, Env0, SubT, SupT}) ->
+simplify1(C = {subtype, Ann, Env0, SubT, SupT}) ->
     case {SubT, SupT} of
         { {dep_fun_t, _, _, ArgsSub, RetSub}
         , {dep_fun_t, _, _, ArgsSup, RetSup}
         } ->
             Contra =
-                [ {subtype, Env0, ArgSupT, ArgSubT} %% contravariant!
+                [ {subtype, Ann, Env0, ArgSupT, ArgSubT} %% contravariant!
                  || {{_, ArgSubT}, {_, ArgSupT}} <- lists:zip(ArgsSub, ArgsSup)
                 ],
             Env1 =
                 bind_vars([{Id, T} || {Id, T} <- ArgsSup], Env0),
-            simplify([{subtype, Env1, RetSub, RetSup}|Contra]);
+            simplify([{subtype, Ann, Env1, RetSub, RetSup}|Contra]);
         _ -> [C]
     end;
 simplify1(C = {well_formed, Env0, T}) ->
@@ -982,11 +984,12 @@ solve(Assg, AllCs, [C|Rest]) ->
 %%     ConstrPred = pred_of(Assg, P),
 %%     impl_holds(bind_nu(Base, Env), EnvPred, ConstrPred);
 valid_in({well_formed, _, _}, _) ->
-    true;valid_in({subtype_group, Subs, Base, SupPredVar} = C, Assg) ->
+    true;
+valid_in({subtype_group, Subs, Base, SupPredVar} = C, Assg) ->
     Ltinfo = assg_of(Assg, SupPredVar),
     ?DBG("CHECKING VALID FOR COMP SUB\n~s", [aeso_pretty:pp(constr, C)]),
     lists:all(
-      fun({Env, Subst, SubKVar}) ->
+      fun({Env, _, Subst, SubKVar}) ->
               VarPred = pred_of(Assg, SubKVar),
               EnvPred = pred_of(Assg, Env),
               AssumpPred = EnvPred ++ VarPred,
@@ -995,7 +998,7 @@ valid_in({well_formed, _, _}, _) ->
       end,
       Subs
      );
-valid_in({subtype, Env,
+valid_in({subtype, Ann, Env,
           {refined_t, _, _, SubP}, {refined_t, _, Base, SupP}} = C, Assg) when is_list(SupP) ->
     ?DBG("CHECKING VALID FOR RIGID SIMP SUB\n~s", [aeso_pretty:pp(constr, C)]),
     SubPred = pred_of(Assg, SubP),
@@ -1006,9 +1009,9 @@ valid_in({subtype, Env,
         true -> true;
         false ->
             ?DBG("**** CONTRADICTION"),
-            throw({contradict, SubPred, ConclPred})
+            throw({contradict, Ann, SubPred, ConclPred})
     end;
-valid_in(C = {subtype, _, _, _}, _) -> %% We trust the typechecker
+valid_in(C = {subtype, _, _, _, _}, _) -> %% We trust the typechecker
     ?DBG("SKIPPING SUBTYPE: ~s", [aeso_pretty:pp(constr, C)]),
     true.
 
@@ -1018,11 +1021,10 @@ weaken({subtype_group, Subs, Base, SubPredVar}, Assg) ->
     Ltinfo = assg_of(Assg, SubPredVar),
     Filtered =
         [ Q || Q <- Ltinfo#ltinfo.predicate,
-               lists:all(fun({Env, Subst, Sub}) ->
+               lists:all(fun({Env, _, Subst, Sub}) ->
                                  Valid = subtype_implies(
                                            bind_var(nu(), Base, Env),
                                            Sub, apply_subst(Subst, Q), Assg),
-                                 ?DBG("ENV: ~p", [Env]),
                                  case Valid of
                                      true -> ?DBG("SUB VALID");
                                      false -> ?DBG("SUB INVALID")

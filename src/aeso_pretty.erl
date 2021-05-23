@@ -373,12 +373,12 @@ under_constr_env(Env, X) ->
 
 constr({well_formed, Env, T}) ->
     under_constr_env(Env, type(T));
-constr({subtype, Env, T1, T2}) ->
+constr({subtype, _, Env, T1, T2}) ->
     under_constr_env(Env, beside([type(T1), text(" <: "), type(T2)]));
 constr({subtype_group, Subs, _, {ltvar, T}}) when is_list(Subs) ->
     above([ text(T)
           | [ beside([text("  :> "), constr_env(Env), text(" |- "), type(T1)])
-             || {Env, _, T1} <- Subs
+             || {Env, _, _, T1} <- Subs
             ]
           ]).
 
