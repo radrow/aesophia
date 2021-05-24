@@ -390,7 +390,10 @@ constr({subtype_group, Subs, _, {ltvar, T}}) when is_list(Subs) ->
             ]
           ]);
 constr({unreachable, _, Env}) ->
-    under_constr_env(Env, text("false")).
+    under_constr_env(Env, text("false"));
+constr({reachable, _, Env}) ->
+    above(text("SAT"), constr_env(Env)).
+
 
 -spec args_type([aeso_syntax:type()]) -> doc().
 args_type(Args) ->
