@@ -1087,14 +1087,14 @@ subtype_implies(Env, {refined_t, _, _, Template}, Q, Assg) ->
 check_reachable(Assg, [{reachable, Ann, Env}|Rest]) ->
     Pred = pred_of(Assg, Env),
     case impl_holds(Env, Pred, [?bool(false)]) of
-        true -> throw({valid_unreachable, Ann, Env#env.path_pred});
+        true -> throw({valid_unreachable, Ann, Pred});
         false -> check_reachable(Assg, Rest)
     end;
 check_reachable(Assg, [{unreachable, Ann, Env}|Rest]) ->
     Pred = pred_of(Assg, Env),
     case impl_holds(Env, Pred, [?bool(false)]) of
         true -> check_reachable(Assg, Rest);
-        false -> throw({invalid_reachable, Ann, Env#env.path_pred})
+        false -> throw({invalid_reachable, Ann, Pred})
     end;
 check_reachable(Assg, [_|Rest]) ->
     check_reachable(Assg, Rest);
