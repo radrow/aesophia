@@ -658,12 +658,16 @@ constr_expr(Env, {app, Ann, F, Args}, _, S0) ->
 constr_expr(Env, {'if', _, Cond, Then, Else}, T, S0) ->
     ExprT = fresh_liquid("if", T),
     {_, S1} = constr_expr(Env, Cond, S0),
-    {ThenT, S2} = constr_expr(assert(Cond, Env), Then, S1),
-    {ElseT, S3} = constr_expr(assert(?op('!', Cond), Env),Else, S2),
+    EnvThen = assert(Cond, Env),
+    EnvElse = assert(?op('!', Cond), Env),
+    {ThenT, S2} = constr_expr(EnvThen, Then, S1),
+    {ElseT, S3} = constr_expr(EnvElse,Else, S2),
     { ExprT
     , [ {well_formed, Env, ExprT}
-      , {subtype, [{context, then}|aeso_syntax:get_ann(Then)], assert(Cond, Env), ThenT, ExprT}
-      , {subtype, [{context, else}|aeso_syntax:get_ann(Else)], assert(?op('!', Cond), Env), ElseT, ExprT}
+      , {reachable, aeso_syntax:get_ann(Then), EnvThen}
+      , {reachable, aeso_syntax:get_ann(Else), EnvElse}
+      , {subtype, [{context, then}|aeso_syntax:get_ann(Then)], EnvThen, ThenT, ExprT}
+      , {subtype, [{context, else}|aeso_syntax:get_ann(Else)], EnvElse, ElseT, ExprT}
       | S3
       ]
     };
