@@ -19,7 +19,7 @@
 -define(DBG(A, B), ?debugFmt(?DBG_COLOR(A), B)).
 -define(DBG(A), ?debugMsg(?DBG_COLOR(A))).
 
-
+-define(refined(T), {refined_t, element(2, T), T, []}).
 -define(refined(T, Q), {refined_t, element(2, T), T, Q}).
 -define(op(A, Op, B), {app, [{format, infix}|ann()], {Op, ann()}, [A, B]}).
 -define(op(Op, B), {app, [{format, prefix}|ann()], {Op, ann()}, [B]}).
@@ -41,6 +41,8 @@
 -define(string_t, {id, ann(), "string"}).
 
 -define(typed(Expr, Type), {typed, element(2, Expr), Expr, Type}).
+-define(typed_p(Expr), {typed, _, Expr, _}).
+-define(typed_p(Expr, Type), {typed, _, Expr, Type}).
 
 
 %% -- Types --------------------------------------------------------------------
@@ -100,6 +102,7 @@
 -type constr() :: {subtype, ann(), env(), lutype(), lutype()}
                 | subtype_group()
                 | {well_formed, env(), lutype()}
+                | {reachable, ann(), env()}
                 | {unreachable, ann(), env()}.
 
 %% Information about ltvar
@@ -357,7 +360,10 @@ init_env() ->
         { fun_env = MkDefs(
                    [{"to_int", DFun1({id("bytes"), Bytes(any)}, ?d_nonneg_int)}]) },
 
-    TopScope = #scope{fun_env = #{}},
+    TopScope = #scope
+        { fun_env  = MkDefs(
+                    [])
+        },
 
     #env{ scopes =
             #{ []           => TopScope
@@ -394,7 +400,7 @@ bind_ast_funs(AST, Env) ->
                        [ begin
                              ArgsT =
                                  [ {ArgName, fresh_liquid(contravariant, "arg_" ++ StrName, T)}
-                                   || {typed, _, ArgName = {id, _, StrName}, T} <- Args
+                                   || ?typed_p(ArgName = {id, _, StrName}, T) <- Args
                                  ],
                              TypeDep = {dep_fun_t, FAnn, [], ArgsT, fresh_liquid("ret", RetT)},
                              {Name, TypeDep}
@@ -433,7 +439,8 @@ fresh_id(Name) ->
     N = fresh_name(Name),
     {id, ann(), N}.
 fresh_id(Name, Type) ->
-    {typed, ann(), fresh_id(Name), Type}.
+    Id = fresh_id(Name),
+    ?typed(Id, Type).
 
 %% Decorates base types with templates through the AST
 -spec fresh_liquid(name(), term()) -> term().
@@ -523,7 +530,7 @@ constr_con(Env0, {namespace, Ann, Con, Defs}, S0) ->
 constr_letfun(Env0, {letfun, Ann, Id = {id, _, Name}, Args, RetT, Body}, S0) ->
     ArgsT =
         [ {ArgId, fresh_liquid(contravariant, "argi_" ++ ArgName, T)}
-          || {typed, _, ArgId = {id, _, ArgName}, T} <- Args
+          || ?typed_p(ArgId = {id, _, ArgName}, T) <- Args
         ],
     S1 = [ {well_formed, Env0, T} || {_, T} <- ArgsT ] ++ S0,
     Env1 = bind_vars(ArgsT, Env0),
@@ -555,12 +562,12 @@ constr_expr_list(Env, [H|T], Acc, S0) ->
     {H1, S1} = constr_expr(Env, H, S0),
     constr_expr_list(Env, T, [H1|Acc], S1).
 
-constr_expr(Env, {typed, Ann, {app, Ann1, F, Args}, RetT}, S)
+constr_expr(Env, ?typed_p({app, Ann, F, Args}, RetT), S)
   when element(1, F) =/= typed ->
     ArgTypes = [ArgT || {typed, _, _, ArgT} <- Args],
     TypedF = {typed, Ann, F, {fun_t, Ann, ann(), ArgTypes, RetT}},
-    constr_expr(Env, {typed, Ann, {app, Ann1, TypedF, Args}, RetT}, S);
-constr_expr(Env, {typed, _, Expr, T}, S) ->
+    constr_expr(Env, ?typed({app, Ann, TypedF, Args}, RetT), S);
+constr_expr(Env, ?typed_p(Expr, T), S) ->
     constr_expr(Env, Expr, T, S);
 constr_expr(_, X, _) ->
     error({untyped, X}).
@@ -637,6 +644,8 @@ constr_expr(_Env, Expr = {'-', Ann}, _, S) ->
       }
     , S
     };
+constr_expr(Env, {app, Ann, ?typed_p({id, _, "abort"}), _}, T, S0) ->
+    {?refined(T), [{unreachable, Ann, Env}|S0]};
 constr_expr(Env, {app, Ann, F, Args}, _, S0) ->
     {{dep_fun_t, _, _, ArgsFT, RetT}, S1} = constr_expr(Env, F, S0),
     {ArgsT, S2} = constr_expr_list(Env, Args, S1),
@@ -712,6 +721,13 @@ constr_expr(Env0, [{letfun, Ann, Id, Args, RetT, Body}|Rest], T, S0) ->
       | Rest
       ], T, S0
      );
+constr_expr(Env,
+            [{typed, _,
+              {app, _, {typed, _, {id, _, "require"}, _}, [Cond, _]},
+              _}|Rest], T, S0) ->
+    constr_expr(assert(Cond, Env), Rest, T, S0);
+constr_expr(_Env, {string, _, _}, T, S0) ->
+    {?refined(T), S0};
 constr_expr(Env, [Expr|Rest], T, S0) ->
     {_, S1} = constr_expr(Env, Expr, S0),
     constr_expr(Env, Rest, T, S1);
@@ -724,6 +740,8 @@ constr_cases(_Env, _Switched, _SwitchedT, _ExprT, Alts, S) ->
     constr_cases(_Env, _Switched, _SwitchedT, _ExprT, Alts, 0, S).
 constr_cases(Env, Switched, _SwitchedT, _ExprT, [], _N, S) ->
     [{unreachable, aeso_syntax:get_ann(Switched), Env}|S];
+constr_cases(Env, Switched, _SwitchedT, _ExprT, [], _N, S) ->
+    [{reachable, aeso_syntax:get_ann(Switched), Env}|S];
 constr_cases(Env0, Switched, SwitchedT, ExprT,
              [{'case', Ann, Pat, Case}|Rest], N, S0) ->
     {EnvCase, Pred} = match_to_pattern(Env0, Pat, Switched, SwitchedT),
@@ -740,6 +758,7 @@ constr_cases(Env0, Switched, SwitchedT, ExprT,
     {CaseDT, S1} = constr_expr(EnvCase, Case, S0),
     constr_cases(Env1, Switched, SwitchedT, ExprT, Rest,
                  [ {subtype, [{context, {switch, N}}|Ann], EnvCase, CaseDT, ExprT}
+                 , {reachable, Ann, EnvCase}
                  | S1
                  ]
                 ).
@@ -952,6 +971,8 @@ simplify1(C = {well_formed, Env0, T}) ->
             simplify([{well_formed, Env1, Ret}|FromArgs]);
         _ -> [C]
     end;
+simplify1(C = {reachable, _, _}) ->
+    [C];
 simplify1(C = {unreachable, _, _}) ->
     [C].
 
@@ -969,7 +990,7 @@ filter_obvious([H|T], Acc) ->
 solve(_Env, Cs) ->
     ?DBG("CONSTRAINTS:\n~s", [string:join([aeso_pretty:pp(constr, C)||C <- Cs], "\n\n")]),
     Assg0 = solve(init_assg(Cs), Cs, Cs),
-    check_unreachable(Assg0, Cs),
+    check_reachable(Assg0, Cs),
     simplify_assg(Assg0).
 solve(Assg, _, []) ->
     Assg;
@@ -1063,15 +1084,21 @@ subtype_implies(Env, {refined_t, _, _, Template}, Q, Assg) ->
     ?DBG("APRED ~p", [AssumpPred]),
     impl_holds(Env, AssumpPred, Q).
 
-check_unreachable(Assg, [{unreachable, Ann, Env}|Rest]) ->
+check_reachable(Assg, [{reachable, Ann, Env}|Rest]) ->
     Pred = pred_of(Assg, Env),
     case impl_holds(Env, Pred, [?bool(false)]) of
-        true -> check_unreachable(Assg, Rest);
-        false -> throw({unreachable, Ann, Env#env.path_pred})
+        true -> throw({valid_unreachable, Ann, Env#env.path_pred});
+        false -> check_reachable(Assg, Rest)
     end;
-check_unreachable(Assg, [_|Rest]) ->
-    check_unreachable(Assg, Rest);
-check_unreachable(_, []) ->
+check_reachable(Assg, [{unreachable, Ann, Env}|Rest]) ->
+    Pred = pred_of(Assg, Env),
+    case impl_holds(Env, Pred, [?bool(false)]) of
+        true -> check_reachable(Assg, Rest);
+        false -> throw({invalid_reachable, Ann, Env#env.path_pred})
+    end;
+check_reachable(Assg, [_|Rest]) ->
+    check_reachable(Assg, Rest);
+check_reachable(_, []) ->
     ok.
 
 

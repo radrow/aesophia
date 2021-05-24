@@ -68,7 +68,7 @@ refiner_test_group() ->
                                   aeso_pretty:pp(predicate, Assump)]
                                 ),
                        error(contradict);
-                   {{error, {unreachable, Ann, Pred}}, _} ->
+                   {{error, {invalid_reachable, Ann, Pred}}, _} ->
                        io:format("Could not ensure safety of the control flow at ~s ~p:~p\n"
                                  "by proving that\n"
                                  "  ~s\n"
@@ -79,7 +79,19 @@ refiner_test_group() ->
                                   aeso_pretty:pp(predicate, Pred)
                                  ]
                                 ),
-                       error(unreachable);
+                       error(invalid_reachable);
+                   {{error, {valid_unreachable, Ann, Pred}}, _} ->
+                       io:format("Found dead code at ~s ~p:~p\n"
+                                 "by proving that\n"
+                                 "  ~s\n"
+                                 "never holds.",
+                                 [aeso_syntax:get_ann(file, Ann, ""),
+                                  aeso_syntax:get_ann(line, Ann, 0),
+                                  aeso_syntax:get_ann(col, Ann, 0),
+                                  aeso_pretty:pp(predicate, Pred)
+                                 ]
+                                ),
+                       error(valid_unreachable);
                    {{error, ErrBin}, _} ->
                        io:format("\n~s", [ErrBin]),
                        error(ErrBin)
