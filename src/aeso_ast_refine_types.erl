@@ -36,6 +36,12 @@
 -define(bool_tp, {id, _, "bool"}).
 -define(bool_t, {id, ann(), "bool"}).
 
+-define(tuple(S), {tuple, _, S}).
+-define(tuple_tp(T), {tuple_t, _, T}).
+-define(tuple_t(T), {tuple_t, ann(), T}).
+
+-define(proj_id(N, I), {id, ann(), lists:flatten(io_lib:format("$proj~p_~p", [N, I]))}).
+
 -define(string(S), {string, _, S}).
 -define(string_tp, {id, _, "string"}).
 -define(string_t, {id, ann(), "string"}).
@@ -195,7 +201,7 @@ on_scopes(Env = #env{ scopes = Scopes }, Fun) ->
 -spec bind_var(id(), lutype(), env()) -> env().
 bind_var(Id, T, Env = #env{var_env = VarEnv}) ->
     case maps:get(name(Id), VarEnv, none) of
-        none -> ?DBG("BIND ~p FOR THE 1ST TIME", [Id]), ok;
+        none -> ok;
         V    ->
             ?DBG("SHADOW OF ~p : ~p IN\n~p", [Id, V, VarEnv]),
             throw({overwrite, Id})
@@ -459,6 +465,8 @@ fresh_liquid(Variance, Hint, {fun_t, Ann, Named, Args, Ret}) ->
        || Arg <- Args]
     , fresh_liquid(Variance, Hint, Ret)
     };
+fresh_liquid(Variance, Hint, Type = {tuple_t, Ann, Types}) ->
+    {dep_tuple_t, Ann, fresh_liquid(Variance, Hint, Types)};
 fresh_liquid(_, _, []) -> [];
 fresh_liquid(Variance, Hint, [H|T]) ->
     [fresh_liquid(Variance, Hint, H)|fresh_liquid(Variance, Hint, T)];
@@ -557,6 +565,7 @@ constr_letfun(Env0, {letfun, Ann, Id = {id, _, Name}, Args, RetT, Body}, S0) ->
          , {well_formed, Env0, DepSelfT}
          | S1
          ],
+    ?DBG("DEPS: ~p\nGLOB: ~p\nBODY: ~p\nRET: ~p", [DepRetT, GlobalFunType, BodyT, DepRetT]),
 
     {{fun_decl, Ann, Id, DepSelfT}, S3}.
 
@@ -605,6 +614,12 @@ constr_expr(_Env, I = {int, _, _}, T = ?int_tp, S) ->
     {?refined(T, [?op(nu(), '==', I)]), S};
 constr_expr(_Env, {bool, _, B}, T, S) ->
     {?refined(T, [if B -> nu(); true -> ?op('!', nu()) end]), S};
+
+constr_expr(Env, {tuple, Ann, Elems}, T, S0) ->
+    {ElemsT, S1} = constr_expr_list(Env, Elems, S0),
+    {{dep_tuple_t, Ann, ElemsT},
+     S1
+    };
 
 constr_expr(_Env, Expr = {CmpOp, Ann}, {fun_t, _, _, [OpLT, OpRT], RetT = ?bool_tp}, S)
   when CmpOp =:= '<' orelse
@@ -704,12 +719,6 @@ constr_expr(Env, {lam, Ann, Args, Body}, T = {fun_t, TAnn, _, _, RetT}, S0) ->
      | S1
      ]
     };
-constr_expr(Env, {tuple, Ann, Elems}, _T, S0) ->
-    {ElemsT, S1} = constr_expr_list(Env, Elems, S0),
-    ?DBG("TUPEL ~p", [ElemsT]),
-    {{tuple_t, Ann, ElemsT},
-     S1
-    };
 constr_expr(Env, [E], _, S) ->
     constr_expr(Env, E, S);
 constr_expr(Env0, [{letval, Ann, Pat, Val}|Rest], T, S0) ->
@@ -799,7 +808,18 @@ match_to_pattern(Env, {id, _, "_"}, _Expr, _Type, Pred) ->
 match_to_pattern(Env, Id = {id, _, _}, _Expr, Type, Pred) ->
     {bind_var(Id, Type, Env), Pred};
 match_to_pattern(Env, I = {int, _, _}, Expr, _Type, Pred) ->
-    {Env, [?op(Expr, '==', I)|Pred]}.
+    {Env, [?op(Expr, '==', I)|Pred]};
+match_to_pattern(Env, {tuple, _, Pats}, Expr, {dep_tuple_t, _, Types}, Pred) ->
+    N = length(Pats),
+    lists:foldl(
+      fun({{Pat, PatT}, I}, {Env0, Pred0}) ->
+              Ann = aeso_syntax:get_ann(Pat),
+              Proj = {proj, Ann, Expr, ?proj_id(N, I)},
+              match_to_pattern(Env0, Pat, Proj, PatT, Pred0)
+      end,
+      {Env, Pred}, lists:zip(lists:zip(Pats, Types), lists:seq(1, N))
+     ).
+
 
 
 group_subtypes(Cs) ->
@@ -983,6 +1003,9 @@ split_constr1(C = {subtype, Ann, Env0, SubT, SupT}) ->
             Subst =
                 [{Id1, Id2} || {{Id1, _}, {Id2, _}} <- lists:zip(ArgsSub, ArgsSup)],
             split_constr([{subtype, Ann, Env1, apply_subst(Subst, RetSub), RetSup}|Contra]);
+        {{dep_tuple_t, _, TSubs}, {dep_tuple_t, _, TSups}} ->
+            split_constr([{subtype, Ann, Env0, TSub, TSup} ||
+                             {TSub, TSup} <- lists:zip(TSubs, TSups)]);
         _ -> [C]
     end;
 split_constr1(C = {well_formed, Env0, T}) ->
@@ -995,6 +1018,8 @@ split_constr1(C = {well_formed, Env0, T}) ->
             Env1 =
                 bind_vars([{Id, ArgT} || {Id, ArgT} <- Args], Env0),
             split_constr([{well_formed, Env1, Ret}|FromArgs]);
+        {dep_tuple_t, _, Ts} ->
+            split_constr([{well_formed, Env0, Tt} || Tt <- Ts]);
         _ -> [C]
     end;
 split_constr1(C = {reachable, _, _}) ->
@@ -1080,6 +1105,7 @@ weaken({subtype_group, Subs, Base, SubPredVar}, Assg) ->
     Filtered =
         [ Q || Q <- Ltinfo#ltinfo.predicate,
                lists:all(fun({Env, _, Subst, Sub}) ->
+                                 ?DBG("IMPLIES ~p ~p", [Sub, Q]),
                                  Valid = subtype_implies(
                                            bind_var(nu(), Base, Env),
                                            Sub, apply_subst(Subst, Q), Assg),
@@ -1109,7 +1135,10 @@ subtype_implies(Env, {refined_t, _, _, Template}, Q, Assg) ->
     EnvPred = pred_of(Assg, Env),
     AssumpPred = EnvPred ++ SubPred,
     ?DBG("APRED ~p", [AssumpPred]),
-    impl_holds(Env, AssumpPred, Q).
+    impl_holds(Env, AssumpPred, Q);
+subtype_implies(_, T, T1, _) ->
+    error({dupaaaaa, T, T1}).
+
 
 check_reachable(Assg, [{reachable, Ann, Env}|Rest]) ->
     Pred = pred_of(Assg, Env),
@@ -1144,6 +1173,21 @@ impl_holds(Env, Assump, Concl) ->
          ]),
     aeso_smt:scoped(
       fun() ->
+              aeso_smt:send_z3(
+                {app, "declare-datatypes",
+                 [{list, [{var, "T1"}, {var, "T2"}]},
+                  {list, [{app, "$tuple2",
+                           [{app, "$mk_tuple2",
+                             [{app, "$proj2_1", [{var, "T1"}]},
+                              {app, "$proj2_2", [{var, "T2"}]}
+                             ]
+                            }
+                           ]
+                          }
+                         ]}
+                 ]
+                }
+               ),
               [ begin
                     aeso_smt:declare_const(expr_to_smt(Var), type_to_smt(T))
                 end
@@ -1179,6 +1223,13 @@ type_to_smt(?bool_tp) ->
     {var, "Bool"};
 type_to_smt(?int_tp) ->
     {var, "Int"};
+type_to_smt({dep_tuple_t, Ann, Ts}) ->
+    type_to_smt({tuple_t, Ann, Ts});
+type_to_smt(?tuple_tp(Types)) ->
+    N = length(Types),
+    {app, "$tuple" ++ integer_to_list(N),
+     [type_to_smt(T) || T <- Types]
+    };
 type_to_smt(T) ->
     throw({not_smt_type, T}).
 
@@ -1201,23 +1252,29 @@ expr_to_smt({int, _, I}) ->
     {int, I};
 expr_to_smt({typed, _, E, _}) ->
     expr_to_smt(E);
-expr_to_smt({app, _, F, Args}) ->
-    {app, expr_to_smt(F), [expr_to_smt(Arg) || Arg <- Args]};
-expr_to_smt({'&&', _}) -> "&&";
-expr_to_smt({'||', _}) -> "||";
-expr_to_smt({'=<', _}) -> "<=";
-expr_to_smt({'>=', _}) -> ">=";
-expr_to_smt({'==', _}) -> "=";
-expr_to_smt({'!=', _}) -> "distinct";
-expr_to_smt({'<', _})  -> "<";
-expr_to_smt({'>', _})  -> ">";
-expr_to_smt({'+', _})  -> "+";
-expr_to_smt({'-', _})  -> "-";
-expr_to_smt({'*', _})  -> "*";
-expr_to_smt({'/', _})  -> "div";
-expr_to_smt({'!', _})  -> "not";
-expr_to_smt({'^', _})  -> "^";
-expr_to_smt({'mod', _})  -> "mod";
+expr_to_smt(E = {app, _, F, Args}) ->
+    case expr_to_smt(F) of
+        {var, Fun} ->
+            {app, Fun, [expr_to_smt(Arg) || Arg <- Args]};
+        _ -> throw({not_smt_expr, E})
+    end;
+expr_to_smt({proj, Ann, E, Field}) ->
+    expr_to_smt({app, Ann, Field, [E]});
+expr_to_smt({'&&', _}) -> {var, "&&"};
+expr_to_smt({'||', _}) -> {var, "||"};
+expr_to_smt({'=<', _}) -> {var, "<="};
+expr_to_smt({'>=', _}) -> {var, ">="};
+expr_to_smt({'==', _}) -> {var, "="};
+expr_to_smt({'!=', _}) -> {var, "distinct"};
+expr_to_smt({'<', _})  -> {var, "<"};
+expr_to_smt({'>', _})  -> {var, ">"};
+expr_to_smt({'+', _})  -> {var, "+"};
+expr_to_smt({'-', _})  -> {var, "-"};
+expr_to_smt({'*', _})  -> {var, "*"};
+expr_to_smt({'/', _})  -> {var, "div"};
+expr_to_smt({'!', _})  -> {var, "not"};
+expr_to_smt({'^', _})  -> {var, "^"};
+expr_to_smt({'mod', _})  -> {var, "mod"};
 expr_to_smt(E) -> throw({not_smt_expr, E}).
 
 

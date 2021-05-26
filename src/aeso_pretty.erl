@@ -302,6 +302,8 @@ dep_type({dep_fun_t, _, Named, Args, Ret}) ->
           )
       , type(Ret)
       );
+dep_type({dep_tuple_t, _, Ts}) ->
+    tuple_type(Ts);
 dep_type(T = {tvar, _, _}) ->
     name(T).
 

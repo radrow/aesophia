@@ -131,18 +131,18 @@ check_type(ExQuals, {dep_fun_t, _, _, _, {refined_t, _, _, Quals}}) ->
 %% compilable_contracts() -> [ContractName].
 %%  The currently compilable contracts.
 compilable_contracts() ->
-    [{"max",
-      {success,
-       #{{"C", "max"} => "$nu >= b && $nu >= a"
-       , {"C", "trim"} => "$nu > -1 && $nu >= x"
+    [ {"test",
+       {success,
+        #{{"C", "f"} => something}
        }
       }
-     },
-     {"test",
-      {success,
-       #{{"C", "f"} => something}
-      }
-     }
+     %% , {"max",
+     %%  {success,
+     %%   #{{"C", "max"} => "$nu >= b && $nu >= a"
+     %%   , {"C", "trim"} => "$nu > -1 && $nu >= x"
+     %%   }
+     %%  }
+     %% }
     ].
 
 
