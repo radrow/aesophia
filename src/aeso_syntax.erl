@@ -92,6 +92,7 @@
 -type dep_type(Qual)
     :: {refined_t, ann(), type(), Qual}
      | {dep_fun_t, ann(), [named_arg_t()], [{id(), dep_type(Qual)}], dep_type(Qual)}
+     | {dep_tuple_t, ann(), [dep_type(Qual)]}
      | tvar().
 -type liquid_type() :: dep_type(predicate()).
 

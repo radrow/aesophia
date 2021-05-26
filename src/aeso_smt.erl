@@ -4,6 +4,7 @@
 
 -type formula() :: {var, string()}
                  | {int, integer()}
+                 | {list, [formula()]}
                  | {app, string(), [formula()]}
                    .
 
@@ -62,7 +63,10 @@ scoped(Fun) ->
 pp_formula({var, Name}) -> Name;
 pp_formula({int, I}) -> integer_to_list(I);
 pp_formula({app, Fun, Args}) ->
-    io_lib:format("(~s)", [pp_formulae([{var, Fun}|Args])]).
+    io_lib:format("(~s)", [pp_formulae([{var, Fun}|Args])]);
+pp_formula({list, Xs}) ->
+    io_lib:format("(~s)", [pp_formulae(Xs)]).
+
 
 pp_formulae([]) ->
     "";
