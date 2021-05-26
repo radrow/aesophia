@@ -92,6 +92,15 @@ refiner_test_group() ->
                                  ]
                                 ),
                        error(valid_unreachable);
+                   {{error, {overwrite, Id}}, _} ->
+                       io:format("Illegal redefinition of the variable ~s at ~s ~p:~p",
+                                 [aeso_syntax:pp(expr, Id),
+                                  aeso_syntax:get_ann(file, Id, ""),
+                                  aeso_syntax:get_ann(line, Id, 0),
+                                  aeso_syntax:get_ann(col, Id, 0)
+                                 ]
+                                ),
+                       error(overwrite);
                    {{error, ErrBin}, _} ->
                        io:format("\n~s", [ErrBin]),
                        error(ErrBin)
