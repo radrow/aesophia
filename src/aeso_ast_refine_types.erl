@@ -504,7 +504,7 @@ fresh_liquid(Env, Variance, Hint, Type = {qid, Ann, _}) ->
             error({undefined_type, Type});
         {QName, TDef} ->
             case TDef of
-                {[], {alias_t, _, Type1}} ->
+                {[], {alias_t, Type1}} ->
                     fresh_liquid(Env, Variance, Hint, Type1);
                 {[], {record_t, Fields}} ->
                     {dep_record_t, Ann,
@@ -1281,7 +1281,7 @@ declare_datatypes([]) ->
 declare_datatypes([{Name, {_Args, TDef}}|Rest]) ->
     TName = string:join(qname(Name), "."),
     case TDef of
-        {alias_t, _, _, _} -> ok;
+        {alias_t, _} -> ok;
         {record_t, Fields} ->
             aeso_smt:send_z3(
               {app, "declare-datatypes",
