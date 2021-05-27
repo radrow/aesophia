@@ -54,7 +54,7 @@ refiner_test_group() ->
                    {{error, {contradict, Assump, Promise}}, {contradict, ExAssump, ExPromise}} ->
                        ?assertEqual(ExAssump, Assump),
                        ?assertEqual(ExPromise, Promise);
-                   {{error, {contradict, Ann, Assump, Promise}}, _} ->
+                   {{error, {contradict, {Ann, Assump, Promise}}}, _} ->
                        io:format("Could not prove the promise created at ~s ~p:~p\n"
                                  "~s:\n"
                                  "  ~s\n"
@@ -68,9 +68,9 @@ refiner_test_group() ->
                                   aeso_pretty:pp(predicate, Assump)]
                                 ),
                        error(contradict);
-                   {{error, {invalid_reachable, Ann, Pred}}, _} ->
+                   {{error, {invalid_reachable, {Ann, Pred}}}, _} ->
                        io:format("Could not ensure safety of the control flow at ~s ~p:~p\n"
-                                 "by proving that\n"
+                                 "Could not prove that\n"
                                  "  ~s\n"
                                  "never holds.",
                                  [aeso_syntax:get_ann(file, Ann, ""),
@@ -80,7 +80,7 @@ refiner_test_group() ->
                                  ]
                                 ),
                        error(invalid_reachable);
-                   {{error, {valid_unreachable, Ann, Pred}}, _} ->
+                   {{error, {valid_unreachable, {Ann, Pred}}}, _} ->
                        io:format("Found dead code at ~s ~p:~p\n"
                                  "by proving that\n"
                                  "  ~s\n"
@@ -102,7 +102,7 @@ refiner_test_group() ->
                                 ),
                        error(overwrite);
                    {{error, ErrBin}, _} ->
-                       io:format("\n~s", [ErrBin]),
+                       io:format("\nerror: ~s", [ErrBin]),
                        error(ErrBin)
                catch E:T:S -> io:format("Caught:\n~p: ~p\nstack:\n~p\n", [E, T, S]), error(T)
                end
@@ -133,7 +133,7 @@ check_type(ExQuals, {dep_fun_t, _, _, _, {refined_t, _, _, Quals}}) ->
 compilable_contracts() ->
     [ {"test",
        {success,
-        #{{"C", "f"} => something}
+        #{{"Test", "f"} => something}
        }
       }
      %% , {"max",
