@@ -304,6 +304,18 @@ dep_type({dep_fun_t, _, Named, Args, Ret}) ->
       );
 dep_type({dep_tuple_t, _, Ts}) ->
     tuple_type(Ts);
+dep_type({dep_record_t, _, Type, Fields}) ->
+    beside(
+      [ text("{")
+      , type(Type)
+      , text(" | ")
+      , par(punctuate(
+              text(","),
+              [ beside([name(FName), text(" : "), type(FType)])
+                || {FName, FType} <- Fields]
+             ))
+      , text("}")
+      ]);
 dep_type(T = {tvar, _, _}) ->
     name(T).
 
