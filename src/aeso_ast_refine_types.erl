@@ -70,6 +70,10 @@
 
 -type type_id() :: id() | qid() | con() | qcon().
 
+-type typedef() :: {[aeso_syntax:tvar()], aeso_syntax:typedef()
+                   | {contract_t, [aeso_syntax:field_t()]}}.
+
+
 %% Names
 -type name() :: string().
 -type qname() :: [name()].
@@ -88,8 +92,11 @@
 
 -type fun_env() :: #{name() => template()}.
 -type var_env() :: #{name() => template()}.
+-type type_env() :: #{name() => typedef()}.
 
--record(scope, {fun_env = #{} :: fun_env()}).
+-record(scope, { fun_env = #{} :: fun_env()
+               , type_env = #{} :: type_env()
+               }).
 -type scope() :: #scope{}.
 
 -record(env,
@@ -228,6 +235,12 @@ bind_funs([], Env) -> Env;
 bind_funs([{Id, Type} | Rest], Env) ->
     bind_funs(Rest, bind_fun(Id, Type, Env)).
 
+-spec bind_type(id(), [type()], typedef(), env()) -> env().
+bind_type(Id, Args, Def, Env) ->
+    on_current_scope(Env, fun(Scope = #scope{ type_env = Types }) ->
+                                  Scope#scope{ type_env = Types#{Id => {Args, Def}} }
+                          end).
+
 -spec assert(expr() | predicate(), env()) -> env().
 assert(L, Env = #env{path_pred = GP}) when is_list(L) ->
     Env#env{path_pred = L ++ GP};
@@ -241,7 +254,6 @@ possible_scopes(#env{ namespace = Current}, Name) ->
     Qual = lists:droplast(Name),
     [ lists:sublist(Current, I) ++ Qual || I <- lists:seq(0, length(Current)) ].
 
-%% Lookup in env. Currently only types of vars/funs. TODO: types
 -spec lookup_env(env(), term, qname()) -> false | {qname(), lutype()}.
 lookup_env(Env, Kind, Name) ->
     Var = case Name of
@@ -496,13 +508,12 @@ refine_ast(AST) ->
         Assg ->
             AST2 = apply_assg(Assg, AST1),
             {ok, AST2}
-    catch throw:{ErrType, _}=E
+    catch {ErrType, _}=E
                 when ErrType =:= contradict
                      orelse ErrType =:= invalid_reachable
                      orelse ErrType =:= valid_unreachable
                      orelse ErrType =:= overwrite
-                     ->
-            {error, E}
+                     -> {error, E}
     end.
 
 
@@ -521,11 +532,13 @@ constr_ast(Env, AST) ->
 -spec constr_con(env(), decl(), [constr()]) -> {decl(), [constr()]}.
 constr_con(Env0, {contract, Ann, Con, Defs}, S0) ->
     Env1 = push_scope(Con, Env0),
+    Env2 = register_typedefs(Defs, Env1),
     {Defs1, S1} =
         lists:foldr(
-          fun(Def, {Decls, S00}) ->
+          fun(Def, {Decls, S00}) when element(1, Def) =:= letfun ->
                   {Decl, S01} = constr_letfun(Env1, Def, S00),
-                  {[Decl|Decls], S01}
+                  {[Decl|Decls], S01};
+             (_, Acc) -> Acc
           end,
           {[], S0}, Defs
          ),
@@ -568,6 +581,13 @@ constr_letfun(Env0, {letfun, Ann, Id = {id, _, Name}, Args, RetT, Body}, S0) ->
     ?DBG("DEPS: ~p\nGLOB: ~p\nBODY: ~p\nRET: ~p", [DepRetT, GlobalFunType, BodyT, DepRetT]),
 
     {{fun_decl, Ann, Id, DepSelfT}, S3}.
+
+register_typedefs([{type_def, _, Id, Args, TDef}|T], Env) ->
+    register_typedefs(T, bind_type(Id, Args, TDef, Env));
+register_typedefs([_|T], Env) ->
+    register_typedefs(T, Env);
+register_typedefs([], Env) ->
+    Env.
 
 
 constr_expr_list(Env, Es, S) ->
@@ -727,12 +747,13 @@ constr_expr(Env0, [{letval, Ann, Pat, Val}|Rest], T, S0) ->
                              _ -> "pat"
                          end, T), %% Required to have clean scoping
     {ValT, S1} = constr_expr(Env0, Val, S0),
-    {Env1, _} = match_to_pattern(Env0, Pat, Val, ValT),
+    {Env1, EnvFail} = match_to_pattern(Env0, Pat, Val, ValT),
     ?DBG("LETLAM ~p", [Env1]),
     {RestT, S2} = constr_expr(Env1, Rest, T, S1),
     {ExprT,
      [ {well_formed, Env0, ExprT}
      , {subtype, Ann, Env1, RestT, ExprT}
+     , {unreachable, Ann, EnvFail}
      | S2
      ]
     };
@@ -789,6 +810,7 @@ constr_cases(Env0, Switched, SwitchedT, ExprT,
 %%   - Env which asserts that the match cannot succeed
 match_to_pattern(Env0, Pat, Expr, Type) ->
     {Env1, Pred} = match_to_pattern(Env0, Pat, Expr, Type, []),
+    ?DBG("PPRED: ~s", [aeso_pretty:pp(predicate, Pred)]),
     EnvMatch = assert(Pred, Env1),
     EnvNoMatch =
         case Pred of
@@ -958,14 +980,30 @@ pred_of(Assg, {template, Subst, P}) ->
 pred_of(Assg, {refined_t, _, _, P}) ->
     pred_of(Assg, P);
 pred_of(Assg, Env = #env{path_pred = PathPred}) ->
-    ScopePred =
-        [ Qual
-         || {Var, {refined_t, _, _, VarPred}} <- type_binds(Env),
-            Qual <- apply_subst1(nu(), Var, pred_of(Assg, VarPred))
-        ],
+    ScopePred = flatten_type_binds(Assg, fun(X) -> X end, type_binds(Env)),
     ScopePred ++ PathPred;
 pred_of(_, _) ->
     [].
+
+flatten_type_binds(Assg, Access, TB) ->
+    [ Q
+     || {Var, Type} <- TB,
+        Q <- case Type of
+                 {refined_t, _, _, P} ->
+                     apply_subst1(nu(), Access(Var), pred_of(Assg, P));
+                 {dep_tuple_t, _, Fields} ->
+                     N = length(Fields),
+                     flatten_type_binds(
+                       Assg,
+                       fun(X) -> {proj, ann(), Access(Var), X} end,
+                       lists:zip(
+                         [?proj_id(N, I) || I <- lists:seq(1, N)],
+                         Fields
+                        )
+                      );
+                 _ -> []
+             end
+    ].
 
 simplify_assg(Assg) ->
     maps:map(fun(_K, V = #ltinfo{env = KEnv, base = BaseType, predicate = Qs}) ->
@@ -1090,7 +1128,7 @@ valid_in({subtype, Ann, Env,
         true -> true;
         false ->
             ?DBG("**** CONTRADICTION"),
-            throw({contradict, Ann, SubPred, ConclPred})
+            throw({contradict, {Ann, SubPred, ConclPred}})
     end;
 valid_in(C = {subtype, _, _, _, _}, _) -> %% We trust the typechecker
     ?DBG("SKIPPING SUBTYPE: ~s", [aeso_pretty:pp(constr, C)]),
@@ -1122,8 +1160,8 @@ weaken({subtype_group, Subs, Base, SubPredVar}, Assg) ->
                  predicate = Filtered
                 },
     Assg#{SubPredVar => NewLtinfo};
-weaken({well_formed, Env, {refined_t, _, _, P}}, Assg) ->
-    Assg. %% TODO
+weaken({well_formed, _Env, {refined_t, _, _, P}}, Assg) ->
+    Assg.
 
 subtype_implies(Env, {refined_t, _, _, Template}, Q, Assg) ->
     SubPred =
@@ -1143,14 +1181,14 @@ subtype_implies(_, T, T1, _) ->
 check_reachable(Assg, [{reachable, Ann, Env}|Rest]) ->
     Pred = pred_of(Assg, Env),
     case impl_holds(Env, Pred, [?bool(false)]) of
-        true -> throw({valid_unreachable, Ann, Pred});
+        true -> throw({valid_unreachable, {Ann, Pred}});
         false -> check_reachable(Assg, Rest)
     end;
 check_reachable(Assg, [{unreachable, Ann, Env}|Rest]) ->
     Pred = pred_of(Assg, Env),
     case impl_holds(Env, Pred, [?bool(false)]) of
         true -> check_reachable(Assg, Rest);
-        false -> throw({invalid_reachable, Ann, Pred})
+        false -> throw({invalid_reachable, {Ann, Pred}})
     end;
 check_reachable(Assg, [_|Rest]) ->
     check_reachable(Assg, Rest);
@@ -1209,6 +1247,9 @@ impl_holds(Env, Assump, Concl) ->
                       not Res
               end
       end).
+
+declare_typedefs(Env) ->
+    typedefs. %% TODO
 
 is_smt_type(Expr) ->
     try type_to_smt(Expr) of
