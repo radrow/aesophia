@@ -42,8 +42,8 @@
 
 -define(tuple_proj_id(N, I),
         {id, ann(), lists:flatten(io_lib:format("$tuple~p.~p", [N, I]))}).
--define(adt_proj_id(Qid, I),
-        {id, ann(), lists:flatten(io_lib:format("~s.~p", [string:join(qname(Qid), "."), I]))}).
+-define(adt_proj_id(QCon, I),
+        {id, ann(), lists:flatten(io_lib:format("~s.~p", [string:join(qname(QCon), "."), I]))}).
 
 %% -define(string(S), {string, _, S}).
 %% -define(string_tp, {id, _, "string"}).
@@ -782,7 +782,7 @@ constr_expr(Env, {app, Ann, ?typed_p(QCon = {qcon, _, QName}), Args}, Type, S0) 
             lists:last(QName) == CName,
             {ArgInf, ArgVar} <- lists:zip(ArgsT, ConArgs)
         ] ++ S2,
-    {{dep_variant_t, Ann, Type, [{is_tag, Ann, nu(), QCon, Args}], DepConstrs},
+    {{dep_variant_t, Ann, Type, [{is_tag, Ann, nu(), QCon, ArgsT}], DepConstrs},
      S3
     };
 constr_expr(Env, {app, Ann, F, Args}, _, S0) ->
@@ -1028,8 +1028,8 @@ plus_int_qualifiers(Int, Thing) ->
 var_int_qualifiers(Var) ->
     int_qualifiers({id, ann(), Var}) ++ plus_int_qualifiers(?int(1), {id, ann(), Var}).
 
-inst_pred_variant_tag(Constrs) ->
-    [ {is_tag, ann(), nu(), Con, Args}
+inst_pred_variant_tag(Type, Constrs) ->
+    [ {is_tag, ann(), nu(), qid(lists:droplast(qname(Type)) ++ [name(Con)]), Args}
       || {constr_t, _, Con, Args} <- Constrs
     ].
 
@@ -1050,7 +1050,7 @@ inst_pred(BaseT, Env) ->
         {qid, _, _} ->
             case lookup_type(Env, BaseT) of
                 {_, {_, {variant_t, Constrs}}} ->
-                    inst_pred_variant_tag(Constrs);
+                    inst_pred_variant_tag(BaseT, Constrs);
                 X -> error({todo, {inst_pred, X}})
             end;
         _ -> []
@@ -1385,9 +1385,10 @@ declare_datatypes([{Name, {_Args, TDef}}|Rest]) ->
                [{list, []}, %% TODO Args
                 {list, [ {app, TName,
                           [ begin
-                                ConName = TName ++ "." ++ name(Con),
+                                QualCon = lists:droplast(qname(Name)) ++ [name(Con)],
+                                ConName = string:join(QualCon, "."),
                                 {app, ConName,
-                                 [{app, name(?adt_proj_id(ConName, I)),
+                                 [{app, name(?adt_proj_id(qid(QualCon), I)),
                                    [type_to_smt(T)]}
                                   || {T, I} <-
                                          lists:zip(
@@ -1459,6 +1460,8 @@ type_to_smt(?bool_tp) ->
     {var, "Bool"};
 type_to_smt(?int_tp) ->
     {var, "Int"};
+type_to_smt({qid, _, QVar}) ->
+    {var, string:join(QVar, ".")};
 type_to_smt({dep_tuple_t, Ann, Ts}) ->
     type_to_smt({tuple_t, Ann, Ts});
 type_to_smt(?tuple_tp(Types)) ->
@@ -1467,6 +1470,7 @@ type_to_smt(?tuple_tp(Types)) ->
      [type_to_smt(T) || T <- Types]
     };
 type_to_smt(T) ->
+    ?DBG("SKIP TYPE ~p", [T]),
     throw({not_smt_type, T}).
 
 is_smt_expr(Expr) ->
@@ -1496,24 +1500,24 @@ expr_to_smt(E = {app, _, F, Args}) ->
     end;
 expr_to_smt({proj, Ann, E, Field}) ->
     expr_to_smt({app, Ann, Field, [E]});
-expr_to_smt({is_tag, _, What, Con, Args}) ->
+expr_to_smt({is_tag, _, What, QCon, Args}) ->
     N = length(Args),
-    MakeArg = fun(I) ->
-                      "$arg" ++ integer_to_list(I)
+    MakeArg = fun(I) -> {var, "$arg" ++ integer_to_list(I)}
               end,
     {app, "exists",
-     {list,
-      [ {list, [{var, MakeArg(I)}, type_to_smt(ArgT)]}
-        || {ArgT, I} <- lists:zip(Args, lists:seq(1, N))
-      ]
-     },
-     {app, "=",
-      [ expr_to_smt(What)
-      , {app, string:join(qname(Con), "."),
-         [MakeArg(I) || I <- lists:seq(1, N)]
-        }
-      ]
-     }
+     [ {list,
+        [ {list, [ MakeArg(I), type_to_smt(ArgT)]}
+          || {ArgT, I} <- lists:zip(Args, lists:seq(1, N))
+        ]
+       }
+     , {app, "=",
+        [ expr_to_smt(What)
+        , {app, string:join(qname(QCon), "."),
+           [MakeArg(I) || I <- lists:seq(1, N)]
+          }
+        ]
+       }
+     ]
     };
 expr_to_smt({'&&', _}) -> {var, "&&"};
 expr_to_smt({'||', _}) -> {var, "||"};

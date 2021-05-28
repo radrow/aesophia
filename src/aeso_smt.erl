@@ -28,7 +28,7 @@ get_z3() ->
 send_z3(Query) ->
     Z3 = get_z3(),
     QueryStr = pp_formula(Query),
-    %% io:format("Z3> ~s ~p\n", [QueryStr, self()]),
+    io:format("Z3> ~s\n", [QueryStr]),
     port_command(Z3, binary:list_to_bin(QueryStr ++ "\n")).
 
 check_sat() ->
@@ -48,9 +48,6 @@ assert(Form) ->
 
 declare_const(Var, Type) ->
     send_z3({app, "declare-const", [Var, Type]}).
-
-declare_datatype(
- ).
 
 push() ->
     send_z3({app, "push", []}).
