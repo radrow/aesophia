@@ -336,18 +336,15 @@ dep_type({dep_record_t, _, Type, Fields}) ->
              ))
       , text("}")
       ]);
-dep_type({dep_variant_t, _, T, TagVar, Constrs}) ->
+dep_type({dep_variant_t, _, Type, Pred, Constrs}) ->
     beside(
       [ text("{")
-      , type(TagVar)
-      , text(" : ")
+      , type(Type)
+      , text(" | ")
+      , predicate(Pred)
+      , text("; ")
       , par(punctuate(text(" |"), lists:map(fun dep_constructor_t/1, Constrs)))
       , text("}")
-      ]);
-dep_type({adt_tag_t, _, ADT}) ->
-    beside(
-      [ type(ADT)
-      , text(".tag")
       ]);
 dep_type(T = {tvar, _, _}) ->
     name(T).

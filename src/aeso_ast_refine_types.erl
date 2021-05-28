@@ -40,10 +40,10 @@
 -define(tuple_tp(T), {tuple_t, _, T}).
 %% -define(tuple_t(T), {tuple_t, ann(), T}).
 
--define(tuple_proj_id(N, I), {id, ann(), lists:flatten(io_lib:format("$proj~p_~p", [N, I]))}).
--define(adt_proj_id(ConName, I), {id, ann(), lists:flatten(io_lib:format("$proj~s_~p", [ConName, I]))}).
--define(adt_tag(QCon), {id, ann(), string:join(qname(QCon), ".") ++ ".$tag"}).
--define(adt_tag_t(Qid), {adt_tag_t, ann(), Qid}).
+-define(tuple_proj_id(N, I),
+        {id, ann(), lists:flatten(io_lib:format("$tuple~p.~p", [N, I]))}).
+-define(adt_proj_id(Qid, I),
+        {id, ann(), lists:flatten(io_lib:format("~s.~p", [string:join(qname(Qid), "."), I]))}).
 
 %% -define(string(S), {string, _, S}).
 %% -define(string_tp, {id, _, "string"}).
@@ -505,8 +505,6 @@ fresh_liquid(_Env, Variance, Hint, Type = {con, Ann, _}) ->
     {refined_t, Ann, Type, fresh_template(Variance, Hint)};
 fresh_liquid(_Env, Variance, Hint, Type = {qcon, Ann, _}) ->
     {refined_t, Ann, Type, fresh_template(Variance, Hint)};
-fresh_liquid(_Env, Variance, Hint, Type = {adt_tag_t, Ann, _}) ->
-    {refined_t, Ann, Type, fresh_template(Variance, Hint)};
 fresh_liquid(Env, Variance, Hint, Type = {qid, Ann, _}) ->
     case lookup_type(Env, Type) of
         false ->
@@ -528,10 +526,7 @@ fresh_liquid(Env, Variance, Hint, Type = {qid, Ann, _}) ->
                            fresh_liquid(Env, Variance, Hint ++ "_" ++ name(Con), Vals)}
                           || {constr_t, CAnn, Con, Vals} <- Constrs
                         ],
-                    {dep_variant_t, Ann, Type,
-                     fresh_liquid(Env, Variance, Hint ++ "_" ++ string:join(QName, "."),
-                                  ?adt_tag_t(Type)), DepConstrs
-                    }
+                    {dep_variant_t, Ann, Type, fresh_template(Variance, Hint ++ "_tag"), DepConstrs}
             end
     end;
 fresh_liquid(Env, Variance, Hint, {fun_t, Ann, Named, Args, Ret}) ->
@@ -766,7 +761,7 @@ constr_expr(Env, {app, Ann, ?typed_p({id, _, "abort"}), _}, T, S0) ->
      |S0
      ]
     };
-constr_expr(Env, {app, Ann, ?typed_p(Qid = {qcon, _, QName}), Args}, Type, S0) ->
+constr_expr(Env, {app, Ann, ?typed_p(QCon = {qcon, _, QName}), Args}, Type, S0) ->
     {ArgsT, S1} = constr_expr_list(Env, Args, S0),
     {_, {[], {variant_t, Constrs}}} = lookup_type(Env, Type),
     DepConstrs =
@@ -787,8 +782,7 @@ constr_expr(Env, {app, Ann, ?typed_p(Qid = {qcon, _, QName}), Args}, Type, S0) -
             lists:last(QName) == CName,
             {ArgInf, ArgVar} <- lists:zip(ArgsT, ConArgs)
         ] ++ S2,
-    ADTTag = ?refined(?adt_tag_t(Type), [?op(nu(), '==', ?adt_tag(Qid))]),
-    {{dep_variant_t, Ann, Type, ADTTag, DepConstrs},
+    {{dep_variant_t, Ann, Type, [{is_tag, Ann, nu(), QCon, Args}], DepConstrs},
      S3
     };
 constr_expr(Env, {app, Ann, F, Args}, _, S0) ->
@@ -1034,10 +1028,9 @@ plus_int_qualifiers(Int, Thing) ->
 var_int_qualifiers(Var) ->
     int_qualifiers({id, ann(), Var}) ++ plus_int_qualifiers(?int(1), {id, ann(), Var}).
 
-inst_pred_adt_tag(Env, Qid) ->
-    {_, {_, {variant_t, Constrs}}} = lookup_type(Env, Qid),
-    [ ?op(nu(), '==', ?adt_tag(qid(lists:droplast(qname(Qid)) ++ [name(Con)])))
-     || {constr_t, _, Con, _} <- Constrs
+inst_pred_variant_tag(Constrs) ->
+    [ {is_tag, ann(), nu(), Con, Args}
+      || {constr_t, _, Con, Args} <- Constrs
     ].
 
 inst_pred_int(Env) ->
@@ -1054,8 +1047,12 @@ inst_pred(BaseT, Env) ->
     case BaseT of
         ?int_tp ->
             inst_pred_int(Env);
-        {adt_tag_t, _, Qid} ->
-            inst_pred_adt_tag(Env, Qid);
+        {qid, _, _} ->
+            case lookup_type(Env, BaseT) of
+                {_, {_, {variant_t, Constrs}}} ->
+                    inst_pred_variant_tag(Constrs);
+                X -> error({todo, {inst_pred, X}})
+            end;
         _ -> []
     end.
 
@@ -1175,11 +1172,11 @@ split_constr1(C = {subtype, Ann, Env0, SubT, SupT}) ->
                || {{_, FTSub}, {_, FTSup}} <- lists:zip(FieldsSub1, FieldsSup1)
               ]
              );
-        { {dep_variant_t, _, _, TagSub, ConstrsSub}
-        , {dep_variant_t, _, _, TagSup, ConstrsSup}
+        { {dep_variant_t, _, TypeSub, TagSub, ConstrsSub}
+        , {dep_variant_t, _, TypeSup, TagSup, ConstrsSup}
         } ->
             split_constr(
-              [ {subtype, Ann, Env0, TagSub, TagSup}
+              [ {subtype, Ann, Env0, ?refined(TypeSub, TagSub), ?refined(TypeSup, TagSup)}
               | [ {subtype, Ann, Env0, ArgSub, ArgSup}
                  || { {dep_constr_t, _, ArgsSub}
                     , {dep_constr_t, _, ArgsSup}
@@ -1204,9 +1201,9 @@ split_constr1(C = {well_formed, Env0, T}) ->
             split_constr([{well_formed, Env0, Tt} || Tt <- Ts]);
         {dep_record_t, _, _, Fields} ->
             split_constr([{well_formed, Env0, TF} || {_, TF} <- Fields]);
-        {dep_variant_t, _, _, Tag, Constrs} ->
+        {dep_variant_t, _, Type, Tag, Constrs} ->
             split_constr(
-              [ {well_formed, Env0, Tag}
+              [ {well_formed, Env0, ?refined(Type, Tag)}
               | [ {well_formed, Env0, Arg}
                   || {dep_constr_t, _, Args} <- Constrs,
                      Arg <- Args
@@ -1383,19 +1380,6 @@ declare_datatypes([{Name, {_Args, TDef}}|Rest]) ->
               }
              );
         {variant_t, Constrs} ->
-            {var, TagTName} = type_to_smt(?adt_tag_t(Name)),
-            aeso_smt:send_z3(
-              {app, "declare-datatypes",
-               [{list, []},
-                {list, [ {app, TagTName,
-                          [ expr_to_smt(?adt_tag(qid(lists:droplast(qname(Name)) ++ [name(Con)])))
-                            || {constr_t, _, Con, _} <- Constrs
-                          ]
-                         }
-                       ]}
-               ]
-              }
-             ),
             aeso_smt:send_z3(
               {app, "declare-datatypes",
                [{list, []}, %% TODO Args
@@ -1482,8 +1466,6 @@ type_to_smt(?tuple_tp(Types)) ->
     {app, "$tuple" ++ integer_to_list(N),
      [type_to_smt(T) || T <- Types]
     };
-type_to_smt({adt_tag_t, _, Qid}) ->
-    {var, string:join(qname(Qid), ".") ++ "$tag"};
 type_to_smt(T) ->
     throw({not_smt_type, T}).
 
@@ -1514,6 +1496,25 @@ expr_to_smt(E = {app, _, F, Args}) ->
     end;
 expr_to_smt({proj, Ann, E, Field}) ->
     expr_to_smt({app, Ann, Field, [E]});
+expr_to_smt({is_tag, _, What, Con, Args}) ->
+    N = length(Args),
+    MakeArg = fun(I) ->
+                      "$arg" ++ integer_to_list(I)
+              end,
+    {app, "exists",
+     {list,
+      [ {list, [{var, MakeArg(I)}, type_to_smt(ArgT)]}
+        || {ArgT, I} <- lists:zip(Args, lists:seq(1, N))
+      ]
+     },
+     {app, "=",
+      [ expr_to_smt(What)
+      , {app, string:join(qname(Con), "."),
+         [MakeArg(I) || I <- lists:seq(1, N)]
+        }
+      ]
+     }
+    };
 expr_to_smt({'&&', _}) -> {var, "&&"};
 expr_to_smt({'||', _}) -> {var, "||"};
 expr_to_smt({'=<', _}) -> {var, "<="};
