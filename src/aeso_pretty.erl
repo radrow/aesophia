@@ -324,8 +324,40 @@ dep_type({dep_record_t, _, Type, Fields}) ->
              ))
       , text("}")
       ]);
+dep_type({dep_record_t, _, Type, Fields}) ->
+    beside(
+      [ text("{")
+      , type(Type)
+      , text(" | ")
+      , par(punctuate(
+              text(","),
+              [ beside([name(FName), text(" : "), type(FType)])
+                || {FName, FType} <- Fields]
+             ))
+      , text("}")
+      ]);
+dep_type({dep_variant_t, _, T, TagVar, Constrs}) ->
+    beside(
+      [ text("{")
+      , type(TagVar)
+      , text(" : ")
+      , par(punctuate(text(" |"), lists:map(fun dep_constructor_t/1, Constrs)))
+      , text("}")
+      ]);
+dep_type({adt_tag_t, _, ADT}) ->
+    beside(
+      [ type(ADT)
+      , text(".tag")
+      ]);
 dep_type(T = {tvar, _, _}) ->
     name(T).
+
+dep_constructor_t({dep_constr_t, _, C, []}) -> name(C);
+dep_constructor_t({dep_constr_t, _, C, Args}) ->
+    beside(name(C),
+           args_type(Args)
+          ).
+
 
 predicate({template, _, {ltvar, Var}}) -> text(Var);
 predicate([]) -> text("true");
@@ -396,7 +428,12 @@ under_constr_env(Env, X) ->
 constr({well_formed, Env, T}) ->
     under_constr_env(Env, type(T));
 constr({subtype, _, Env, T1, T2}) ->
-    under_constr_env(Env, beside([type(T1), text(" <: "), type(T2)]));
+    under_constr_env(
+      Env,
+      beside([ type(T1)
+             , text(" <: ")
+             , type(T2)
+             ]));
 constr({subtype_group, Subs, _, {ltvar, T}}) when is_list(Subs) ->
     above([ text(T)
           | [ beside([text("  :> "), constr_env(Env), text(" |- "), type(T1)])
