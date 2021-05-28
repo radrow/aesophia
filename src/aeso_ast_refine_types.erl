@@ -41,6 +41,9 @@
 %% -define(tuple_t(T), {tuple_t, ann(), T}).
 
 -define(tuple_proj_id(N, I), {id, ann(), lists:flatten(io_lib:format("$proj~p_~p", [N, I]))}).
+-define(adt_proj_id(ConName, I), {id, ann(), lists:flatten(io_lib:format("$proj~s_~p", [ConName, I]))}).
+-define(adt_tag(QCon), {id, ann(), string:join(qname(QCon), ".") ++ ".$tag"}).
+-define(adt_tag_t(Qid), {adt_tag_t, ann(), Qid}).
 
 %% -define(string(S), {string, _, S}).
 %% -define(string_tp, {id, _, "string"}).
@@ -126,7 +129,7 @@
 -type assignment() :: #{name() => ltinfo()}.
 
 %% Position in type
--type variance() :: contravariant | covariant | forced_covariant.
+-type variance() :: contravariant | covariant | forced_covariant | forced_contravariant.
 
 -spec ann() -> ann().
 ann() -> [{origin, hagia}].
@@ -472,8 +475,9 @@ fresh_ltvar(Name) ->
 -spec fresh_template(name()) -> lutype().
 fresh_template(Name) -> fresh_template(covariant, Name).
 fresh_template(covariant, Name) -> {template, [], fresh_ltvar(Name)};
-fresh_template(forced_covariant, Name) -> {template, [], fresh_ltvar(Name)};
-fresh_template(contravariant, _) -> [].
+fresh_template(contravariant, _) -> [];
+fresh_template(forced_covariant, Name) -> fresh_template(covariant, Name);
+fresh_template(forced_contravariant, Name) -> fresh_template(contravariant, Name).
 
 -spec fresh_name(name()) -> name().
 fresh_name(Name) ->
@@ -497,10 +501,15 @@ fresh_liquid(Env, Hint, Type) ->
 -spec fresh_liquid(env(), name(), variance(), term()) -> term().
 fresh_liquid(_Env, Variance, Hint, Type = {id, Ann, _}) ->
     {refined_t, Ann, Type, fresh_template(Variance, Hint)};
+fresh_liquid(_Env, Variance, Hint, Type = {con, Ann, _}) ->
+    {refined_t, Ann, Type, fresh_template(Variance, Hint)};
+fresh_liquid(_Env, Variance, Hint, Type = {qcon, Ann, _}) ->
+    {refined_t, Ann, Type, fresh_template(Variance, Hint)};
+fresh_liquid(_Env, Variance, Hint, Type = {adt_tag_t, Ann, _}) ->
+    {refined_t, Ann, Type, fresh_template(Variance, Hint)};
 fresh_liquid(Env, Variance, Hint, Type = {qid, Ann, _}) ->
     case lookup_type(Env, Type) of
         false ->
-            ?DBG("MISS FRESH ~p IN \n~p", [Type, Env]),
             error({undefined_type, Type});
         {QName, TDef} ->
             case TDef of
@@ -512,6 +521,16 @@ fresh_liquid(Env, Variance, Hint, Type = {qid, Ann, _}) ->
                      [ {Field, fresh_liquid(Env, Variance, Hint ++ "_" ++ name(Field), FType)}
                       || {field_t, _, Field, FType} <- Fields
                      ]
+                    };
+                {[], {variant_t, Constrs}} ->
+                    DepConstrs =
+                        [ {dep_constr_t, CAnn, Con,
+                           fresh_liquid(Env, Variance, Hint ++ "_" ++ name(Con), Vals)}
+                          || {constr_t, CAnn, Con, Vals} <- Constrs
+                        ],
+                    {dep_variant_t, Ann, Type,
+                     fresh_liquid(Env, Variance, Hint ++ "_" ++ string:join(QName, "."),
+                                  ?adt_tag_t(Type)), DepConstrs
                     }
             end
     end;
@@ -537,7 +556,9 @@ switch_variance(covariant) ->
 switch_variance(contravariant) ->
     covariant;
 switch_variance(forced_covariant) ->
-    forced_covariant.
+    forced_covariant;
+switch_variance(forced_contravariant) ->
+    forced_contravariant.
 
 
 %% -- Entrypoint ---------------------------------------------------------------
@@ -687,7 +708,6 @@ constr_expr(Env, {tuple, Ann, Elems}, _, S0) ->
 constr_expr(Env, {record, Ann, FieldVals}, T, S0) ->
     {Fields, Vals} =
         lists:unzip([{Field, Val} || {field, _, [{proj, _, Field}], Val} <- FieldVals]),
-    ?DBG("FIELDS ~p", [FieldVals]),
     {ValsT, S1} = constr_expr_list(Env, Vals, S0),
     {{dep_record_t, Ann, T, lists:zip(Fields, ValsT)},
      S1
@@ -725,7 +745,7 @@ constr_expr(_Env, Expr = {CmpOp, Ann}, {fun_t, _, _, [OpLT, OpRT], RetT = ?int_t
                                    '^'   -> [?op(nu(), '>=', ?int(0))];
                                    _     -> []
                                end)}
-       ], ?refined(RetT, [ ?op(nu(), '==', {app, [{format, infix}|Ann], Expr, [OpLV, OpRV]})])
+       ], ?refined(RetT, [?op(nu(), '==', {app, [{format, infix}|Ann], Expr, [OpLV, OpRV]})])
       }
     , S
     };
@@ -739,7 +759,38 @@ constr_expr(_Env, Expr = {'-', Ann}, _, S) ->
     , S
     };
 constr_expr(Env, {app, Ann, ?typed_p({id, _, "abort"}), _}, T, S0) ->
-    {?refined(T), [{unreachable, Ann, Env}|S0]};
+    ExprT = fresh_liquid(Env, T, "abort"),
+    {ExprT,
+     [ {unreachable, Ann, Env}
+     , {well_formed, Env, ExprT}
+     |S0
+     ]
+    };
+constr_expr(Env, {app, Ann, ?typed_p(Qid = {qcon, _, QName}), Args}, Type, S0) ->
+    {ArgsT, S1} = constr_expr_list(Env, Args, S0),
+    {_, {[], {variant_t, Constrs}}} = lookup_type(Env, Type),
+    DepConstrs =
+        [ {dep_constr_t, CAnn, Con,
+           [fresh_liquid(Env, name(Con), Arg) || Arg <- ConArgs]
+          }
+          || {constr_t, CAnn, Con, ConArgs} <- Constrs
+        ],
+    S2 =
+        [ {well_formed, Env, Arg}
+         || {dep_constr_t, _, _, ConArgs} <- DepConstrs,
+            Arg <- ConArgs
+        ]
+        ++ S1,
+    S3 =
+        [ {subtype, CAnn, Env, ArgInf, ArgVar}
+         || {dep_constr_t, CAnn, {con, _, CName}, ConArgs} <- DepConstrs,
+            lists:last(QName) == CName,
+            {ArgInf, ArgVar} <- lists:zip(ArgsT, ConArgs)
+        ] ++ S2,
+    ADTTag = ?refined(?adt_tag_t(Type), [?op(nu(), '==', ?adt_tag(Qid))]),
+    {{dep_variant_t, Ann, Type, ADTTag, DepConstrs},
+     S3
+    };
 constr_expr(Env, {app, Ann, F, Args}, _, S0) ->
     {{dep_fun_t, _, _, ArgsFT, RetT}, S1} = constr_expr(Env, F, S0),
     {ArgsT, S2} = constr_expr_list(Env, Args, S1),
@@ -983,6 +1034,12 @@ plus_int_qualifiers(Int, Thing) ->
 var_int_qualifiers(Var) ->
     int_qualifiers({id, ann(), Var}) ++ plus_int_qualifiers(?int(1), {id, ann(), Var}).
 
+inst_pred_adt_tag(Env, Qid) ->
+    {_, {_, {variant_t, Constrs}}} = lookup_type(Env, Qid),
+    [ ?op(nu(), '==', ?adt_tag(qid(lists:droplast(qname(Qid)) ++ [name(Con)])))
+     || {constr_t, _, Con, _} <- Constrs
+    ].
+
 inst_pred_int(Env) ->
     lists:concat(
       [ [Q || CoolInt <- Env#env.cool_ints,
@@ -997,6 +1054,8 @@ inst_pred(BaseT, Env) ->
     case BaseT of
         ?int_tp ->
             inst_pred_int(Env);
+        {adt_tag_t, _, Qid} ->
+            inst_pred_adt_tag(Env, Qid);
         _ -> []
     end.
 
@@ -1116,6 +1175,20 @@ split_constr1(C = {subtype, Ann, Env0, SubT, SupT}) ->
                || {{_, FTSub}, {_, FTSup}} <- lists:zip(FieldsSub1, FieldsSup1)
               ]
              );
+        { {dep_variant_t, _, _, TagSub, ConstrsSub}
+        , {dep_variant_t, _, _, TagSup, ConstrsSup}
+        } ->
+            ?DBG("SUBTYPE VARIANT"),
+            split_constr(
+              [ {subtype, Ann, Env0, TagSub, TagSup}
+              | [ {subtype, Ann, Env0, ArgSub, ArgSup}
+                 || { {dep_constr_t, _, ArgsSub}
+                    , {dep_constr_t, _, ArgsSup}
+                    } <- lists:zip(ConstrsSub, ConstrsSup),
+                    {ArgSub, ArgSup} <- lists:zip(ArgsSub, ArgsSup)
+                ]
+              ]
+             );
         _ -> [C]
     end;
 split_constr1(C = {well_formed, Env0, T}) ->
@@ -1132,6 +1205,15 @@ split_constr1(C = {well_formed, Env0, T}) ->
             split_constr([{well_formed, Env0, Tt} || Tt <- Ts]);
         {dep_record_t, _, _, Fields} ->
             split_constr([{well_formed, Env0, TF} || {_, TF} <- Fields]);
+        {dep_variant_t, _, _, Tag, Constrs} ->
+            split_constr(
+              [ {well_formed, Env0, Tag}
+              | [ {well_formed, Env0, Arg}
+                  || {dep_constr_t, _, Args} <- Constrs,
+                     Arg <- Args
+                ]
+              ]
+             );
         _ -> [C]
     end;
 split_constr1(C = {reachable, _, _}) ->
@@ -1298,6 +1380,44 @@ declare_datatypes([{Name, {_Args, TDef}}|Rest]) ->
                        ]}
                ]
               }
+             );
+        {variant_t, Constrs} ->
+            {var, TagTName} = type_to_smt(?adt_tag_t(Name)),
+            aeso_smt:send_z3(
+              {app, "declare-datatypes",
+               [{list, []},
+                {list, [ {app, TagTName,
+                          [ expr_to_smt(?adt_tag(qid(lists:droplast(qname(Name)) ++ [name(Con)])))
+                            || {constr_t, _, Con, _} <- Constrs
+                          ]
+                         }
+                       ]}
+               ]
+              }
+             ),
+            aeso_smt:send_z3(
+              {app, "declare-datatypes",
+               [{list, []}, %% TODO Args
+                {list, [ {app, TName,
+                          [ begin
+                                ConName = TName ++ "." ++ name(Con),
+                                {app, ConName,
+                                 [{app, name(?adt_proj_id(ConName, I)),
+                                   [type_to_smt(T)]}
+                                  || {T, I} <-
+                                         lists:zip(
+                                           ConArgs,
+                                           lists:seq(1, length(ConArgs))
+                                          )
+                                 ]
+                                }
+                            end
+                            || {constr_t, _, Con, ConArgs} <- Constrs
+                         ]
+                        }
+                       ]}
+               ]
+              }
              )
     end,
     declare_datatypes(Rest).
@@ -1361,6 +1481,8 @@ type_to_smt(?tuple_tp(Types)) ->
     {app, "$tuple" ++ integer_to_list(N),
      [type_to_smt(T) || T <- Types]
     };
+type_to_smt({adt_tag_t, _, Qid}) ->
+    {var, string:join(qname(Qid), ".") ++ "$tag"};
 type_to_smt(T) ->
     throw({not_smt_type, T}).
 
@@ -1516,8 +1638,17 @@ a_normalize({lam, Ann, Args, Body}, Type, Decls0) ->
      Decls0
     };
 a_normalize({tuple, Ann, Elems}, Type, Decls0) ->
-    {Elems1, Decls1} = a_normalize_list(Elems, [], Decls0),
+    {Elems1, Decls1} = a_normalize_to_simpl_list(Elems, [], Decls0),
     {?typed({tuple, Ann, Elems1}, Type),
+     Decls1
+    };
+a_normalize({record, Ann, FieldVals}, Type, Decls0) ->
+    Vals = [Val || {field, _, _, Val} <- FieldVals],
+    {Vals1, Decls1} = a_normalize_to_simpl_list(Vals, [], Decls0),
+    {?typed({record, Ann,
+             [{field, FAnn, Field, Val}
+              || {Val, {field, FAnn, Field, _}} <- lists:zip(Vals1, FieldVals)]
+            }, Type),
      Decls1
     };
 a_normalize({block, Ann, Stmts}, Type, Decls0) ->
