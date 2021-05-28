@@ -1178,7 +1178,6 @@ split_constr1(C = {subtype, Ann, Env0, SubT, SupT}) ->
         { {dep_variant_t, _, _, TagSub, ConstrsSub}
         , {dep_variant_t, _, _, TagSup, ConstrsSup}
         } ->
-            ?DBG("SUBTYPE VARIANT"),
             split_constr(
               [ {subtype, Ann, Env0, TagSub, TagSup}
               | [ {subtype, Ann, Env0, ArgSub, ArgSup}
@@ -1257,6 +1256,7 @@ valid_in({subtype_group, Subs, Base, SupPredVar}, Assg) ->
     lists:all(
       fun({Env, _, Subst, SubKVar}) ->
               VarPred = pred_of(Assg, SubKVar),
+              ?DBG("COMPLEX SUBTYPE\n~s\n<:\n~p", [aeso_pretty:pp(predicate, VarPred), SupPredVar]),
               EnvPred = pred_of(Assg, Env),
               AssumpPred = EnvPred ++ VarPred,
               impl_holds(bind_var(nu(), Base, Env),
@@ -1266,6 +1266,7 @@ valid_in({subtype_group, Subs, Base, SupPredVar}, Assg) ->
      );
 valid_in({subtype, Ann, Env,
           {refined_t, _, _, SubP}, {refined_t, _, Base, SupP}}, Assg) when is_list(SupP) ->
+    ?DBG("SIMPLE SUBTYPE\n~p\n<:\n~p", [SubP, SupP]),
     SubPred = pred_of(Assg, SubP),
     EnvPred = pred_of(Assg, Env),
     AssumpPred = EnvPred ++ SubPred,

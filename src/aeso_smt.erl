@@ -49,6 +49,9 @@ assert(Form) ->
 declare_const(Var, Type) ->
     send_z3({app, "declare-const", [Var, Type]}).
 
+declare_datatype(
+ ).
+
 push() ->
     send_z3({app, "push", []}).
 pop() ->
