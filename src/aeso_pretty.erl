@@ -558,7 +558,12 @@ expr_p(_, E = {qcon, _, _}) -> name(E);
 expr_p(_, {Op, _}) when is_atom(Op) ->
     paren(text(atom_to_list(Op)));
 expr_p(_, {lvalue, _, LV})  -> lvalue(LV);
-expr_p(_, nu) -> text("$nu").
+expr_p(P, {is_tag, _, What, Con, Args}) ->
+    beside(
+      [ expr_p(P, What), text("==")
+      , app(P, Con, [text("?") || _ <- Args])
+      ]
+     ).
 
 stmt_p({'if', _, Cond, Then}) ->
     block_expr(200, beside(text("if"), paren(expr(Cond))), Then);
