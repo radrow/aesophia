@@ -1067,11 +1067,6 @@ init_assg(Cs) ->
 assg_of(Assg, Var = {ltvar, _}) ->
     case maps:get(Var, Assg, undef) of
         undef -> error({undef_assg, Var});
-            %% #ltinfo
-            %%     { base = {id, ann(), "int"} %% FIXME NOT ONLY INT
-            %%     , predicate = []
-            %%     , env = init_env()
-            %%     };
         A -> A
     end.
 
@@ -1178,8 +1173,8 @@ split_constr1(C = {subtype, Ann, Env0, SubT, SupT}) ->
             split_constr(
               [ {subtype, Ann, Env0, ?refined(TypeSub, TagSub), ?refined(TypeSup, TagSup)}
               | [ {subtype, Ann, Env0, ArgSub, ArgSup}
-                 || { {dep_constr_t, _, ArgsSub}
-                    , {dep_constr_t, _, ArgsSup}
+                 || { {dep_constr_t, _, _, ArgsSub}
+                    , {dep_constr_t, _, _, ArgsSup}
                     } <- lists:zip(ConstrsSub, ConstrsSup),
                     {ArgSub, ArgSup} <- lists:zip(ArgsSub, ArgsSup)
                 ]
@@ -1205,7 +1200,7 @@ split_constr1(C = {well_formed, Env0, T}) ->
             split_constr(
               [ {well_formed, Env0, ?refined(Type, Tag)}
               | [ {well_formed, Env0, Arg}
-                  || {dep_constr_t, _, Args} <- Constrs,
+                  || {dep_constr_t, _, _, Args} <- Constrs,
                      Arg <- Args
                 ]
               ]
@@ -1237,9 +1232,13 @@ solve(Assg, _, []) ->
     Assg;
 solve(Assg, AllCs, [C|Rest]) ->
     case valid_in(C, Assg) of
-        false -> Weakened = weaken(C, Assg),
-                 solve(Weakened, AllCs, AllCs);
-        true  -> solve(Assg, AllCs, Rest)
+        false ->
+            ?DBG("NOT VALID"),
+            Weakened = weaken(C, Assg),
+            solve(Weakened, AllCs, AllCs);
+        true  ->
+            ?DBG("VALID"),
+            solve(Assg, AllCs, Rest)
     end.
 
 %% valid_in({well_formed, Env, {refined_t, _, Base, P}}, Assg) ->
@@ -1295,6 +1294,9 @@ weaken({subtype_group, Subs, Base, SubPredVar}, Assg) ->
     NewLtinfo = Ltinfo#ltinfo{
                  predicate = Filtered
                 },
+    ?DBG("WEAKENED FROM\n~s\nTO\n~s", [aeso_pretty:pp(predicate, Ltinfo#ltinfo.predicate),
+                                       aeso_pretty:pp(predicate, Filtered)
+                                      ]),
     Assg#{SubPredVar => NewLtinfo};
 weaken({well_formed, _Env, {refined_t, _, _, _}}, Assg) ->
     Assg.
@@ -1415,7 +1417,7 @@ impl_holds(Env, Assump, Concl) when not is_list(Assump) ->
     impl_holds(Env, [Assump], Concl);
 impl_holds(_, _, []) -> true;
 impl_holds(Env, Assump, Concl) ->
-    ConclExpr  = {app, ann(), {'&&', ann()}, Concl}, %% Improper sophia expr but who cares
+    ConclExpr  = {app, ann(), {'&&', ann()}, Concl}, %% Improper Sophia expr but who cares
     ?DBG("IMPL;\n* ASSUMPTION: ~s\n* CONCLUSION: ~s",
          [ string:join([aeso_pretty:pp(expr, E)|| E <- Assump], " && ")
          , string:join([aeso_pretty:pp(expr, E)|| E <- Concl],  " && ")
@@ -1444,8 +1446,6 @@ impl_holds(Env, Assump, Concl) ->
               end
       end).
 
-declare_typedefs(_Env) ->
-    typedefs. %% TODO
 
 is_smt_type(Expr) ->
     try type_to_smt(Expr) of
@@ -1470,7 +1470,7 @@ type_to_smt(?tuple_tp(Types)) ->
      [type_to_smt(T) || T <- Types]
     };
 type_to_smt(T) ->
-    ?DBG("SKIP TYPE ~p", [T]),
+    ?DBG("NOT SMT TYPE ~p", [T]),
     throw({not_smt_type, T}).
 
 is_smt_expr(Expr) ->
@@ -1534,7 +1534,7 @@ expr_to_smt({'/', _})  -> {var, "div"};
 expr_to_smt({'!', _})  -> {var, "not"};
 expr_to_smt({'^', _})  -> {var, "^"};
 expr_to_smt({'mod', _})  -> {var, "mod"};
-expr_to_smt(E) -> throw({not_smt_expr, E}).
+expr_to_smt(E) -> ?DBG("NOT SMT E ~p", [E]), throw({not_smt_expr, E}).
 
 
 %% -- Simplification -----------------------------------------------------------
@@ -1578,16 +1578,20 @@ sort_preds_by_meaningfulness(Preds0) ->
                                    SB({typed, _, E, _}) -> SB(E);
                                    SB(_) -> 0
                                end,
-                  ValueL = proplists:get_value(OpL, OpList, 0) + SimplBonus(LL) + SimplBonus(LR),
-                  ValueR = proplists:get_value(OpR, OpList, 0) + SimplBonus(RL) + SimplBonus(RR),
+                  ValueL = proplists:get_value(OpL, OpList, 0) * 1000000 + SimplBonus(LL) + SimplBonus(LR),
+                  ValueR = proplists:get_value(OpR, OpList, 0) * 1000000 + SimplBonus(RL) + SimplBonus(RR),
                   ValueL =< ValueR;
               (_, _) -> true
           end,
-    lists:sort(Cmp, Preds1).
+    TagPreds = [P || P <- Preds0, element(1, P) == is_tag],
+    lists:sort(Cmp, Preds1) ++ TagPreds.
 
 %% this is absolutely heuristic
 simplify_pred(Scope, Pred) ->
-    simplify_pred(Scope, [], sort_preds_by_meaningfulness(Pred)).
+    case impl_holds(Scope, Pred, [{bool, ann(), false}]) of
+        true -> [{bool, ann(), false}];
+        false -> simplify_pred(Scope, [], sort_preds_by_meaningfulness(Pred))
+    end.
 simplify_pred(_Scope, Prev, []) ->
     Prev;
 simplify_pred(Scope, Prev, [Q|Post]) ->

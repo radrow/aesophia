@@ -561,7 +561,7 @@ expr_p(_, {lvalue, _, LV})  -> lvalue(LV);
 expr_p(P, {is_tag, _, What, Con, Args}) ->
     beside(
       [ expr_p(P, What), text("==")
-      , app(P, Con, [text("?") || _ <- Args])
+      , app(P, Con, [{id, [], "?"} || _ <- Args])
       ]
      ).
 
