@@ -957,7 +957,7 @@ match_to_pattern(Env, {app, Ann, ?typed_p(QCon = {qcon, _, QName}), Args},
     lists:foldl(
       fun({{Arg, ArgT}, I}, {Env0, Pred}) ->
               ArgAnn = aeso_syntax:get_ann(Arg),
-              Proj = {proj, ArgAnn, Expr, ?adt_proj_id(Type, I)},
+              Proj = {proj, ArgAnn, Expr, ?adt_proj_id(QCon, I)},
               match_to_pattern(Env0, Arg, Proj, ArgT, Pred)
       end,
       {Env, Pred1}, lists:zip(lists:zip(Args, Types), lists:seq(1, N))
