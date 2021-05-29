@@ -766,24 +766,15 @@ constr_expr(Env, {app, Ann, ?typed_p(QCon = {qcon, _, QName}), Args}, Type, S0) 
     {_, {[], {variant_t, Constrs}}} = lookup_type(Env, Type),
     DepConstrs =
         [ {dep_constr_t, CAnn, Con,
-           [fresh_liquid(Env, name(Con), Arg) || Arg <- ConArgs]
+           case lists:last(QName) == name(Con) of
+               true  -> ArgsT;
+               false -> [?refined(Arg, ?bool(true)) || Arg <- ConArgs]
+           end
           }
           || {constr_t, CAnn, Con, ConArgs} <- Constrs
         ],
-    S2 =
-        [ {well_formed, Env, Arg}
-         || {dep_constr_t, _, _, ConArgs} <- DepConstrs,
-            Arg <- ConArgs
-        ]
-        ++ S1,
-    S3 =
-        [ {subtype, CAnn, Env, ArgInf, ArgVar}
-         || {dep_constr_t, CAnn, {con, _, CName}, ConArgs} <- DepConstrs,
-            lists:last(QName) == CName,
-            {ArgInf, ArgVar} <- lists:zip(ArgsT, ConArgs)
-        ] ++ S2,
     {{dep_variant_t, Ann, Type, [{is_tag, Ann, nu(), QCon, ArgsT}], DepConstrs},
-     S3
+     S1
     };
 constr_expr(Env, {app, Ann, F, Args}, _, S0) ->
     {{dep_fun_t, _, _, ArgsFT, RetT}, S1} = constr_expr(Env, F, S0),
@@ -791,8 +782,9 @@ constr_expr(Env, {app, Ann, F, Args}, _, S0) ->
     ArgSubst = [{X, Expr} || {{X, _}, Expr} <- lists:zip(ArgsFT, Args)],
     { apply_subst(ArgSubst, RetT)
     , [{subtype, [{context, {app, Ann, F, N}}|aeso_syntax:get_ann(ArgT)],
-        Env, ArgT, ArgFT} || {{_, ArgFT}, ArgT, N} <- lists:zip3(ArgsFT, ArgsT, lists:seq(1, length(ArgsT)))] ++
-      S2
+        Env, ArgT, ArgFT}
+       || {{_, ArgFT}, ArgT, N} <- lists:zip3(ArgsFT, ArgsT, lists:seq(1, length(ArgsT)))
+      ] ++ S2
     };
 constr_expr(Env, {'if', _, Cond, Then, Else}, T, S0) ->
     ExprT = fresh_liquid(Env, "if", T),
@@ -811,6 +803,7 @@ constr_expr(Env, {'if', _, Cond, Then, Else}, T, S0) ->
       ]
     };
 constr_expr(Env, {switch, _, Switched, Alts}, T, S0) ->
+    ?DBG("PRESWITCH PRED\n ~p", [Env#env.var_env]),
     ExprT = fresh_liquid(Env, "switch", T),
     {SwitchedT, S1} = constr_expr(Env, Switched, S0),
     S2 = constr_cases(Env, Switched, SwitchedT, ExprT, Alts, S1),
@@ -949,8 +942,26 @@ match_to_pattern(Env, {tuple, _, Pats}, Expr, {dep_tuple_t, _, Types}, Pred) ->
               match_to_pattern(Env0, Pat, Proj, PatT, Pred0)
       end,
       {Env, Pred}, lists:zip(lists:zip(Pats, Types), lists:seq(1, N))
+     );
+match_to_pattern(Env, {record, _, _}, Expr, {dep_record_t, _, Type, Fields}, Pred) ->
+    error(todo);
+match_to_pattern(Env, {app, Ann, ?typed_p(QCon = {qcon, _, QName}), Args},
+                 Expr, {dep_variant_t, _, Type, Tag, Constrs}, Pred0) ->
+    N = length(Args),
+    [Types] =
+        [ ConArgs
+         || {dep_constr_t, _, {con, _, CName}, ConArgs} <- Constrs,
+            lists:last(QName) == CName
+        ],
+    Pred1 = [{is_tag, Ann, Expr, QCon, Types}|Pred0],
+    lists:foldl(
+      fun({{Arg, ArgT}, I}, {Env0, Pred}) ->
+              ArgAnn = aeso_syntax:get_ann(Arg),
+              Proj = {proj, ArgAnn, Expr, ?adt_proj_id(Type, I)},
+              match_to_pattern(Env0, Arg, Proj, ArgT, Pred)
+      end,
+      {Env, Pred1}, lists:zip(lists:zip(Args, Types), lists:seq(1, N))
      ).
-
 
 
 group_subtypes(Cs) ->
@@ -1006,16 +1017,16 @@ apply_subst(Subs, Q) when is_list(Subs) ->
 %% -- Assignments --------------------------------------------------------------
 
 cmp_qualifiers(Thing) ->
-    %% [].
-    [ ?op(nu(), '=<', Thing)
-    , ?op(nu(), '>=', Thing)
-    , ?op(nu(), '>', Thing)
-    , ?op(nu(), '<', Thing)
-    ].
+    [].
+    %% [ ?op(nu(), '=<', Thing)
+    %% , ?op(nu(), '>=', Thing)
+    %% , ?op(nu(), '>', Thing)
+    %% , ?op(nu(), '<', Thing)
+    %% ].
 
 eq_qualifiers(Thing) ->
     [ ?op(nu(), '==', Thing)
-    , ?op(nu(), '!=', Thing)
+    %% , ?op(nu(), '!=', Thing)
     ].
 
 int_qualifiers(Thing) ->
@@ -1114,7 +1125,22 @@ flatten_type_binds(Assg, Access, TB) ->
                          [?tuple_proj_id(N, I) || I <- lists:seq(1, N)],
                          Fields
                         )
-                      );
+                      ); %% TODO record!
+                 {dep_variant_t, _, QType, Tag, Constrs} ->
+                     TagPred = apply_subst1(nu(), Access(Var), pred_of(Assg, Tag)),
+                     ConPred =
+                         lists:flatten(
+                           [ flatten_type_binds(
+                               Assg,
+                               fun(X) -> {proj, ann(), Access(Var), X} end,
+                               lists:zip(
+                                 [?adt_proj_id(qid(lists:droplast(qname(QType)) ++ [name(Con)]), I) || I <- lists:seq(1, length(Args))],
+                                 Args
+                              )
+                              )
+                             || {dep_constr_t, _, Con, Args} <- Constrs
+                           ]),
+                     TagPred ++ ConPred;
                  _ -> []
              end
     ].
@@ -1254,6 +1280,7 @@ valid_in({subtype_group, Subs, Base, SupPredVar}, Assg) ->
               VarPred = pred_of(Assg, SubKVar),
               ?DBG("COMPLEX SUBTYPE\n~s\n<:\n~p", [aeso_pretty:pp(predicate, VarPred), SupPredVar]),
               EnvPred = pred_of(Assg, Env),
+              ?DBG("ENV PRED ~p", [EnvPred]),
               AssumpPred = EnvPred ++ VarPred,
               impl_holds(bind_var(nu(), Base, Env),
                          AssumpPred, apply_subst(Subst, Ltinfo#ltinfo.predicate))
@@ -1339,7 +1366,7 @@ declare_tuples([]) ->
     ok;
 declare_tuples([N|Rest]) ->
     Seq = lists:seq(1, N),
-    aeso_smt:send_z3(
+    aeso_smt:send_z3_success(
       {app, "declare-datatypes",
        [{list, [{var, "T" ++ integer_to_list(I)}
                 || I <- Seq
@@ -1365,7 +1392,7 @@ declare_datatypes([{Name, {_Args, TDef}}|Rest]) ->
     case TDef of
         {alias_t, _} -> ok;
         {record_t, Fields} ->
-            aeso_smt:send_z3(
+            aeso_smt:send_z3_success(
               {app, "declare-datatypes",
                [{list, []}, %% TODO Args
                 {list, [{app, TName,
@@ -1382,7 +1409,7 @@ declare_datatypes([{Name, {_Args, TDef}}|Rest]) ->
               }
              );
         {variant_t, Constrs} ->
-            aeso_smt:send_z3(
+            aeso_smt:send_z3_success(
               {app, "declare-datatypes",
                [{list, []}, %% TODO Args
                 {list, [ {app, TName,
@@ -1469,6 +1496,8 @@ type_to_smt(?tuple_tp(Types)) ->
     {app, "$tuple" ++ integer_to_list(N),
      [type_to_smt(T) || T <- Types]
     };
+type_to_smt({dep_variant_t, _, T, _, _}) ->
+    type_to_smt(T);
 type_to_smt(T) ->
     ?DBG("NOT SMT TYPE ~p", [T]),
     throw({not_smt_type, T}).
@@ -1588,6 +1617,7 @@ sort_preds_by_meaningfulness(Preds0) ->
 
 %% this is absolutely heuristic
 simplify_pred(Scope, Pred) ->
+    ?DBG("*** SIMPLIFY PRED"),
     case impl_holds(Scope, Pred, [{bool, ann(), false}]) of
         true -> [{bool, ann(), false}];
         false -> simplify_pred(Scope, [], sort_preds_by_meaningfulness(Pred))
@@ -1659,6 +1689,11 @@ a_normalize({record, Ann, FieldVals}, Type, Decls0) ->
              [{field, FAnn, Field, Val}
               || {Val, {field, FAnn, Field, _}} <- lists:zip(Vals1, FieldVals)]
             }, Type),
+     Decls1
+    };
+a_normalize({proj, Ann, Expr, Field}, Type, Decls0) ->
+    {Expr1, Decls1} = a_normalize_to_simpl(Expr, Decls0),
+    {?typed({proj, Ann, Expr1, Field}, Type),
      Decls1
     };
 a_normalize({block, Ann, Stmts}, Type, Decls0) ->
