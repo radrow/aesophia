@@ -37,6 +37,7 @@ check_sat() ->
     send_z3({app, "check-sat", []}),
     receive
         {_, {data, {eol, Resp}}} ->
+            %% io:format(Resp ++ "\n"),
             case string:trim(Resp) of
                 "sat"   -> true;
                 "unsat" -> false;
@@ -49,6 +50,7 @@ send_z3_success(Query) ->
     send_z3(Query),
     receive
         {_, {data, {eol, Resp}}} ->
+            %% io:format(Resp ++ "\n"),
             case string:trim(Resp) of
                 "success" -> success;
                 X         -> {error, X}
