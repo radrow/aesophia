@@ -620,6 +620,7 @@ constr_letfun(Env0, {letfun, Ann, Id = {id, _, Name}, Args, RetT, Body}, S0) ->
         ],
     Env1 = bind_vars(ArgsT, Env0),
     Body1 = a_normalize(Body),
+    ?DBG("NORMALIZED\n~s\nTO\n~s", [aeso_pretty:pp(expr, Body), aeso_pretty:pp(expr, Body1)]),
     DepRetT = fresh_liquid(Env0, "ret_" ++ Name, RetT),
     {BodyT, S1} = constr_expr(Env1, Body1, S0),
     DepSelfT =
@@ -913,6 +914,7 @@ constr_cases(Env0, Switched, SwitchedT, ExprT,
 %%   - Env which asserts that the match cannot succeed
 match_to_pattern(Env0, Pat, Expr, Type) ->
     {Env1, Pred} = match_to_pattern(Env0, Pat, Expr, Type, []),
+    ?DBG("SWITCH PRED ~s", [aeso_pretty:pp(predicate, Pred)]),
     EnvMatch = assert(Pred, Env1),
     EnvNoMatch =
         case Pred of
@@ -943,15 +945,17 @@ match_to_pattern(Env, {tuple, _, Pats}, Expr, {dep_tuple_t, _, Types}, Pred) ->
       end,
       {Env, Pred}, lists:zip(lists:zip(Pats, Types), lists:seq(1, N))
      );
-match_to_pattern(Env, {record, _, Fields}, Expr, {dep_record_t, _, _Type, FieldsT}, Pred) ->
+match_to_pattern(Env, {record, _, Fields}, Expr, {dep_record_t, _, Type, FieldsT}, Pred) ->
     FieldTypes =
         [{Field, FieldT} || {{id, _, Field}, FieldT} <- FieldsT],
     lists:foldl(
       fun({field, _, [{proj, _, Field}], Pat}, {Env0, Pred0}) ->
               PatT = proplists:get_value(name(Field), FieldTypes),
               Ann = aeso_syntax:get_ann(Pat),
-              Proj = {proj, Ann, Expr, Field},
-              match_to_pattern(Env0, Pat, Proj, PatT, Pred0)
+              Proj = {proj, Ann, Expr, qid(qname(Type) ++ [name(Field)])},
+              {E, P} = match_to_pattern(Env0, Pat, Proj, PatT, Pred0),
+              ?DBG("NEW PRED\n~s\n->\n~s", [aeso_pretty:pp(predicate, Pred), aeso_pretty:pp(predicate, P)]),
+              {E, P}
       end,
       {Env, Pred}, Fields
      );
@@ -1135,7 +1139,13 @@ flatten_type_binds(Assg, Access, TB) ->
                          [?tuple_proj_id(N, I) || I <- lists:seq(1, N)],
                          Fields
                         )
-                      ); %% TODO record!
+                      );
+                 {dep_record_t, _, RT, Fields} ->
+                     flatten_type_binds(
+                       Assg,
+                       fun(X) -> {proj, ann(), Access(Var), X} end,
+                       [{qid(qname(RT) ++ [name(Field)]), T} || {Field, T} <- Fields]
+                      );
                  {dep_variant_t, _, QType, Tag, Constrs} ->
                      TagPred = apply_subst1(nu(), Access(Var), pred_of(Assg, Tag)),
                      ConPred =
@@ -1359,6 +1369,9 @@ check_reachable(Assg, [{reachable, Ann, Env}|Rest]) ->
     end;
 check_reachable(Assg, [{unreachable, Ann, Env}|Rest]) ->
     Pred = pred_of(Assg, Env),
+    ?DBG("UNREACHABLE CHECK"),
+    ?DBG("RAW ENV ~p", [Env]),
+    ?DBG("PRED ENV ~s", [aeso_pretty:pp(predicate, Pred)]),
     case impl_holds(Env, Pred, [?bool(false)]) of
         true -> check_reachable(Assg, Rest);
         false -> throw({invalid_reachable, {Ann, Pred}})
@@ -1574,7 +1587,7 @@ expr_to_smt({'/', _})  -> {var, "div"};
 expr_to_smt({'!', _})  -> {var, "not"};
 expr_to_smt({'^', _})  -> {var, "^"};
 expr_to_smt({'mod', _})  -> {var, "mod"};
-expr_to_smt(E) -> ?DBG("NOT SMT E ~p", [E]), throw({not_smt_expr, E}).
+expr_to_smt(E) -> ?DBG("NOT SMT EXPR ~p", [E]), throw({not_smt_expr, E}).
 
 
 %% -- Simplification -----------------------------------------------------------
@@ -1750,6 +1763,8 @@ a_normalize_to_simpl(Expr = {int, _, _}, Type, Decls) ->
 a_normalize_to_simpl(Expr = {bool, _, _}, Type, Decls) ->
     {?typed(Expr, Type), Decls};
 a_normalize_to_simpl(Expr = {Op, _}, Type, Decls) when is_atom(Op) ->
+    {?typed(Expr, Type), Decls};
+a_normalize_to_simpl(Expr = {proj, _, _, _}, Type, Decls) ->
     {?typed(Expr, Type), Decls};
 a_normalize_to_simpl(Expr, Type, Decls0) ->
     {Expr1, Decls1} = a_normalize(Expr, Type, Decls0),
