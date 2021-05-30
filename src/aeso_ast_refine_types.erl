@@ -301,6 +301,7 @@ lookup_env1(#env{ scopes = Scopes }, Kind, QName) ->
 type_of(Env, Id) ->
     case lookup_env(Env, term, qname(Id)) of
         false ->
+            ?DBG("NOT TYPE FOR ~p", [Id]),
             undefined;
         {QId, Ty} -> {set_qname(QId, Id), Ty}
     end.
@@ -803,7 +804,6 @@ constr_expr(Env, {'if', _, Cond, Then, Else}, T, S0) ->
       ]
     };
 constr_expr(Env, {switch, _, Switched, Alts}, T, S0) ->
-    ?DBG("PRESWITCH PRED\n ~p", [Env#env.var_env]),
     ExprT = fresh_liquid(Env, "switch", T),
     {SwitchedT, S1} = constr_expr(Env, Switched, S0),
     S2 = constr_cases(Env, Switched, SwitchedT, ExprT, Alts, S1),
@@ -943,10 +943,20 @@ match_to_pattern(Env, {tuple, _, Pats}, Expr, {dep_tuple_t, _, Types}, Pred) ->
       end,
       {Env, Pred}, lists:zip(lists:zip(Pats, Types), lists:seq(1, N))
      );
-match_to_pattern(Env, {record, _, _}, Expr, {dep_record_t, _, Type, Fields}, Pred) ->
-    error(todo);
+match_to_pattern(Env, {record, _, Fields}, Expr, {dep_record_t, _, _Type, FieldsT}, Pred) ->
+    FieldTypes =
+        [{Field, FieldT} || {{id, _, Field}, FieldT} <- FieldsT],
+    lists:foldl(
+      fun({field, _, [{proj, _, Field}], Pat}, {Env0, Pred0}) ->
+              PatT = proplists:get_value(name(Field), FieldTypes),
+              Ann = aeso_syntax:get_ann(Pat),
+              Proj = {proj, Ann, Expr, Field},
+              match_to_pattern(Env0, Pat, Proj, PatT, Pred0)
+      end,
+      {Env, Pred}, Fields
+     );
 match_to_pattern(Env, {app, Ann, ?typed_p(QCon = {qcon, _, QName}), Args},
-                 Expr, {dep_variant_t, _, Type, Tag, Constrs}, Pred0) ->
+                 Expr, {dep_variant_t, _, _Type, _Tag, Constrs}, Pred0) ->
     N = length(Args),
     [Types] =
         [ ConArgs
@@ -1280,7 +1290,6 @@ valid_in({subtype_group, Subs, Base, SupPredVar}, Assg) ->
               VarPred = pred_of(Assg, SubKVar),
               ?DBG("COMPLEX SUBTYPE\n~s\n<:\n~p", [aeso_pretty:pp(predicate, VarPred), SupPredVar]),
               EnvPred = pred_of(Assg, Env),
-              ?DBG("ENV PRED ~p", [EnvPred]),
               AssumpPred = EnvPred ++ VarPred,
               impl_holds(bind_var(nu(), Base, Env),
                          AssumpPred, apply_subst(Subst, Ltinfo#ltinfo.predicate))
@@ -1496,6 +1505,8 @@ type_to_smt(?tuple_tp(Types)) ->
     {app, "$tuple" ++ integer_to_list(N),
      [type_to_smt(T) || T <- Types]
     };
+type_to_smt({dep_record_t, _, T, _}) ->
+    type_to_smt(T);
 type_to_smt({dep_variant_t, _, T, _, _}) ->
     type_to_smt(T);
 type_to_smt(T) ->
