@@ -59,6 +59,7 @@
 %% Type imports
 -type predicate()   :: aeso_syntax:predicate().
 -type expr()        :: aeso_syntax:expr().
+-type pat()         :: aeso_syntax:pat().
 -type decl()        :: aeso_syntax:decl().
 -type letfun()      :: aeso_syntax:letfun().
 -type fundecl()     :: aeso_syntax:fundecl().
@@ -405,12 +406,12 @@ init_env() ->
 
     #env{ scopes =
             #{ []           => TopScope
-             %% , ["Chain"]    => ChainScope
-             %% , ["Contract"] => ContractScope
-             %% , ["Call"]     => CallScope
-             %% , ["String"]   => StringScope
-             %% , ["Bits"]     => BitsScope
-             %% , ["Bytes"]    => BytesScope
+             , ["Chain"]    => ChainScope
+             , ["Contract"] => ContractScope
+             , ["Call"]     => CallScope
+             , ["String"]   => StringScope
+             , ["Bits"]     => BitsScope
+             , ["Bytes"]    => BytesScope
              } }.
 
 find_cool_ints(Expr) ->
@@ -765,9 +766,24 @@ constr_expr(Env, {app, Ann, ?typed_p({id, _, "abort"}), _}, T, S0) ->
      |S0
      ]
     };
+constr_expr(Env, {con, Ann, "None"}, Type, S0) ->
+    constr_expr(Env, {app, Ann, ?typed({qcon, Ann, ["None"]}, Type), []}, Type, S0);
+constr_expr(Env, QCon = {qcon, Ann, _}, Type = {fun_t, _, _, ArgsT, RetT}, S0) ->
+    %% Lambda-constructor
+    Args = [ fresh_id("con_arg", ArgT) || ArgT <- ArgsT],
+    Lam =
+        {lam, Ann,
+         [ {arg, aeso_syntax:get_ann(ArgT), Arg, ArgT}
+           || {?typed_p(Arg), ArgT} <- lists:zip(Args, ArgsT)
+         ],
+         ?typed({app, Ann, QCon, Args}, RetT)
+        },
+    constr_expr(Env, Lam, Type, S0);
 constr_expr(Env, QCon = {qcon, Ann, _}, Type, S0) ->
-    %% This is for sure a nullary constructor
+    %% Nullary constructor
     constr_expr(Env, {app, Ann, ?typed(QCon, Type), []}, Type, S0);
+constr_expr(Env, {app, Ann, ?typed_p({con, CAnn, "Some"}, CType), Args}, Type, S0) ->
+    constr_expr(Env, {app, Ann, ?typed({qcon, CAnn, ["Some"]}, CType), Args}, Type, S0);
 constr_expr(Env, {app, Ann, ?typed_p(QCon = {qcon, _, QName}), Args}, Type, S0) ->
     {ArgsT, S1} = constr_expr_list(Env, Args, S0),
     {_, {[], {variant_t, Constrs}}} = lookup_type(Env, Type),
@@ -917,6 +933,7 @@ constr_cases(Env0, Switched, SwitchedT, ExprT,
 %% match_to_pattern computes
 %%   - Env which will bind variables
 %%   - Env which asserts that the match cannot succeed
+-spec match_to_pattern(env(), pat(), expr(), type()) -> {env(), env()}.
 match_to_pattern(Env0, Pat, Expr, Type) ->
     {Env1, Pred} = match_to_pattern(Env0, Pat, Expr, Type, []),
     ?DBG("SWITCH PRED ~s", [aeso_pretty:pp(predicate, Pred)]),
@@ -1042,16 +1059,16 @@ apply_subst(Subs, Q) when is_list(Subs) ->
 %% -- Assignments --------------------------------------------------------------
 
 cmp_qualifiers(Thing) ->
-    [].
-    %% [ ?op(nu(), '=<', Thing)
-    %% , ?op(nu(), '>=', Thing)
-    %% , ?op(nu(), '>', Thing)
-    %% , ?op(nu(), '<', Thing)
-    %% ].
+    %% [].
+    [ ?op(nu(), '=<', Thing)
+    , ?op(nu(), '>=', Thing)
+    , ?op(nu(), '>', Thing)
+    , ?op(nu(), '<', Thing)
+    ].
 
 eq_qualifiers(Thing) ->
     [ ?op(nu(), '==', Thing)
-    %% , ?op(nu(), '!=', Thing)
+    , ?op(nu(), '!=', Thing)
     ].
 
 int_qualifiers(Thing) ->
@@ -1072,7 +1089,8 @@ inst_pred_variant_tag(Type, Constrs) ->
 inst_pred_int(Env) ->
     lists:concat(
       [ [Q || CoolInt <- Env#env.cool_ints,
-              Q <- int_qualifiers(?int(CoolInt))]
+              Q <- int_qualifiers(?int(CoolInt))
+        ]
       , [ Q || {Var, {refined_t, _, ?int_tp, _}} <- maps:to_list(Env#env.var_env),
                Q <- var_int_qualifiers({id, ann(), Var})
         ]
@@ -1082,7 +1100,8 @@ inst_pred_int(Env) ->
 inst_pred_bool(Env) ->
     lists:concat(
       [ [Q || CoolBool <- [true, false],
-              Q <- eq_qualifiers(?bool(CoolBool))]
+              Q <- eq_qualifiers(?bool(CoolBool))
+        ]
       , [ Q || {Var, {refined_t, _, ?bool_tp, _}} <- maps:to_list(Env#env.var_env),
                Q <- eq_qualifiers({id, ann(), Var})
         ]
