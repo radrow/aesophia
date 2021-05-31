@@ -506,6 +506,8 @@ fresh_liquid(_Env, Variance, Hint, Type = {con, Ann, _}) ->
     {refined_t, Ann, Type, fresh_template(Variance, Hint)};
 fresh_liquid(_Env, Variance, Hint, Type = {qcon, Ann, _}) ->
     {refined_t, Ann, Type, fresh_template(Variance, Hint)};
+fresh_liquid(_Env, Variance, Hint, Type = {tvar, Ann, _}) ->
+    {refined_t, Ann, Type, fresh_template(Variance, Hint)};
 fresh_liquid(Env, Variance, Hint, Type = {qid, Ann, _}) ->
     case lookup_type(Env, Type) of
         false ->
@@ -1006,6 +1008,8 @@ apply_subst1({id, _, X}, Expr, {id, _, X}) ->
     Expr;
 apply_subst1({qid, _, X}, Expr, {qid, _, X}) ->
     Expr;
+apply_subst1({tvar, _, X}, Expr, {tvar, _, X}) ->
+    Expr;
 apply_subst1({ltvar, X}, Expr, {ltvar, X}) ->
     Expr;
 apply_subst1(X, Expr, {template, S1, T}) ->
@@ -1058,7 +1062,7 @@ plus_int_qualifiers(Int, Thing) ->
     int_qualifiers(?op(Thing, '+', Int)) ++ int_qualifiers(?op(Thing, '-', Int)).
 
 var_int_qualifiers(Var) ->
-    int_qualifiers({id, ann(), Var}) ++ plus_int_qualifiers(?int(1), {id, ann(), Var}).
+    int_qualifiers(Var) ++ plus_int_qualifiers(?int(1), Var).
 
 inst_pred_variant_tag(Type, Constrs) ->
     [ {is_tag, ann(), nu(), qid(lists:droplast(qname(Type)) ++ [name(Con)]), Args}
@@ -1070,21 +1074,41 @@ inst_pred_int(Env) ->
       [ [Q || CoolInt <- Env#env.cool_ints,
               Q <- int_qualifiers(?int(CoolInt))]
       , [ Q || {Var, {refined_t, _, ?int_tp, _}} <- maps:to_list(Env#env.var_env),
-               Q <- var_int_qualifiers(Var)
+               Q <- var_int_qualifiers({id, ann(), Var})
         ]
       ]
      ).
+
+inst_pred_bool(Env) ->
+    lists:concat(
+      [ [Q || CoolBool <- [true, false],
+              Q <- eq_qualifiers(?bool(CoolBool))]
+      , [ Q || {Var, {refined_t, _, ?bool_tp, _}} <- maps:to_list(Env#env.var_env),
+               Q <- eq_qualifiers({id, ann(), Var})
+        ]
+      ]
+     ).
+
+inst_pred_tvar(Env, TVar) ->
+    [ Q || {Var, {refined_t, _, {tvar, _, TVar1}, _}} <- maps:to_list(Env#env.var_env),
+           TVar == TVar1,
+           Q <- eq_qualifiers({id, ann(), Var})
+    ].
 
 inst_pred(BaseT, Env) ->
     case BaseT of
         ?int_tp ->
             inst_pred_int(Env);
+        ?bool_tp ->
+            inst_pred_bool(Env);
         {qid, _, _} ->
             case lookup_type(Env, BaseT) of
                 {_, {_, {variant_t, Constrs}}} ->
                     inst_pred_variant_tag(BaseT, Constrs);
                 X -> error({todo, {inst_pred, X}})
             end;
+        {tvar, _, TVar} ->
+            inst_pred_tvar(Env, TVar);
         _ -> []
     end.
 
@@ -1364,8 +1388,8 @@ subtype_implies(Env, {refined_t, _, _, Template}, Q, Assg) ->
     EnvPred = pred_of(Assg, Env),
     AssumpPred = EnvPred ++ SubPred,
     impl_holds(Env, AssumpPred, Q);
-subtype_implies(_, T, T1, _) ->
-    error({dupaaaaa, T, T1}).
+subtype_implies(Env, {tvar, _, _}, Q, Assg) ->
+    impl_holds(Env, pred_of(Assg, Env), Q).
 
 
 check_reachable(Assg, [{reachable, Ann, Env}|Rest]) ->
@@ -1516,6 +1540,8 @@ type_to_smt(?bool_tp) ->
     {var, "Bool"};
 type_to_smt(?int_tp) ->
     {var, "Int"};
+type_to_smt({tvar, _, _}) ->
+    {var, "Int"}; % lol
 type_to_smt({qid, _, QVar}) ->
     {var, string:join(QVar, ".")};
 type_to_smt({dep_tuple_t, Ann, Ts}) ->
@@ -1637,6 +1663,7 @@ sort_preds_by_meaningfulness(Preds0) ->
           end
          || Q = {app, Ann, {Op, OpAnn}, [L, R]} <- Preds0
         ],
+    Preds2 = lists:usort(Preds1),
     OpList =
         lists:zip(lists:reverse(['==', '>', '<', '>=', '=<', '!=']), lists:seq(1, 6)),
     Cmp = fun ({app, _, {OpL, _}, [LL, LR]}, {app, _, {OpR, _}, [RL, RR]}) ->
@@ -1654,7 +1681,7 @@ sort_preds_by_meaningfulness(Preds0) ->
               (_, _) -> true
           end,
     TagPreds = [P || P <- Preds0, element(1, P) == is_tag],
-    lists:sort(Cmp, Preds1) ++ TagPreds.
+    lists:sort(Cmp, Preds2) ++ TagPreds.
 
 %% this is absolutely heuristic
 simplify_pred(Scope, Pred) ->
