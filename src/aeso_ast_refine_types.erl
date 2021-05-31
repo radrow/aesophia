@@ -763,6 +763,9 @@ constr_expr(Env, {app, Ann, ?typed_p({id, _, "abort"}), _}, T, S0) ->
      |S0
      ]
     };
+constr_expr(Env, QCon = {qcon, Ann, _}, Type, S0) ->
+    %% This is for sure a nullary constructor
+    constr_expr(Env, {app, Ann, ?typed(QCon, Type), []}, Type, S0);
 constr_expr(Env, {app, Ann, ?typed_p(QCon = {qcon, _, QName}), Args}, Type, S0) ->
     {ArgsT, S1} = constr_expr_list(Env, Args, S0),
     {_, {[], {variant_t, Constrs}}} = lookup_type(Env, Type),
@@ -959,6 +962,10 @@ match_to_pattern(Env, {record, _, Fields}, Expr, {dep_record_t, _, Type, FieldsT
       end,
       {Env, Pred}, Fields
      );
+match_to_pattern(Env, QCon = {qcon, Ann, _},
+                 Expr, DepT = {dep_variant_t, _, Type, _, _}, Pred0) ->
+    %% This is for sure a nullary constructor
+    match_to_pattern(Env, {app, Ann, ?typed(QCon, Type), []}, Expr, DepT, Pred0);
 match_to_pattern(Env, {app, Ann, ?typed_p(QCon = {qcon, _, QName}), Args},
                  Expr, {dep_variant_t, _, _Type, _Tag, Constrs}, Pred0) ->
     N = length(Args),
@@ -1535,7 +1542,11 @@ is_smt_expr(Expr) ->
 
 expr_to_smt({id, _, Var}) ->
     {var, Var};
+expr_to_smt({con, _, Var}) ->
+    {var, Var};
 expr_to_smt({qid, _, QVar}) ->
+    {var, string:join(QVar, ".")};
+expr_to_smt({qcon, _, QVar}) ->
     {var, string:join(QVar, ".")};
 expr_to_smt({bool, _, true}) ->
     {var, "true"};
@@ -1553,6 +1564,12 @@ expr_to_smt(E = {app, _, F, Args}) ->
     end;
 expr_to_smt({proj, Ann, E, Field}) ->
     expr_to_smt({app, Ann, Field, [E]});
+expr_to_smt({is_tag, _, What, QCon, []}) ->
+    {app, "=",
+     [ expr_to_smt(What)
+     , {var, string:join(qname(QCon), ".")}
+     ]
+    };
 expr_to_smt({is_tag, _, What, QCon, Args}) ->
     N = length(Args),
     MakeArg = fun(I) -> {var, "$arg" ++ integer_to_list(I)}
