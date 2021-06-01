@@ -393,6 +393,17 @@ init_env() ->
                      [{"length",  DFun1({id("str"), String}, ?d_nonneg_int)}])
         },
 
+    ListScope = #scope
+        { fun_env = MkDefs(
+                      [{"length", DFun1({id("l"),
+                                         {dep_list_t, ann(),
+                                          {app_t, ann(), {id, ann(), "list"},
+                                           [{tvar, ann(), "'a"}]
+                                          }
+                                         }
+                                        }, ?d_nonneg_int)}])
+        },
+
     %% Bits
     BitsScope = #scope
         { fun_env = MkDefs(
@@ -410,14 +421,21 @@ init_env() ->
     TopScope = #scope
         { fun_env  = MkDefs([])
         , type_env =
-              [{"option", {[{tvar, ann(), "'a"}],
-                           {variant_t,
-                            [ {constr_t, ann(), {con, ann(), "None"}, []}
-                            , {constr_t, ann(), {con, ann(), "Some"}, [{tvar, ann(), "'a"}]}
-                            ]
+              [ {"option", {[{tvar, ann(), "'a"}],
+                            {variant_t,
+                             [ {constr_t, ann(), {con, ann(), "None"}, []}
+                             , {constr_t, ann(), {con, ann(), "Some"}, [{tvar, ann(), "'a"}]}
+                             ]
+                            }
                            }
-                          }
-               }
+                }
+              , {"list", {[{tvar, ann(), "'a"}],
+                            {variant_t,
+                             [ {constr_t, ann(), {con, ann(), "$empty"}, []}
+                             ]  % Constructors handled ad-hoc
+                            }
+                           }
+                }
               ]
         },
 
@@ -427,6 +445,7 @@ init_env() ->
              , ["Contract"] => ContractScope
              , ["Call"]     => CallScope
              , ["String"]   => StringScope
+             , ["List"]     => ListScope
              , ["Bits"]     => BitsScope
              , ["Bytes"]    => BytesScope
              } }.
@@ -435,6 +454,14 @@ find_cool_ints(Expr) ->
     sets:to_list(find_cool_ints(Expr, sets:from_list([0, 1, -1]))).
 find_cool_ints({int, _, I}, Acc) ->
     sets:add_element(-I, sets:add_element(I, Acc));
+find_cool_ints({list, _, L}, Acc) ->
+    find_cool_ints(L, sets:add_element(length(L), Acc));
+find_cool_ints({app, _, {_, '::'}, [H, T]}, Acc) ->
+    find_cool_ints([H, T],
+                   sets:union(Acc,
+                     sets:from_list([I + 1 || I <- sets:to_list(Acc)])
+                    )
+                  );
 find_cool_ints([H|T], Acc) ->
     find_cool_ints(T, find_cool_ints(H, Acc));
 find_cool_ints(T, Acc) when is_tuple(T) ->
@@ -528,6 +555,9 @@ fresh_liquid(_Env, Variance, Hint, Type = {tvar, Ann, _}) ->
     {refined_t, Ann, Type, fresh_template(Variance, Hint)};
 fresh_liquid(Env, Variance, Hint, Type = {qid, Ann, _}) ->
     fresh_liquid(Env, Variance, Hint, {app_t, Ann, Type, []});
+fresh_liquid(Env, Variance, Hint, Type = {app_t, Ann, {id, _, "list"}, [Elem]}) ->
+    {dep_list_t, Ann, Type, fresh_liquid(Env, Variance, Hint, Elem),
+     fresh_template(Variance, Hint)};
 fresh_liquid(Env, Variance, Hint, {app_t, Ann, {id, IAnn, Name}, Args}) ->
     fresh_liquid(Env, Variance, Hint, {app_t, Ann, {qid, IAnn, [Name]}, Args});
 fresh_liquid(Env, Variance, Hint,
@@ -897,6 +927,19 @@ constr_expr(Env, {proj, Ann, Rec, Field}, T, S0) ->
      | S1
      ]
     };
+constr_expr(Env, {list, Ann, Elems}, Type = {app_t, TAnn, _, [ElemT]}, S0) ->
+    DepElemT = fresh_liquid(Env, "list", ElemT),
+    {DepElemsT, S1} = constr_expr_list(Env, Elems, S0),
+    S2 =
+        [ {subtype, Ann, Env, DepElemTI, DepElemT}
+         || DepElemTI <- DepElemsT
+        ] ++ S1,
+    {{dep_list_t, TAnn, Type, DepElemT,
+      [?op({app, Ann, {qid, Ann, ["List", "length"]}, [nu()]}, '==', ?int(length(Elems)))]},
+     [ {well_formed, Env, DepElemT}
+     | S2
+     ]
+    };
 
 constr_expr(Env, [E], _, S) ->
     constr_expr(Env, E, S);
@@ -1145,6 +1188,10 @@ inst_pred_bool(Env) ->
       ]
      ).
 
+inst_pred_list(Env) ->
+    Len = {app, ann(), {qid, ann(), ["List", "length"]}, [nu()]},
+    apply_subst1(nu(), Len, inst_pred_int(Env)).
+
 inst_pred_tvar(Env, TVar) ->
     [ Q || {Var, {refined_t, _, {tvar, _, TVar1}, _}} <- maps:to_list(Env#env.var_env),
            TVar == TVar1,
@@ -1163,6 +1210,8 @@ inst_pred(BaseT, Env) ->
                     inst_pred_variant_tag(BaseT, Constrs);
                 X -> error({todo, {inst_pred, X}})
             end;
+        {app_t, _, {id, _, "list"}, _} ->
+            inst_pred_list(Env);
         {app_t, _, Qid = {qid, _, _}, Args} ->
             case lookup_type(Env, Qid) of
                 {_, {AppArgs, {variant_t, Constrs}}} ->
@@ -1332,6 +1381,14 @@ split_constr1(C = {subtype, Ann, Env0, SubT, SupT}) ->
                 ]
               ]
              );
+        { {dep_list_t, _, TypeSub, DepElemSub, QualSub}
+        , {dep_list_t, _, TypeSup, DepElemSup, QualSup}
+        } ->
+            split_constr(
+              [ {subtype, Ann, Env0, ?refined(TypeSub, QualSub), ?refined(TypeSup, QualSup)}
+              , {subtype, Ann, Env0, DepElemSub, DepElemSup}
+              ]
+             );
         _ -> [C]
     end;
 split_constr1(C = {well_formed, Env0, T}) ->
@@ -1357,6 +1414,10 @@ split_constr1(C = {well_formed, Env0, T}) ->
                 ]
               ]
              );
+        {dep_list_t, _, Type, DepElem, Qual} ->
+            [ {well_formed, Env0, ?refined(Type, Qual)}
+            , {well_formed, Env0, DepElem}
+            ];
         _ -> [C]
     end;
 split_constr1(C = {reachable, _, _}) ->
@@ -1840,6 +1901,11 @@ a_normalize({record, Ann, FieldVals}, Type, Decls0) ->
 a_normalize({proj, Ann, Expr, Field}, Type, Decls0) ->
     {Expr1, Decls1} = a_normalize_to_simpl(Expr, Decls0),
     {?typed({proj, Ann, Expr1, Field}, Type),
+     Decls1
+    };
+a_normalize({list, Ann, Elems}, Type, Decls0) ->
+    {Elems1, Decls1} = a_normalize_to_simpl_list(Elems, [], Decls0),
+    {?typed({list, Ann, Elems1}, Type),
      Decls1
     };
 a_normalize({block, Ann, Stmts}, Type, Decls0) ->

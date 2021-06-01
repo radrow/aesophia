@@ -338,6 +338,20 @@ dep_type({dep_variant_t, _, Type, Pred, Constrs}) ->
       , par(punctuate(text(" |"), lists:map(fun dep_constructor_t/1, Constrs)))
       , text("}")
       ]);
+dep_type({dep_list_t, _, Elem, []}) ->
+    beside(
+      [ text("list(")
+      , type(Elem)
+      , text(")")
+      ]);
+dep_type({dep_list_t, _, Elem, LenPred}) ->
+    beside(
+     [ text("{list(")
+     , type(Elem)
+     , text(") | ")
+     , predicate(LenPred)
+     , text("}")
+     ]);
 dep_type(T = {tvar, _, _}) ->
     name(T).
 
