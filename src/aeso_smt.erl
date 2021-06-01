@@ -41,7 +41,7 @@ check_sat() ->
             case string:trim(Resp) of
                 "sat"   -> true;
                 "unsat" -> false;
-                X -> {error, {bad_answer, X}}
+                X -> throw({smt_error, X})
             end
     after 5000 -> {error, timeout}
     end.
@@ -53,7 +53,7 @@ send_z3_success(Query) ->
             %% io:format(Resp ++ "\n"),
             case string:trim(Resp) of
                 "success" -> success;
-                X         -> {error, X}
+                X         -> throw({smt_error, X})
             end
     after 5000 -> {error, timeout}
     end.
