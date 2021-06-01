@@ -393,17 +393,6 @@ init_env() ->
                      [{"length",  DFun1({id("str"), String}, ?d_nonneg_int)}])
         },
 
-    ListScope = #scope
-        { fun_env = MkDefs(
-                      [{"length", DFun1({id("l"),
-                                         {dep_list_t, ann(),
-                                          {app_t, ann(), {id, ann(), "list"},
-                                           [{tvar, ann(), "'a"}]
-                                          }
-                                         }
-                                        }, ?d_nonneg_int)}])
-        },
-
     %% Bits
     BitsScope = #scope
         { fun_env = MkDefs(
@@ -429,13 +418,6 @@ init_env() ->
                             }
                            }
                 }
-              , {"list", {[{tvar, ann(), "'a"}],
-                            {variant_t,
-                             [ {constr_t, ann(), {con, ann(), "$empty"}, []}
-                             ]  % Constructors handled ad-hoc
-                            }
-                           }
-                }
               ]
         },
 
@@ -445,7 +427,6 @@ init_env() ->
              , ["Contract"] => ContractScope
              , ["Call"]     => CallScope
              , ["String"]   => StringScope
-             , ["List"]     => ListScope
              , ["Bits"]     => BitsScope
              , ["Bytes"]    => BytesScope
              } }.
@@ -934,8 +915,7 @@ constr_expr(Env, {list, Ann, Elems}, Type = {app_t, TAnn, _, [ElemT]}, S0) ->
         [ {subtype, Ann, Env, DepElemTI, DepElemT}
          || DepElemTI <- DepElemsT
         ] ++ S1,
-    {{dep_list_t, TAnn, Type, DepElemT,
-      [?op({app, Ann, {qid, Ann, ["List", "length"]}, [nu()]}, '==', ?int(length(Elems)))]},
+    {{dep_list_t, TAnn, Type, DepElemT, [?op(nu(), '==', ?int(length(Elems)))]},
      [ {well_formed, Env, DepElemT}
      | S2
      ]
@@ -1188,10 +1168,6 @@ inst_pred_bool(Env) ->
       ]
      ).
 
-inst_pred_list(Env) ->
-    Len = {app, ann(), {qid, ann(), ["List", "length"]}, [nu()]},
-    apply_subst1(nu(), Len, inst_pred_int(Env)).
-
 inst_pred_tvar(Env, TVar) ->
     [ Q || {Var, {refined_t, _, {tvar, _, TVar1}, _}} <- maps:to_list(Env#env.var_env),
            TVar == TVar1,
@@ -1211,7 +1187,7 @@ inst_pred(BaseT, Env) ->
                 X -> error({todo, {inst_pred, X}})
             end;
         {app_t, _, {id, _, "list"}, _} ->
-            inst_pred_list(Env);
+            inst_pred_int(Env);
         {app_t, _, Qid = {qid, _, _}, Args} ->
             case lookup_type(Env, Qid) of
                 {_, {AppArgs, {variant_t, Constrs}}} ->
