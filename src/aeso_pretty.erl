@@ -300,13 +300,12 @@ dep_type({refined_t, _, BaseType, Pred}) ->
       , predicate(Pred)
       , text("}")
       ]);
-dep_type({dep_fun_t, _, Named, Args, Ret}) ->
+dep_type({dep_fun_t, _, Args, Ret}) ->
     follow
-      ( hsep(
-          [args_type(Named)] ++
-          [ beside([text("{"), name(Name), text(":"), type(DT), text("}")])
-            || {Name, DT} <- Args]
-          ++ [text("=>")]
+      ( hsep
+          ( tuple([ beside([text("{"), name(Name), text(":"), type(DT), text("}")])
+                    || {dep_arg_t, _, Name, DT} <- Args])
+          , text("=>")
           )
       , type(Ret)
       );

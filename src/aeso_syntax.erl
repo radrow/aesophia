@@ -88,10 +88,10 @@
 %% Predicate for a liquid type
 -type predicate() :: [expr()].
 
-%% Dependent type
+%% Dependent type FIXME it is very inconsistent with the reality...
 -type dep_type(Qual)
     :: {refined_t, ann(), type(), Qual}
-     | {dep_fun_t, ann(), [named_arg_t()], [{id(), dep_type(Qual)}], dep_type(Qual)}
+     | {dep_fun_t, ann(), [dep_arg_t(Qual)], dep_type(Qual)}
      | {dep_tuple_t, ann(), [dep_type(Qual)]}
      | {dep_record_t, ann(), type(), [{id(), dep_type(Qual)}]}
      | {dep_variant_t, ann(), type(), Qual, [dep_constr_t(Qual)]}
@@ -100,6 +100,8 @@
 -type liquid_type() :: dep_type(predicate()).
 
 -type dep_constr_t(Qual) :: {dep_constr_t, ann(), con(), dep_type(Qual)}.
+
+-type dep_arg_t(Qual) :: {dep_arg_t, ann(), id(), dep_type(Qual)}.
 
 -type named_arg_t() :: {named_arg_t, ann(), id(), type(), expr()}.
 

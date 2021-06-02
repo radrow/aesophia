@@ -225,6 +225,8 @@ bind_nu(Type, Env) ->
 
 -spec bind_vars([{id(), lutype()}], env()) -> env().
 bind_vars([], Env) -> Env;
+bind_vars([{dep_arg_t, _, X, T} | Vars], Env) ->
+    bind_vars(Vars, bind_var(X, T, Env));
 bind_vars([{X, T} | Vars], Env) ->
     bind_vars(Vars, bind_var(X, T, Env)).
 
@@ -355,21 +357,22 @@ init_env() ->
     Bytes   = fun(Len) -> {bytes_t, Ann, Len} end,
     Unit    = {tuple_t, Ann, []},
     Option  = fun(T) -> {app_t, Ann, {id, Ann, "option"}, [T]} end,
-    DFun    = fun(Ts, T) -> {dep_fun_t, Ann, [], Ts, T} end,
+    DFun    = fun(Ts, T) -> {dep_fun_t, Ann, Ts, T} end,
     DFun1   = fun(S, T) -> DFun([S], T) end,
     %% Lambda    = fun(Ts, T) -> {fun_t, Ann, [], Ts, T} end,
     %% Lambda1   = fun(S, T) -> Lambda([S], T) end,
-    StateDFun  = fun(Ts, T) -> {dep_fun_t, [stateful|Ann], [], Ts, T} end,
+    StateDFun  = fun(Ts, T) -> {dep_fun_t, [stateful|Ann], Ts, T} end,
+    Arg     = fun(Name, Type) -> {dep_arg_t, ann(), id(Name), Type} end,
 
     MkDefs = fun maps:from_list/1,
 
     ChainScope = #scope
         { fun_env = MkDefs(
                      %% Spend transaction.
-                    [{"spend",        StateDFun([{id("addr"), Address}, {id("amount"), ?d_nonneg_int}], Unit)},
+                    [{"spend",        StateDFun([Arg("addr", Address), Arg("amount", ?d_nonneg_int)], Unit)},
                      %% Chain environment
-                     {"balance",      DFun1({id("addr"), Address}, ?d_nonneg_int)},
-                     {"block_hash",   DFun1({id("h"), ?d_nonneg_int}, Option(Hash))},
+                     {"balance",      DFun1(Arg("addr", Address), ?d_nonneg_int)},
+                     {"block_hash",   DFun1(Arg("h", ?d_nonneg_int), Option(Hash))},
                      {"timestamp",    ?d_pos_int},
                      {"block_height", ?d_pos_int},
                      {"difficulty",   ?d_nonneg_int},
@@ -390,22 +393,22 @@ init_env() ->
     %% Strings
     StringScope = #scope
         { fun_env = MkDefs(
-                     [{"length",  DFun1({id("str"), String}, ?d_nonneg_int)}])
+                     [{"length",  DFun1(Arg("str", String), ?d_nonneg_int)}])
         },
 
     %% Bits
     BitsScope = #scope
         { fun_env = MkDefs(
-                     [{"set",          DFun([{id("bits"), Bits}, ?d_nonneg_int], Bits)},
-                      {"clear",        DFun([{id("bits"), Bits}, ?d_nonneg_int], Bits)},
-                      {"test",         DFun([{id("bits"), Bits}, ?d_nonneg_int], Bool)},
-                      {"sum",          DFun1({id("bits"), Bits}, ?d_nonneg_int)}])
+                     [{"set",     DFun([Arg("bits", Bits), Arg("idx", ?d_nonneg_int)], Bits)},
+                      {"clear",   DFun([Arg("bits", Bits), Arg("idx", ?d_nonneg_int)], Bits)},
+                      {"test",    DFun([Arg("bits", Bits), Arg("idx", ?d_nonneg_int)], Bool)},
+                      {"sum",     DFun1(Arg("bits", Bits), ?d_nonneg_int)}])
                      },
 
     %% Bytes
     BytesScope = #scope
         { fun_env = MkDefs(
-                   [{"to_int", DFun1({id("bytes"), Bytes(any)}, ?d_nonneg_int)}]) },
+                   [{"to_int", DFun1(Arg("bytes", Bytes(any)), ?d_nonneg_int)}]) },
 
     TopScope = #scope
         { fun_env  = MkDefs([])
@@ -487,7 +490,7 @@ bind_ast_funs(AST, Env) ->
                                  [ {ArgName, fresh_liquid(Env1, contravariant, "arge_" ++ StrName, T)}
                                    || ?typed_p(ArgName = {id, _, StrName}, T) <- Args
                                  ],
-                             TypeDep = {dep_fun_t, FAnn, [], ArgsT, fresh_liquid(Env1, "rete", RetT)},
+                             TypeDep = {dep_fun_t, FAnn, ArgsT, fresh_liquid(Env1, "rete", RetT)},
                              {Name, TypeDep}
                          end
                          || {letfun, FAnn, {id, _, Name}, Args, RetT, _} <- Defs
@@ -581,10 +584,13 @@ fresh_liquid(Env, Variance, Hint,
             end
     end;
 fresh_liquid(Env, Variance, Hint, {fun_t, Ann, Named, Args, Ret}) ->
-    { dep_fun_t, Ann, Named
-    , [{fresh_id("argt"),
-        fresh_liquid(Env, switch_variance(Variance), Hint ++ "_argtt", Arg)}
-       || Arg <- Args]
+    { dep_fun_t, Ann
+    , [{dep_arg_t, AAnn, Name, fresh_liquid(Env, Variance, "named_", Type)}
+       || {named_arg_t, AAnn, Name, Type, _} <- Named
+      ]
+      ++ [{dep_arg_t, aeso_syntax:get_ann(Arg), fresh_id("argt"),
+           fresh_liquid(Env, switch_variance(Variance), Hint ++ "_argtt", Arg)}
+          || Arg <- Args]
     , fresh_liquid(Env, Variance, Hint, Ret)
     };
 fresh_liquid(Env, Variance, Hint, {tuple_t, Ann, Types}) ->
@@ -665,19 +671,15 @@ constr_con(Env0, {Tag, Ann, Con, Defs}, S0)
 -spec constr_letfun(env(), letfun(), [constr()]) -> {fundecl(), [constr()]}.
 constr_letfun(Env0, {letfun, Ann, Id = {id, _, Name}, Args, RetT, Body}, S0) ->
     ArgsT =
-        [ {ArgId, fresh_liquid(Env0, contravariant, "argi_" ++ ArgName, T)}
-          || ?typed_p(ArgId = {id, _, ArgName}, T) <- Args
+        [ {dep_arg_t, AAnn, ArgId, fresh_liquid(Env0, contravariant, "argi_" ++ ArgName, T)}
+          || ?typed_p(ArgId = {id, AAnn, ArgName}, T) <- Args
         ],
     Env1 = bind_vars(ArgsT, Env0),
     Body1 = a_normalize(Body),
     ?DBG("NORMALIZED\n~s\nTO\n~s", [aeso_pretty:pp(expr, Body), aeso_pretty:pp(expr, Body1)]),
     DepRetT = fresh_liquid(Env0, "ret_" ++ Name, RetT),
     {BodyT, S1} = constr_expr(Env1, Body1, S0),
-    DepSelfT =
-        { dep_fun_t, Ann, []
-        , ArgsT
-        , DepRetT
-        },
+    DepSelfT = {dep_fun_t, Ann, ArgsT, DepRetT},
     {_, GlobalFunType} = type_of(Env1, Id),
     S3 = [ {subtype, Ann, Env0, DepSelfT, GlobalFunType}
          , {subtype, Ann, Env1, BodyT, DepRetT}
@@ -769,8 +771,10 @@ constr_expr(_Env, Expr = {CmpOp, Ann}, {fun_t, _, _, [OpLT, OpRT], RetT = ?bool_
        CmpOp =:= '!=' ->
     OpLV = fresh_id("opl"),
     OpRV = fresh_id("opr"),
-    { {dep_fun_t, Ann, [],
-       [{OpLV, ?refined(OpLT, [])}, {OpRV, ?refined(OpRT, [])}],
+    { {dep_fun_t, Ann,
+       [ {dep_arg_t, aeso_syntax:get_ann(OpLT), OpLV, ?refined(OpLT, [])}
+       , {dep_arg_t, aeso_syntax:get_ann(OpRT), OpRV, ?refined(OpRT, [])}
+       ],
        ?refined(RetT, [?op(nu(), '==', {app, [{format, infix}|Ann], Expr, [OpLV, OpRV]})])
       }
     , S
@@ -784,22 +788,23 @@ constr_expr(_Env, Expr = {CmpOp, Ann}, {fun_t, _, _, [OpLT, OpRT], RetT = ?int_t
        CmpOp =:= '^' ->
     OpLV = fresh_id("opl"),
     OpRV = fresh_id("opr"),
-    { {dep_fun_t, Ann, [],
-       [ {OpLV, ?refined(OpLT, [])}
-       , {OpRV, ?refined(OpRT, case CmpOp of
-                                   'mod' -> [?op(nu(), '>',  ?int(0))];
-                                   '/'   -> [?op(nu(), '!=', ?int(0))];
-                                   '^'   -> [?op(nu(), '>=', ?int(0))];
-                                   _     -> []
-                               end)}
+    { {dep_fun_t, Ann,
+       [ {dep_arg_t, aeso_syntax:get_ann(OpLT), OpLV, ?refined(OpLT, [])}
+       , {dep_arg_t, aeso_syntax:get_ann(OpRT), OpRV,
+          ?refined(OpRT, case CmpOp of
+                             'mod' -> [?op(nu(), '>',  ?int(0))];
+                             '/'   -> [?op(nu(), '!=', ?int(0))];
+                             '^'   -> [?op(nu(), '>=', ?int(0))];
+                             _     -> []
+                         end)}
        ], ?refined(RetT, [?op(nu(), '==', {app, [{format, infix}|Ann], Expr, [OpLV, OpRV]})])
       }
     , S
     };
 constr_expr(_Env, Expr = {'-', Ann}, _, S) ->
     N = fresh_id("n"),
-    { {dep_fun_t, Ann, [],
-       [{N, ?refined(?int_t, [])}],
+    { {dep_fun_t, Ann,
+       [{dep_arg_t, Ann, N, ?refined(?int_t, [])}],
        ?refined(?int_t,
                 [?op(nu(), '==', {app, [{format, prefix}|Ann], Expr, [N]})])
       }
@@ -878,14 +883,25 @@ constr_expr(Env, {app, Ann, ?typed_p(QCon = {qcon, _, QName}), Args}, Type, S0) 
       apply_subst(TypeSubst, DepConstrs)},
      S1
     };
-constr_expr(Env, {app, Ann, F, Args}, _, S0) ->
-    {{dep_fun_t, _, _, ArgsFT, RetT}, S1} = constr_expr(Env, F, S0),
+constr_expr(Env, {app, Ann, F, Args0}, {fun_t, _, NamedT, _, _}, S0) ->
+    NamedArgs = [Arg || Arg = {named_arg, _, _, _} <- Args0],
+    Args =
+        [ case [ArgValue
+                || {named_arg, _, ArgName, ArgValue} <- NamedArgs,
+                   ArgName == TArgName
+               ] of
+              [Arg] -> Arg;
+              [] -> TArgDefault
+          end
+         || {named_arg_t, _, TArgName, _, TArgDefault} <- NamedT
+        ] ++ (Args0 -- NamedArgs),
+    {{dep_fun_t, _, ArgsFT, RetT}, S1} = constr_expr(Env, F, S0),
     {ArgsT, S2} = constr_expr_list(Env, Args, S1),
-    ArgSubst = [{X, Expr} || {{X, _}, Expr} <- lists:zip(ArgsFT, Args)],
+    ArgSubst = [{X, Expr} || {{dep_arg_t, _, X, _}, Expr} <- lists:zip(ArgsFT, Args)],
     { apply_subst(ArgSubst, RetT)
     , [{subtype, [{context, {app, Ann, F, N}}|aeso_syntax:get_ann(ArgT)],
         Env, ArgT, ArgFT}
-       || {{_, ArgFT}, ArgT, N} <- lists:zip3(ArgsFT, ArgsT, lists:seq(1, length(ArgsT)))
+       || {{dep_arg_t, _, _, ArgFT}, ArgT, N} <- lists:zip3(ArgsFT, ArgsT, lists:seq(1, length(ArgsT)))
       ] ++ S2
     };
 constr_expr(Env, {'if', _, Cond, Then, Else}, T, S0) ->
@@ -918,7 +934,7 @@ constr_expr(Env, {lam, Ann, Args, Body}, T = {fun_t, TAnn, _, _, RetT}, S0) ->
          || {arg, _, ArgId = {id, _, ArgName}, ArgT} <- Args
         ],
     DepRetT = fresh_liquid(Env, "lam_ret", RetT),
-    InternalExprT = {dep_fun_t, TAnn, [], DepArgsT, DepRetT},
+    InternalExprT = {dep_fun_t, TAnn, DepArgsT, DepRetT},
     EnvBody = bind_vars(DepArgsT, Env),
     {BodyT, S1} = constr_expr(EnvBody, Body, S0),
     {ExternalExprT,
@@ -1141,11 +1157,11 @@ apply_subst1(X, Expr, {template, S1, T}) ->
     {template, [{X, Expr}|S1], T};
 apply_subst1(X, Expr, {refined_t, Ann, T, Qual}) ->
     {refined_t, Ann, T, apply_subst1(X, Expr, Qual)};
-apply_subst1(X, Expr, {dep_fun_t, Ann, Named, Args, RetT}) ->
-    {dep_fun_t, Ann, Named, apply_subst1(X, Expr, Args),
+apply_subst1(X, Expr, {dep_fun_t, Ann, Args, RetT}) ->
+    {dep_fun_t, Ann, apply_subst1(X, Expr, Args),
      case X of
          {id, _, Name} ->
-             case [{} || {{id, _, ArgName}, _} <- Args, ArgName =:= Name] of
+             case [{} || {dep_arg_t, _, {id, _, ArgName}, _} <- Args, ArgName =:= Name] of
                  [] -> apply_subst1(X, Expr, RetT);
                  _ -> RetT
              end;
@@ -1370,17 +1386,18 @@ split_constr([], Acc) ->
 
 split_constr1(C = {subtype, Ann, Env0, SubT, SupT}) ->
     case {SubT, SupT} of
-        { {dep_fun_t, _, _, ArgsSub, RetSub}
-        , {dep_fun_t, _, _, ArgsSup, RetSup}
+        { {dep_fun_t, _, ArgsSub, RetSub}
+        , {dep_fun_t, _, ArgsSup, RetSup}
         } ->
             Contra =
                 [ {subtype, Ann, Env0, ArgSupT, ArgSubT} %% contravariant!
-                 || {{_, ArgSubT}, {_, ArgSupT}} <- lists:zip(ArgsSub, ArgsSup)
+                 || {{dep_arg_t, _, ArgSubT}, {dep_arg_t, _, ArgSupT}}
+                        <- lists:zip(ArgsSub, ArgsSup)
                 ],
-            Env1 =
-                bind_vars([{Id, T} || {Id, T} <- ArgsSup], Env0),
+            Env1 = bind_vars(ArgsSup, Env0),
             Subst =
-                [{Id1, Id2} || {{Id1, _}, {Id2, _}} <- lists:zip(ArgsSub, ArgsSup)],
+                [{Id1, Id2} || {{dep_arg_t, _, Id1, _}, {dep_arg_t, _, Id2, _}}
+                                   <- lists:zip(ArgsSub, ArgsSup)],
             split_constr([{subtype, Ann, Env1, apply_subst(Subst, RetSub), RetSup}|Contra]);
         {{dep_tuple_t, _, TSubs}, {dep_tuple_t, _, TSups}} ->
             split_constr([{subtype, Ann, Env0, TSub, TSup} ||
@@ -1420,13 +1437,12 @@ split_constr1(C = {subtype, Ann, Env0, SubT, SupT}) ->
     end;
 split_constr1(C = {well_formed, Env0, T}) ->
     case T of
-        {dep_fun_t, _, _, Args, Ret} ->
+        {dep_fun_t, _, Args, Ret} ->
             FromArgs =
                 [ {well_formed, Env0, ArgT}
-                  || {_, ArgT} <- Args
+                  || {dep_arg_t, _, _, ArgT} <- Args
                 ],
-            Env1 =
-                bind_vars([{Id, ArgT} || {Id, ArgT} <- Args], Env0),
+            Env1 = bind_vars(Args, Env0),
             split_constr([{well_formed, Env1, Ret}|FromArgs]);
         {dep_tuple_t, _, Ts} ->
             split_constr([{well_formed, Env0, Tt} || Tt <- Ts]);
