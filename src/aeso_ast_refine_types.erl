@@ -1737,7 +1737,7 @@ is_smt_expr(Expr) ->
     end.
 
 expr_to_smt({id, _, Var}) ->
-    {var, Var};
+    {var, lists:flatten(string:replace(Var, "#", "$", all))};
 expr_to_smt({con, _, Var}) ->
     {var, Var};
 expr_to_smt({qid, _, QVar}) ->
