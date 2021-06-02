@@ -76,7 +76,7 @@ refiner_test_group() ->
                                  [aeso_syntax:get_ann(file, Ann, ""),
                                   aeso_syntax:get_ann(line, Ann, 0),
                                   aeso_syntax:get_ann(col, Ann, 0),
-                                  aeso_pretty:pp(predicate, Pred)
+                                  aeso_pretty:pp(predicate, aeso_ast_refine_types:path_pred(Pred))
                                  ]
                                 ),
                        error(invalid_reachable);
@@ -88,7 +88,7 @@ refiner_test_group() ->
                                  [aeso_syntax:get_ann(file, Ann, ""),
                                   aeso_syntax:get_ann(line, Ann, 0),
                                   aeso_syntax:get_ann(col, Ann, 0),
-                                  aeso_pretty:pp(predicate, Pred)
+                                  aeso_pretty:pp(predicate, aeso_ast_refine_types:path_pred(Pred))
                                  ]
                                 ),
                        error(valid_unreachable);
