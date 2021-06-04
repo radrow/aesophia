@@ -94,13 +94,29 @@ refiner_test_group() ->
                        error(valid_unreachable);
                    {{error, {overwrite, Id}}, _} ->
                        io:format("Illegal redefinition of the variable ~s at ~s ~p:~p",
-                                 [aeso_syntax:pp(expr, Id),
+                                 [aeso_pretty:pp(expr, Id),
                                   aeso_syntax:get_ann(file, Id, ""),
                                   aeso_syntax:get_ann(line, Id, 0),
                                   aeso_syntax:get_ann(col, Id, 0)
                                  ]
                                 ),
                        error(overwrite);
+                   {{error, {entrypoint_arg_assump, {Name, Ann, T}}}, _} ->
+                       io:format("The entrypoint ~s has got assumptions on its argument at ~s ~p:~p.\n"
+                                 "These assumptions won't be checked after the contract is deployed.\n"
+                                 "Please provide ~s an external type declaration and validate the data using\n"
+                                 "  `require : (bool, string) => unit` function.\n"
+                                 "The illegal type was\n"
+                                 "  ~s",
+                                 [Name,
+                                  aeso_syntax:get_ann(file, Ann, ""),
+                                  aeso_syntax:get_ann(line, Ann, 0),
+                                  aeso_syntax:get_ann(col, Ann, 0),
+                                  Name,
+                                  aeso_pretty:pp(type, T)
+                                 ]
+                                ),
+                       error(entrypoint_arg_assump);
                    {{error, ErrBin}, _} ->
                        io:format("\nerror: ~s", [ErrBin]),
                        error(ErrBin)
@@ -112,8 +128,8 @@ refiner_test_group() ->
 run_refine(Name) ->
     ContractString = aeso_test_utils:read_contract(Name),
     Ast = aeso_parser:string(ContractString, sets:new(), []),
-    {_, TAst, _TAst} = aeso_ast_infer_types:infer(Ast, [return_env]),
-    RAst = aeso_ast_refine_types:refine_ast(TAst),
+    {TEnv, TAst, _} = aeso_ast_infer_types:infer(Ast, [return_env]),
+    RAst = aeso_ast_refine_types:refine_ast(TEnv, TAst),
     RAst.
 
 check_ast_refinement(AST, Assertions) ->

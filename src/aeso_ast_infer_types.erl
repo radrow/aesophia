@@ -16,6 +16,7 @@
         , infer/2
         , unfold_types_in_type/3
         , pp_type/2
+        , lookup_env/4
         ]).
 
 -type utype() :: {fun_t, aeso_syntax:ann(), named_args_t(), [utype()], utype()}
@@ -119,6 +120,7 @@
     }).
 
 -type env() :: #env{}.
+-export_type([env/0]).
 
 -define(PRINT_TYPES(Fmt, Args),
         when_option(pp_types, fun () -> io:format(Fmt, Args) end)).
@@ -885,44 +887,17 @@ check_type(Env, Type = {fun_t, Ann, NamedArgs, Args, Ret}, Arity) ->
 check_type(_Env, Type = {uvar, _, _}, Arity) ->
     ensure_base_type(Type, Arity),
     Type;
-check_type(Env, {named_t, Ann, Var, LT = {liquid, _, _, _}}, Arity) ->
-    {named_t, Ann, Var, check_liquid(Env, Var, LT, Arity)};
 check_type(Env, {named_t, Ann, Var, T}, Arity) ->
     {named_t, Ann, Var, check_type(Env, T, Arity)};
-check_type(Env, LT = {liquid, Ann, _, _}, Arity) ->
-    check_liquid(Env, {id, Ann, "$nu"}, LT, Arity);
+check_type(Env, {refined_t, Ann, T, Pred}, Arity) ->
+    ensure_base_type(T, Arity),
+    T1 = check_type(Env, T, Arity),
+    Env1 = bind_var({id, [], "$nu"}, T, Env),
+    [check_expr(Env1, Q, {id, [], "bool"}) || Q <- Pred],
+    {refined_t, Ann, T1, Pred};
 check_type(_Env, {args_t, Ann, Ts}, _) ->
     type_error({new_tuple_syntax, Ann, Ts}),
     {tuple_t, Ann, Ts}.
-
-check_liquid(Env, Nu, {liquid, Ann, T, Quals}, Arity) ->
-    ensure_base_type(T, Arity),
-    T1 = check_type(Env, T, Arity),
-    Env1 = bind_var(Nu, T1, Env),
-    [check_qual(Env1, Nu, Qual) || Qual <- Quals],
-    {liquid, Ann, T1, Quals}.
-
-check_qual(Env, Nu, {app, _, {'==', _}, [A, B]}) ->
-    {eq, check_qual_var(Env, Nu, A), check_qual_var(Env, Nu, B)};
-check_qual(Env, Nu, {app, _, {'!=', _}, [A, B]}) ->
-    {neg, {eq, check_qual_var(Env, Nu, A), check_qual_var(Env, Nu, B)}};
-check_qual(Env, Nu, {app, _, {'<', _}, [A, B]}) ->
-    {lt, check_qual_var(Env, Nu, A), check_qual_var(Env, Nu, B)};
-check_qual(Env, Nu, {app, _, {'>', _}, [A, B]}) ->
-    {lt, check_qual_var(Env, Nu, B), check_qual_var(Env, Nu, A)};
-check_qual(Env, Nu, {app, _, {'=<', _}, [A, B]}) ->
-    {neg, {lt, check_qual_var(Env, Nu, B), check_qual_var(Env, Nu, A)}};
-check_qual(Env, Nu, {app, _, {'>=', _}, [A, B]}) ->
-    {neg, {lt, check_qual_var(Env, Nu, A), check_qual_var(Env, Nu, B)}};
-check_qual(_, _, E) ->
-    error({invalid_qual, E}). %% FIXME proper error
-
-check_qual_var(_, {id, _, Nu}, {id, _, Nu}) ->
-    nu;
-check_qual_var(_, _, {int, _, I}) when is_integer(I) ->
-    I;
-check_qual_var(Env, _, Expr = {id, Ann, _}) ->
-    check_expr(Env, Expr, {id, Ann, "int"}).
 
 ensure_base_type(Type, Arity) ->
     [ type_error({wrong_type_arguments, Type, Arity, 0}) || Arity /= 0 ],
@@ -1084,7 +1059,12 @@ infer_letrec(Env, Defs) ->
 infer_letfun(Env, {fun_clauses, Ann, Fun = {id, _, Name}, Type, Clauses}) ->
     Type1 = check_type(Env, Type),
     {NameSigs, Clauses1} = lists:unzip([ infer_letfun1(Env, Clause) || Clause <- Clauses ]),
-    {_, Sigs = [Sig | _]} = lists:unzip(NameSigs),
+    {_, Sigs = [Sig0 | _]} = lists:unzip(NameSigs),
+    Sig = case Type1 of
+              {fun_t, TAnn, Named, ArgsT, RetT} ->
+                  {type_sig, TAnn, none, Named, ArgsT, RetT};
+              _ -> Sig0
+          end,
     _ = [ begin
             ClauseT = typesig_to_fun_t(ClauseSig),
             unify(Env, ClauseT, Type1, {check_typesig, Name, ClauseT, Type1})
@@ -1123,8 +1103,8 @@ desugar_clauses(Ann, Fun, {type_sig, _, _, _, ArgTypes, RetType}, Clauses) ->
             {letfun, Ann, Fun, Args, RetType,
              {typed, NoAnn,
               {switch, NoAnn, Tuple(Args),
-                [ {'case', AnnC, Tuple(ArgsC), Body}
-                || {letfun, AnnC, _, ArgsC, _, Body} <- Clauses ]}, RetType}}
+               [ {'case', AnnC, Tuple(ArgsC), Body}
+                 || {letfun, AnnC, _, ArgsC, _, Body} <- Clauses ]}, RetType}}
     end.
 
 print_typesig({Name, TypeSig}) ->
@@ -2182,9 +2162,9 @@ unify1(Env, {app_t, _, T, []}, B, When) ->
     unify(Env, T, B, When);
 unify1(Env, A, {app_t, _, T, []}, When) ->
     unify(Env, A, T, When);
-unify1(Env, A, {liquid, _, B, _}, When) ->
+unify1(Env, A, {refined_t, _, B, _}, When) ->
     unify1(Env, A, B, When);
-unify1(Env, {liquid, _, A, _}, B, When) ->
+unify1(Env, {refined_t, _, A, _}, B, When) ->
     unify1(Env, A, B, When);
 unify1(Env, {named_t, _, _, A}, B, When) ->
     unify1(Env, A, B, When);
@@ -2238,7 +2218,7 @@ occurs_check1(R, [H | T]) ->
     occurs_check(R, H) orelse occurs_check(R, T);
 occurs_check1(R, {named_t, _, _, T}) ->
     occurs_check1(R, T);
-occurs_check1(R, {liquid, _, T, _}) ->
+occurs_check1(R, {refined_t, _, T, _}) ->
     occurs_check1(R, T);
 occurs_check1(_, []) -> false.
 
