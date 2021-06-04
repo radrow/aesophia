@@ -889,12 +889,12 @@ check_type(_Env, Type = {uvar, _, _}, Arity) ->
     Type;
 check_type(Env, {named_t, Ann, Var, T}, Arity) ->
     {named_t, Ann, Var, check_type(Env, T, Arity)};
-check_type(Env, {refined_t, Ann, T, Pred}, Arity) ->
+check_type(Env, {refined_t, Ann, Id, T, Pred}, Arity) ->
     ensure_base_type(T, Arity),
     T1 = check_type(Env, T, Arity),
-    Env1 = bind_var({id, [], "$nu"}, T, Env),
+    Env1 = bind_var(Id, T, Env),
     [check_expr(Env1, Q, {id, [], "bool"}) || Q <- Pred],
-    {refined_t, Ann, T1, Pred};
+    {refined_t, Ann, Id, T1, Pred};
 check_type(_Env, {args_t, Ann, Ts}, _) ->
     type_error({new_tuple_syntax, Ann, Ts}),
     {tuple_t, Ann, Ts}.
@@ -2162,9 +2162,9 @@ unify1(Env, {app_t, _, T, []}, B, When) ->
     unify(Env, T, B, When);
 unify1(Env, A, {app_t, _, T, []}, When) ->
     unify(Env, A, T, When);
-unify1(Env, A, {refined_t, _, B, _}, When) ->
+unify1(Env, A, {refined_t, _, _, B, _}, When) ->
     unify1(Env, A, B, When);
-unify1(Env, {refined_t, _, A, _}, B, When) ->
+unify1(Env, {refined_t, _, _, A, _}, B, When) ->
     unify1(Env, A, B, When);
 unify1(Env, {named_t, _, _, A}, B, When) ->
     unify1(Env, A, B, When);
@@ -2218,7 +2218,7 @@ occurs_check1(R, [H | T]) ->
     occurs_check(R, H) orelse occurs_check(R, T);
 occurs_check1(R, {named_t, _, _, T}) ->
     occurs_check1(R, T);
-occurs_check1(R, {refined_t, _, T, _}) ->
+occurs_check1(R, {refined_t, _, _, T, _}) ->
     occurs_check1(R, T);
 occurs_check1(_, []) -> false.
 
