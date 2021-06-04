@@ -231,7 +231,12 @@ type400() ->
           end),
      ?RULE(id("bytes"), parens(token(int)),
            {bytes_t, get_ann(_1), element(3, _2)}),
-     liquid()
+     ?RULE(tok('{'), id(), tok(':'), typeRefinable(), tok('|'), comma_sep(expr()), tok('}'),
+           refined_t(get_ann(_1), _2, _4, _6)
+          ),
+     ?RULE(tok('{'), id(), tok(':'), typeRefinable(), tok('}'),
+           refined_t(get_ann(_1), _2, _4, [])
+          )
     ]).
 
 typeAtom() ->
@@ -241,21 +246,14 @@ typeAtom() ->
     , id(), token(con), token(qcon), token(qid), tvar()
     ])).
 
+typeRefinable() ->
+    ?LAZY_P(choice([id(), tvar()])).
+
 args_t() ->
     ?LAZY_P(choice(
     [ ?RULE(tok('('), tok(')'), {args_t, get_ann(_1), []})
       %% Singleton case handled separately
     , ?RULE(tok('('), type(), tok(','), sep1(type(), tok(',')), tok(')'), {args_t, get_ann(_1), [_2|_4]})
-    ])).
-
-liquid() ->
-    ?LAZY_P(choice(
-    [ ?RULE(tok('{'), id(), tok(':'), type(), tok('|'), comma_sep(expr()), tok('}'),
-            {named_t, get_ann(_1), _2, {liquid, get_ann(_3), _4, _6}}
-           )
-    , ?RULE(tok('{'), id(), tok(':'), type(), tok('}'),
-            {named_t, get_ann(_1), _2, _4}
-           )
     ])).
 
 
@@ -568,6 +566,9 @@ else_branches([Else = {else, _, _} | Stmts], Acc) ->
     {lists:reverse([Else | Acc]), Stmts};
 else_branches(Stmts, Acc) ->
     {lists:reverse(Acc), Stmts}.
+
+refined_t(Ann, Id, Type, Pred) ->
+    {refined_t, Ann, Type, aeso_ast_refine_types:apply_subst(Id, {id, Ann, "$nu"}, Pred)}.
 
 tuple_t(_Ann, [Type]) -> Type;  %% Not a tuple
 tuple_t(Ann, Types)   -> {tuple_t, Ann, Types}.

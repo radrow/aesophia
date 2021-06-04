@@ -66,6 +66,7 @@
 -type ast()         :: aeso_syntax:ast().
 -type type()        :: aeso_syntax:type().
 -type dep_type(Q)   :: aeso_syntax:dep_type(Q).
+-type dep_arg_t(Q)  :: aeso_syntax:dep_arg_t(Q).
 -type id()          :: aeso_syntax:id().
 -type qid()         :: aeso_syntax:qid().
 -type con()         :: aeso_syntax:con().
@@ -91,8 +92,10 @@
 %% Uninstantiated predicate template
 -type template() :: {template, [subst()], ltvar()}.
 
+-type liquid_qual() ::  predicate() | template().
+
 %% Liquid type, possibly uninstantiated
--type lutype() :: dep_type( predicate() | template() ).
+-type lutype() :: dep_type(liquid_qual()).
 
 -type fun_env() :: #{name() => template()}.
 -type var_env() :: #{name() => template()}.
@@ -225,10 +228,13 @@ bind_nu(Type, Env) ->
 
 -spec bind_vars([{id(), lutype()}], env()) -> env().
 bind_vars([], Env) -> Env;
-bind_vars([{dep_arg_t, _, X, T} | Vars], Env) ->
-    bind_vars(Vars, bind_var(X, T, Env));
 bind_vars([{X, T} | Vars], Env) ->
     bind_vars(Vars, bind_var(X, T, Env)).
+
+-spec bind_args([dep_arg_t(liquid_qual())], env()) -> env().
+bind_args([], Env) -> Env;
+bind_args([{dep_arg_t, _, X, T} | Vars], Env) ->
+    bind_args(Vars, bind_var(X, T, Env)).
 
 -spec bind_fun(name(), lutype(), env()) -> env().
 bind_fun(X, Type, Env) ->
@@ -478,29 +484,90 @@ find_tuple_sizes(T, Acc) when is_tuple(T) ->
 find_tuple_sizes(_, Acc) ->
     Acc.
 
--spec bind_ast_funs(ast(), env()) -> env().
-bind_ast_funs(AST, Env) ->
+-spec bind_ast_funs(aeso_ast_infer_types:env(), ast(), env()) -> env().
+bind_ast_funs(TCEnv, AST, Env) ->
     lists:foldr(
       fun({HEAD, _, Con, Defs}, Env0)
-            when HEAD =:= namespace orelse HEAD =:= contract orelse HEAD =:= contract_main ->
+            when HEAD =:= namespace orelse HEAD =:= contract
+                 orelse HEAD =:= contract_main orelse HEAD =:= contract_interface ->
               Env1 = push_scope(Con, Env0),
               Env2 = bind_funs(
                        [ begin
-                             ArgsT =
-                                 [ {ArgName, fresh_liquid(Env1, contravariant, "arge_" ++ StrName, T)}
-                                   || ?typed_p(ArgName = {id, _, StrName}, T) <- Args
+                             {_, {_, {type_sig, TSAnn, _, [], ArgsT, RetT}}} =
+                                 aeso_ast_infer_types:lookup_env(
+                                   TCEnv, term, FAnn, qname(Con) ++ qname(Id)),
+                             check_arg_assumptions(Id, FAnn, ArgsT),
+                             DepArgsT =
+                                 [ {dep_arg_t, aeso_syntax:get_ann(Arg),
+                                    Arg, fresh_liquid(Env, contravariant, name(Arg), ArgT)}
+                                   || {?typed_p(Arg), ArgT} <- lists:zip(Args, ArgsT)
                                  ],
-                             TypeDep = {dep_fun_t, FAnn, ArgsT, fresh_liquid(Env1, "rete", RetT)},
+                             DepRetT = fresh_liquid(Env1, "rete", RetT),
+                             TypeDep = {dep_fun_t, TSAnn, DepArgsT, DepRetT},
                              {Name, TypeDep}
                          end
-                         || {letfun, FAnn, {id, _, Name}, Args, RetT, _} <- Defs
+                         || {letfun, FAnn, Id = {id, _, Name}, Args, _, _} <- Defs
                        ],
                        Env1),
-              Env3 = pop_scope(Env2),
-              Env3
+              Env3 = bind_funs(
+                       [ {Name, fresh_liquid(Env2, Name, Type)}
+                         || {fun_decl, _, {id, _, Name}, Type} <- Defs
+                       ],
+                       Env2),
+              Env4 = pop_scope(Env3),
+              Env4
       end,
      Env, AST).
 
+check_arg_assumptions({id, _, Name}, Ann, Args) ->
+    case proplists:get_value(entrypoint, Ann, false) of
+        true ->
+            [ case has_assumptions(Arg) of
+                  true -> throw({entrypoint_arg_assump, {Name, Ann, Arg}});
+                  false -> ok
+              end
+              || Arg <- Args
+            ];
+        false -> ok
+    end.
+
+%% Check if the type is not strictly less general than its base type
+has_assumptions(T) ->
+    has_assumptions(covariant, T).
+has_assumptions(covariant, {refined_t, _, _, [_|_]}) ->
+    true;
+has_assumptions(covariant, {dep_variant_t, _, _, [_|_], _}) ->
+    true;
+has_assumptions(covariant, {dep_list_t, _, _, [_|_]}) ->
+    true;
+has_assumptions(Variance, {dep_fun_t, _, Args, RetT}) ->
+    has_assumptions(switch_variance(Variance), Args)
+        orelse has_assumptions(Variance, RetT);
+has_assumptions(Variance, {fun_t, _, Named, Args, RetT}) ->
+    has_assumptions(switch_variance(Variance), Args)
+        orelse has_assumptions(switch_variance(Variance), Named)
+        orelse has_assumptions(Variance, RetT);
+has_assumptions(Variance, {type_sig, _, _, Named, Args, RetT}) ->
+    has_assumptions(switch_variance(Variance), Args)
+        orelse has_assumptions(switch_variance(Variance), Named)
+        orelse has_assumptions(Variance, RetT);
+has_assumptions(Variance, {app_t, _, {id, _, "map"}, [K, V]}) ->
+    has_assumptions(switch_variance(Variance), K)
+        orelse has_assumptions(Variance, V);
+has_assumptions(Variance, {dep_tuple_t, _, Args}) ->
+    has_assumptions(Variance, Args);
+has_assumptions(Variance, {dep_record_t, _, _, Fields}) ->
+    has_assumptions(Variance, Fields);
+has_assumptions(Variance, {dep_variant_t, _, _, _, Constrs}) ->
+    has_assumptions(Variance, Constrs);
+has_assumptions(Variance, {dep_list_t, _, ElemT, _}) ->
+    has_assumptions(Variance, ElemT);
+has_assumptions(Variance, [H|T]) ->
+    has_assumptions(Variance, H) orelse has_assumptions(Variance, T);
+has_assumptions(Variance, T) when is_tuple(T) ->
+    has_assumptions(Variance, tuple_to_list(T));
+has_assumptions(_, _) ->
+    false.
 
 %% -- Fresh stuff --------------------------------------------------------------
 
@@ -537,6 +604,22 @@ fresh_liquid(Env, Hint, Type) ->
     fresh_liquid(Env, covariant, Hint, Type).
 
 -spec fresh_liquid(env(), name(), variance(), term()) -> term().
+fresh_liquid(_Env, _Variance, _Hint, Type = {refined_t, _, _, _}) ->
+    Type;
+fresh_liquid(_Env, _Variance, _Hint, Type = {dep_fun_t, _, _, _}) ->
+    Type;
+fresh_liquid(_Env, _Variance, _Hint, Type = {dep_arg_t, _, _, _}) ->
+    Type;
+fresh_liquid(_Env, _Variance, _Hint, Type = {dep_tuple_t, _, _}) ->
+    Type;
+fresh_liquid(_Env, _Variance, _Hint, Type = {dep_record_t, _, _}) ->
+    Type;
+fresh_liquid(_Env, _Variance, _Hint, Type = {dep_variant_t, _, _, _, _}) ->
+    Type;
+fresh_liquid(_Env, _Variance, _Hint, Type = {dep_constr_t, _, _, _}) ->
+    Type;
+fresh_liquid(_Env, _Variance, _Hint, Type = {dep_list_t, _, _, _}) ->
+    Type;
 fresh_liquid(_Env, Variance, Hint, Type = {id, Ann, _}) ->
     {refined_t, Ann, Type, fresh_template(Variance, Hint)};
 fresh_liquid(_Env, Variance, Hint, Type = {con, Ann, _}) ->
@@ -547,6 +630,11 @@ fresh_liquid(_Env, Variance, Hint, Type = {tvar, Ann, _}) ->
     {refined_t, Ann, Type, fresh_template(Variance, Hint)};
 fresh_liquid(Env, Variance, Hint, Type = {qid, Ann, _}) ->
     fresh_liquid(Env, Variance, Hint, {app_t, Ann, Type, []});
+fresh_liquid(Env, Variance, Hint, {app_t, Ann, Id = {id, _, "map"}, [K, V]}) ->
+    {app_t, Ann, Id,
+     [ fresh_liquid(Env, switch_variance(Variance), Hint ++ "_key", K)
+     , fresh_liquid(Env,                  Variance, Hint ++ "_val", V)
+     ]};
 fresh_liquid(Env, Variance, Hint, {app_t, Ann, {id, _, "list"}, [Elem]})
   when Variance =:= contravariant orelse Variance =:= forced_contravariant ->
     {dep_list_t, Ann, fresh_liquid(Env, Variance, Hint, Elem), [?op(nu(), '>=', ?int(0))]};
@@ -583,6 +671,8 @@ fresh_liquid(Env, Variance, Hint,
                      fresh_template(Variance, Hint ++ "_tag"), DepConstrs}
             end
     end;
+fresh_liquid(Env, Variance, Hint, {type_sig, Ann, _, Named, Args, Ret}) ->
+    fresh_liquid(Env, Variance, Hint, {fun_t, Ann, Named, Args, Ret});
 fresh_liquid(Env, Variance, Hint, {fun_t, Ann, Named, Args, Ret}) ->
     { dep_fun_t, Ann
     , [{dep_arg_t, AAnn, Name, fresh_liquid(Env, Variance, "named_", Type)}
@@ -615,28 +705,32 @@ switch_variance(forced_contravariant) ->
 
 %% -- Entrypoint ---------------------------------------------------------------
 
-refine_ast(AST) ->
+refine_ast(TCEnv, AST) ->
+    ?DBG("ENTRY AST ~p", [AST]),
     Env0 = init_env(),
     Env1 = with_cool_ints_from(AST, Env0),
     Env2 = register_typedefs(AST, Env1),
-    Env3 = bind_ast_funs(AST, Env2),
-    {AST1, CS0} = constr_ast(Env3, AST),
-    CS1 = split_constr(CS0),
-    CS2 = group_subtypes(CS1),
-    try aeso_smt:scoped(
+    try
+        Env3 = bind_ast_funs(TCEnv, AST, Env2),
+        {AST1, CS0} = constr_ast(Env3, AST),
+        CS1 = split_constr(CS0),
+        CS2 = group_subtypes(CS1),
+        case aeso_smt:scoped(
           fun() ->
                   declare_tuples(find_tuple_sizes(AST)),
                   declare_datatypes(type_defs(Env3)),
                   solve(Env3, CS2)
           end) of
-        Assg ->
-            AST2 = apply_assg(Assg, AST1),
-            {ok, AST2}
+            Assg ->
+                AST2 = apply_assg(Assg, AST1),
+                {ok, AST2}
+        end
     catch {ErrType, _}=E
                 when ErrType =:= contradict
                      orelse ErrType =:= invalid_reachable
                      orelse ErrType =:= valid_unreachable
                      orelse ErrType =:= overwrite
+                     orelse ErrType =:= entrypoint_arg_assump
                      -> {error, E}
     end.
 
@@ -669,26 +763,18 @@ constr_con(Env0, {Tag, Ann, Con, Defs}, S0)
     {{Tag, Ann, Con, Defs1}, S1}.
 
 -spec constr_letfun(env(), letfun(), [constr()]) -> {fundecl(), [constr()]}.
-constr_letfun(Env0, {letfun, Ann, Id = {id, _, Name}, Args, RetT, Body}, S0) ->
-    ArgsT =
-        [ {dep_arg_t, AAnn, ArgId, fresh_liquid(Env0, contravariant, "argi_" ++ ArgName, T)}
-          || ?typed_p(ArgId = {id, AAnn, ArgName}, T) <- Args
-        ],
-    Env1 = bind_vars(ArgsT, Env0),
+constr_letfun(Env0, {letfun, Ann, Id, Args, _, Body}, S0) ->
+    {_, GlobFunT = {dep_fun_t, _, GlobArgsT, GlobRetT}} = type_of(Env0, Id),
+    Env1 = bind_args(GlobArgsT, Env0),
     Body1 = a_normalize(Body),
     ?DBG("NORMALIZED\n~s\nTO\n~s", [aeso_pretty:pp(expr, Body), aeso_pretty:pp(expr, Body1)]),
-    DepRetT = fresh_liquid(Env0, "ret_" ++ Name, RetT),
     {BodyT, S1} = constr_expr(Env1, Body1, S0),
-    DepSelfT = {dep_fun_t, Ann, ArgsT, DepRetT},
-    {_, GlobalFunType} = type_of(Env1, Id),
-    S3 = [ {subtype, Ann, Env0, DepSelfT, GlobalFunType}
-         , {subtype, Ann, Env1, BodyT, DepRetT}
-         , {well_formed, Env0, GlobalFunType}
-         , {well_formed, Env0, DepSelfT}
+    S3 = [ {subtype, Ann, Env1, BodyT, GlobRetT}
+         , {well_formed, Env0, GlobFunT}
          | S1
          ],
 
-    {{fun_decl, Ann, Id, DepSelfT}, S3}.
+    {{fun_decl, Ann, Id, GlobFunT}, S3}.
 
 register_typedefs([{Tag, _, Con, Defs}|Rest], Env0)
   when Tag =:= contract orelse Tag =:= namespace ->
@@ -714,9 +800,17 @@ constr_expr_list(Env, [H|T], Acc, S0) ->
 
 constr_expr(Env, ?typed_p({app, Ann, F, Args}, RetT), S)
   when element(1, F) =/= typed ->
+    %% Here we fix the untyped operators
     ArgTypes = [ArgT || {typed, _, _, ArgT} <- Args],
-    TypedF = {typed, Ann, F, {fun_t, Ann, ann(), ArgTypes, RetT}},
+    TypedF = {typed, Ann, F, {fun_t, Ann, [], ArgTypes, RetT}},
     constr_expr(Env, ?typed({app, Ann, TypedF, Args}, RetT), S);
+constr_expr(Env, ?typed_p(Expr, Type = {refined_t, Ann, Base, _}), S0) ->
+    {ExprT, S1} = constr_expr(Env, Expr, Base, S0),
+    {ExprT,
+     [ {subtype, Ann, Env, ExprT, Type}
+     | S1
+     ]
+    };
 constr_expr(Env, ?typed_p(Expr, T), S) ->
     constr_expr(Env, Expr, T, S);
 constr_expr(_, X, _) ->
@@ -727,7 +821,7 @@ constr_expr(Env, {block, _, Stmts}, T, S) ->
 constr_expr(Env, {typed, _, E, T1}, T2, S) ->
     case T1 == T2 of
         true -> constr_expr(Env, E, T1, S);
-        false -> error({"wtf, internal type mismatch", T1, T2})
+        false -> error({internal_type_mismatch, T1, T2})
     end;
 constr_expr(Env, Expr = {IdHead, _, _}, T, S)
   when IdHead =:= id orelse IdHead =:= qid ->
@@ -883,7 +977,7 @@ constr_expr(Env, {app, Ann, ?typed_p(QCon = {qcon, _, QName}), Args}, Type, S0) 
       apply_subst(TypeSubst, DepConstrs)},
      S1
     };
-constr_expr(Env, {app, Ann, F, Args0}, {fun_t, _, NamedT, _, _}, S0) ->
+constr_expr(Env, {app, Ann, F = ?typed_p(_, {fun_t, _, NamedT, _, _}), Args0}, _, S0) ->
     NamedArgs = [Arg || Arg = {named_arg, _, _, _} <- Args0],
     Args =
         [ case [ArgValue
@@ -935,7 +1029,7 @@ constr_expr(Env, {lam, Ann, Args, Body}, T = {fun_t, TAnn, _, _, RetT}, S0) ->
         ],
     DepRetT = fresh_liquid(Env, "lam_ret", RetT),
     InternalExprT = {dep_fun_t, TAnn, DepArgsT, DepRetT},
-    EnvBody = bind_vars(DepArgsT, Env),
+    EnvBody = bind_args(DepArgsT, Env),
     {BodyT, S1} = constr_expr(EnvBody, Body, S0),
     {ExternalExprT,
      [ {well_formed, Env, InternalExprT}
@@ -1145,39 +1239,39 @@ group_subtypes(Cs) ->
 
 %% -- Substitution -------------------------------------------------------------
 
-apply_subst1({id, _, X}, Expr, {id, _, X}) ->
+apply_subst({id, _, X}, Expr, {id, _, X}) ->
     Expr;
-apply_subst1({qid, _, X}, Expr, {qid, _, X}) ->
+apply_subst({qid, _, X}, Expr, {qid, _, X}) ->
     Expr;
-apply_subst1({tvar, _, X}, Expr, {tvar, _, X}) ->
+apply_subst({tvar, _, X}, Expr, {tvar, _, X}) ->
     Expr;
-apply_subst1({ltvar, X}, Expr, {ltvar, X}) ->
+apply_subst({ltvar, X}, Expr, {ltvar, X}) ->
     Expr;
-apply_subst1(X, Expr, {template, S1, T}) ->
+apply_subst(X, Expr, {template, S1, T}) ->
     {template, [{X, Expr}|S1], T};
-apply_subst1(X, Expr, {refined_t, Ann, T, Qual}) ->
-    {refined_t, Ann, T, apply_subst1(X, Expr, Qual)};
-apply_subst1(X, Expr, {dep_fun_t, Ann, Args, RetT}) ->
-    {dep_fun_t, Ann, apply_subst1(X, Expr, Args),
+apply_subst(X, Expr, {refined_t, Ann, T, Qual}) ->
+    {refined_t, Ann, T, apply_subst(X, Expr, Qual)};
+apply_subst(X, Expr, {dep_fun_t, Ann, Args, RetT}) ->
+    {dep_fun_t, Ann, apply_subst(X, Expr, Args),
      case X of
          {id, _, Name} ->
              case [{} || {dep_arg_t, _, {id, _, ArgName}, _} <- Args, ArgName =:= Name] of
-                 [] -> apply_subst1(X, Expr, RetT);
+                 [] -> apply_subst(X, Expr, RetT);
                  _ -> RetT
              end;
-         _ -> apply_subst1(X, Expr, RetT)
+         _ -> apply_subst(X, Expr, RetT)
      end
     };
-apply_subst1(_X, _Expr, []) -> [];
-apply_subst1(X, Expr, [H|T]) -> [apply_subst1(X, Expr, H)|apply_subst1(X, Expr, T)];
-apply_subst1(X, Expr, T) when is_tuple(T) ->
-    list_to_tuple(apply_subst1(X, Expr, tuple_to_list(T)));
-apply_subst1(_X, _Expr, X) -> X.
+apply_subst(_X, _Expr, []) -> [];
+apply_subst(X, Expr, [H|T]) -> [apply_subst(X, Expr, H)|apply_subst(X, Expr, T)];
+apply_subst(X, Expr, T) when is_tuple(T) ->
+    list_to_tuple(apply_subst(X, Expr, tuple_to_list(T)));
+apply_subst(_X, _Expr, X) -> X.
 
 apply_subst(Subs, Q) when is_map(Subs) ->
     apply_subst(maps:to_list(Subs), Q);
 apply_subst(Subs, Q) when is_list(Subs) ->
-    lists:foldl(fun({X, Expr}, Q0) -> apply_subst1(X, Expr, Q0) end, Q, Subs).
+    lists:foldl(fun({X, Expr}, Q0) -> apply_subst(X, Expr, Q0) end, Q, Subs).
 
 
 %% -- Assignments --------------------------------------------------------------
@@ -1316,7 +1410,7 @@ flatten_type_binds(Assg, Access, TB) ->
      || {Var, Type} <- TB,
         Q <- case Type of
                  {refined_t, _, _, P} ->
-                     apply_subst1(nu(), Access(Var), pred_of(Assg, P));
+                     apply_subst(nu(), Access(Var), pred_of(Assg, P));
                  {dep_tuple_t, _, Fields} ->
                      N = length(Fields),
                      flatten_type_binds(
@@ -1342,7 +1436,7 @@ flatten_type_binds(Assg, Access, TB) ->
                                  {qid, _, Q} -> Q;
                                  {app_t, _, {qid, _, Q}, _} -> Q
                              end,
-                     TagPred = apply_subst1(nu(), Access(Var), pred_of(Assg, Tag)),
+                     TagPred = apply_subst(nu(), Access(Var), pred_of(Assg, Tag)),
                      ConPred =
                          lists:flatten(
                            [ flatten_type_binds(
@@ -1358,7 +1452,7 @@ flatten_type_binds(Assg, Access, TB) ->
                      TagPred ++ ConPred;
                  {dep_list_t, _, ElemT, LenPred} ->
                      flatten_type_binds(Assg, Access, [ElemT]) ++
-                         apply_subst1(nu(), Access(Var), pred_of(Assg, LenPred));
+                         apply_subst(nu(), Access(Var), pred_of(Assg, LenPred));
                  _ -> []
              end
     ].
@@ -1394,7 +1488,7 @@ split_constr1(C = {subtype, Ann, Env0, SubT, SupT}) ->
                  || {{dep_arg_t, _, ArgSubT}, {dep_arg_t, _, ArgSupT}}
                         <- lists:zip(ArgsSub, ArgsSup)
                 ],
-            Env1 = bind_vars(ArgsSup, Env0),
+            Env1 = bind_args(ArgsSup, Env0),
             Subst =
                 [{Id1, Id2} || {{dep_arg_t, _, Id1, _}, {dep_arg_t, _, Id2, _}}
                                    <- lists:zip(ArgsSub, ArgsSup)],
@@ -1442,7 +1536,7 @@ split_constr1(C = {well_formed, Env0, T}) ->
                 [ {well_formed, Env0, ArgT}
                   || {dep_arg_t, _, _, ArgT} <- Args
                 ],
-            Env1 = bind_vars(Args, Env0),
+            Env1 = bind_args(Args, Env0),
             split_constr([{well_formed, Env1, Ret}|FromArgs]);
         {dep_tuple_t, _, Ts} ->
             split_constr([{well_formed, Env0, Tt} || Tt <- Ts]);
@@ -1717,6 +1811,8 @@ type_to_smt(?bool_tp) ->
     {var, "Bool"};
 type_to_smt(?int_tp) ->
     {var, "Int"};
+type_to_smt({id, _, "string"}) ->
+    {var, "Int"};
 type_to_smt({id, _, I}) ->
     {var, I};
 type_to_smt({tvar, _, _}) ->
@@ -1766,6 +1862,9 @@ expr_to_smt({bool, _, false}) ->
     {var, "false"};
 expr_to_smt({int, _, I}) ->
     {int, I};
+expr_to_smt({string, _, S}) ->
+    %% FIXME this sucks
+    {int, binary:decode_unsigned(crypto:hash(md5, S))};
 expr_to_smt({typed, _, E, _}) ->
     expr_to_smt(E);
 expr_to_smt(E = {app, _, F, Args}) ->
