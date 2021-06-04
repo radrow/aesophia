@@ -568,7 +568,7 @@ else_branches(Stmts, Acc) ->
     {lists:reverse(Acc), Stmts}.
 
 refined_t(Ann, Id, Type, Pred) ->
-    {refined_t, Ann, Type, aeso_ast_refine_types:apply_subst(Id, {id, Ann, "$nu"}, Pred)}.
+    {refined_t, Ann, Id, Type, Pred}.
 
 tuple_t(_Ann, [Type]) -> Type;  %% Not a tuple
 tuple_t(Ann, Types)   -> {tuple_t, Ann, Types}.

@@ -90,7 +90,7 @@
 
 %% Dependent type FIXME it is very inconsistent with the reality...
 -type dep_type(Qual)
-    :: {refined_t, ann(), type(), Qual}
+    :: {refined_t, ann(), id(), type(), Qual}
      | {dep_fun_t, ann(), [dep_arg_t(Qual)], dep_type(Qual)}
      | {dep_tuple_t, ann(), [dep_type(Qual)]}
      | {dep_record_t, ann(), type(), [{id(), dep_type(Qual)}]}

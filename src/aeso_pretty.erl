@@ -290,21 +290,34 @@ type(T = {tvar, _, _}) -> name(T);
 type(T) -> dep_type(T).
 
 
-dep_type({refined_t, _, BaseType, []}) ->
-    type(BaseType);
-dep_type({refined_t, _, BaseType, Pred}) ->
-    beside(
+dep_type({refined_t, _, Id, BaseType, []}) ->
+    hsep(
       [ text("{")
+      , name(Id)
+      , text(":")
       , type(BaseType)
-      , text(" | ")
+      , text("}")
+      ]);
+dep_type({refined_t, _, Id, BaseType, Pred}) ->
+    hsep(
+      [ text("{")
+      , name(Id)
+      , text(":")
+      , type(BaseType)
+      , text("|")
       , predicate(Pred)
       , text("}")
       ]);
 dep_type({dep_fun_t, _, Args, Ret}) ->
     follow
       ( hsep
-          ( tuple([ beside([text("{"), name(Name), text(":"), type(DT), text("}")])
-                    || {dep_arg_t, _, Name, DT} <- Args])
+          ( tuple([
+                   case DT of
+                       {refined_t, _, Id, _, _} when Id == ArgId ->
+                           type(DT);
+                       _ -> beside([text("{"), name(ArgId), text(":"), type(DT), text("}")])
+                   end
+                    || {dep_arg_t, _, ArgId, DT} <- Args])
           , text("=>")
           )
       , type(Ret)
@@ -312,31 +325,19 @@ dep_type({dep_fun_t, _, Args, Ret}) ->
 dep_type({dep_tuple_t, _, Ts}) ->
     tuple_type(Ts);
 dep_type({dep_record_t, _, Type, Fields}) ->
-    beside(
+    hsep(
       [ text("{")
       , type(Type)
-      , text(" | ")
+      , text("|")
       , par(punctuate(
               text(","),
-              [ beside([name(FName), text(" : "), type(FType)])
-                || {FName, FType} <- Fields]
-             ))
-      , text("}")
-      ]);
-dep_type({dep_record_t, _, Type, Fields}) ->
-    beside(
-      [ text("{")
-      , type(Type)
-      , text(" | ")
-      , par(punctuate(
-              text(","),
-              [ beside([name(FName), text(" : "), type(FType)])
+              [ hsep([name(FName), text(" : "), type(FType)])
                 || {FName, FType} <- Fields]
              ))
       , text("}")
       ]);
 dep_type({dep_variant_t, _, Type, Pred, Constrs}) ->
-    beside(
+    hsep(
       [ text("{")
       , type(Type)
       , text(" | ")
@@ -346,13 +347,13 @@ dep_type({dep_variant_t, _, Type, Pred, Constrs}) ->
       , text("}")
       ]);
 dep_type({dep_list_t, _, Elem, []}) ->
-    beside(
+    hsep(
       [ text("list(")
       , type(Elem)
       , text(")")
       ]);
 dep_type({dep_list_t, _, Elem, LenPred}) ->
-    beside(
+    hsep(
      [ text("{list(")
      , type(Elem)
      , text(") | ")
@@ -364,28 +365,24 @@ dep_type(T = {tvar, _, _}) ->
 
 dep_constructor_t({dep_constr_t, _, C, []}) -> name(C);
 dep_constructor_t({dep_constr_t, _, C, Args}) ->
-    beside(name(C),
-           args_type(Args)
-          ).
+    hsep(name(C), args_type(Args)).
 
 
 predicate({template, _, {ltvar, Var}}) -> text(Var);
 predicate([]) -> text("true");
 predicate(L) when is_list(L) ->
     par(punctuate(text(" &&"), [expr(E) || E <- L]));
-predicate(P) ->
-    predicate({id, [], "$nu"}, P).
-predicate(Nu, Constraints) when is_list(Constraints) ->
-    par(punctuate(text(","), [pred_expr(Nu, C) || C <- Constraints]));
-predicate(_, {[], LTVar}) ->
+predicate(Constraints) when is_list(Constraints) ->
+    par(punctuate(text(","), [expr(C) || C <- Constraints]));
+predicate({[], LTVar}) ->
     ltvar(LTVar);
-predicate(Nu, {Subst, LTVar}) ->
-    beside(
+predicate({Subst, LTVar}) ->
+    hsep(
       [ ltvar(LTVar)
       , text("[")
       , par(punctuate(
               text(";"),
-              [ beside([text(V), text("/"), pred_expr(Nu, Q)])
+              [ beside([text(V), text("/"), expr(Q)])
                 || {V, Q} <- Subst
               ]))
       , text("]")
@@ -405,18 +402,6 @@ ltvar({ltvar, Ref}) ->
              X -> X
          end,
     text(io_lib:format("k_~p", [Id])).
-
-pred_expr(Nu, {eq, A, B}) ->
-    beside([pred_expr(Nu, A), text("=="), pred_expr(Nu, B)]);
-pred_expr(Nu, {lt, A, B}) ->
-    beside([pred_expr(Nu, A), text("<"), pred_expr(Nu, B)]);
-pred_expr(Nu, {neg, Q}) ->
-    beside([text("!"), paren(pred_expr(Nu, Q))]);
-pred_expr(Nu, Expr) ->
-    pred_val(Nu, Expr).
-
-pred_val(Nu, nu) -> name(Nu);
-pred_val(_, Expr) -> expr(Expr).
 
 constr_env(Env) ->
     above(
