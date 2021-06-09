@@ -336,9 +336,7 @@ dep_type({dep_fun_t, _, Args, Ret}) ->
           )
       , type(Ret)
       );
-dep_type({dep_tuple_t, _, Ts}) ->
-    tuple_type(Ts);
-dep_type({dep_record_t, _, Type, Fields}) ->
+dep_type(T = {dep_record_t, _, Type, Fields}) ->
     beside(
       [ text("{")
       , hsep(

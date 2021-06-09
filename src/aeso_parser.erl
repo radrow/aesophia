@@ -181,7 +181,12 @@ constructor() ->    %% TODO: format for Con() vs Con
 
 con_args()   -> paren_list(con_arg()).
 type_args()  -> paren_list(type()).
-field_type() -> ?RULE(id(), tok(':'), type(), {field_t, get_ann(_1), _1, _3}).
+field_type() ->
+    ?LAZY_P(choice(
+    [ ?RULE(id(), tok(':'), typeRefinable(), tok('|'), comma_sep(expr()),
+            {field_t, get_ann(_1), _1, {refined_t, get_ann(_3), _1, _3, _5}})
+    , ?RULE(id(), tok(':'), type(), {field_t, get_ann(_1), _1, _3})
+    ])).
 
 con_arg()    -> choice(type(), ?RULE(keyword(indexed), type(), set_ann(indexed, true, _2))).
 
@@ -231,11 +236,25 @@ type400() ->
           end),
      ?RULE(id("bytes"), parens(token(int)),
            {bytes_t, get_ann(_1), element(3, _2)}),
+     %% Refined
      ?RULE(tok('{'), id(), tok(':'), typeRefinable(), tok('|'), comma_sep(expr()), tok('}'),
            refined_t(get_ann(_1), _2, _4, _6)
           ),
+     %% Refined without pred
      ?RULE(tok('{'), id(), tok(':'), typeRefinable(), tok('}'),
            refined_t(get_ann(_1), _2, _4, [])
+          ),
+     %% Dep record
+     ?RULE(tok('{'), id(), tok('<:'), typedef(record), tok('}'),
+           dep_record_t(get_ann(_1), _2, _4)
+          ),
+     %% Dep variant
+     ?RULE(tok('{'), id(), tok('<:'), typedef(variant), tok('}'),
+           dep_variant_t(get_ann(_1), _2, _4)
+          ),
+     %% Dep list
+     ?RULE(tok('{'), id("list"), parens(type()), tok('|'), comma_sep(expr), tok('}'),
+           dep_list_t(get_ann(_1), _3, _5)
           )
     ]).
 
@@ -569,6 +588,15 @@ else_branches(Stmts, Acc) ->
 
 refined_t(Ann, Id, Type, Pred) ->
     {refined_t, Ann, Id, Type, Pred}.
+
+dep_record_t(Ann, Id, {record_t, Fields}) ->
+    {dep_record_t, Ann, Id, Fields}.
+
+dep_variant_t(Ann, Id, {variant_t, Constrs}) ->
+    {dep_variant_t, Ann, Id, undefined, Constrs}.
+
+dep_list_t(Ann, ElemT, LenPred) ->
+    {dep_list_t, Ann, ElemT, LenPred}.
 
 tuple_t(_Ann, [Type]) -> Type;  %% Not a tuple
 tuple_t(Ann, Types)   -> {tuple_t, Ann, Types}.
