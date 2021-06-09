@@ -128,7 +128,7 @@ refiner_test_group() ->
 run_refine(Name) ->
     ContractString = aeso_test_utils:read_contract(Name),
     Ast = aeso_parser:string(ContractString, sets:new(), []),
-    {TEnv, TAst, _} = aeso_ast_infer_types:infer(Ast, [return_env]),
+    {TEnv, TAst, _} = aeso_ast_infer_types:infer(Ast, [return_env, dont_unfold]),
     RAst = aeso_ast_refine_types:refine_ast(TEnv, TAst),
     RAst.
 

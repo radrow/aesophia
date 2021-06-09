@@ -88,12 +88,13 @@
 %% Predicate for a liquid type
 -type predicate() :: [expr()].
 
-%% Dependent type FIXME it is very inconsistent with the reality...
+%% Dependent type
+%% FIXME it is very inconsistent with the reality...
 -type dep_type(Qual)
     :: {refined_t, ann(), id(), type(), Qual}
      | {dep_fun_t, ann(), [dep_arg_t(Qual)], dep_type(Qual)}
      | {dep_tuple_t, ann(), [dep_type(Qual)]}
-     | {dep_record_t, ann(), type(), [{id(), dep_type(Qual)}]}
+     | {dep_record_t, ann(), type(), [dep_field_t(Qual)]}
      | {dep_variant_t, ann(), type(), Qual, [dep_constr_t(Qual)]}
      | {dep_list_t, ann(), dep_type(Qual), Qual}
      | tvar().
@@ -102,6 +103,8 @@
 -type dep_constr_t(Qual) :: {dep_constr_t, ann(), con(), dep_type(Qual)}.
 
 -type dep_arg_t(Qual) :: {dep_arg_t, ann(), id(), dep_type(Qual)}.
+
+-type dep_field_t(Qual) :: {dep_field_t, ann(), id(), dep_type(Qual)}.
 
 -type named_arg_t() :: {named_arg_t, ann(), id(), type(), expr()}.
 

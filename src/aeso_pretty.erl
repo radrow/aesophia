@@ -291,21 +291,25 @@ type(T) -> dep_type(T).
 
 
 dep_type({refined_t, _, Id, BaseType, []}) ->
-    hsep(
+    beside(
       [ text("{")
-      , name(Id)
-      , text(":")
-      , type(BaseType)
+      , hsep(
+          [ name(Id)
+          , text(":")
+          , type(BaseType)
+          ])
       , text("}")
       ]);
 dep_type({refined_t, _, Id, BaseType, Pred}) ->
-    hsep(
+    beside(
       [ text("{")
-      , name(Id)
-      , text(":")
-      , type(BaseType)
-      , text("|")
-      , predicate(Pred)
+      , hsep(
+          [ name(Id)
+          , text(":")
+          , type(BaseType)
+          , text("|")
+          , predicate(Pred)
+          ])
       , text("}")
       ]);
 dep_type({dep_fun_t, _, Args, Ret}) ->
@@ -314,8 +318,18 @@ dep_type({dep_fun_t, _, Args, Ret}) ->
           ( tuple([
                    case DT of
                        {refined_t, _, Id, _, _} when Id == ArgId ->
-                           type(DT);
-                       _ -> beside([text("{"), name(ArgId), text(":"), type(DT), text("}")])
+                           dep_type(DT);
+                       _ ->
+                           beside(
+                             [ text("{")
+                             , hsep(
+                                 [ name(ArgId)
+                                 , text(":")
+                                 , type(DT)
+                                 ])
+                             , text("}")
+                             ]
+                            )
                    end
                     || {dep_arg_t, _, ArgId, DT} <- Args])
           , text("=>")
@@ -325,29 +339,59 @@ dep_type({dep_fun_t, _, Args, Ret}) ->
 dep_type({dep_tuple_t, _, Ts}) ->
     tuple_type(Ts);
 dep_type({dep_record_t, _, Type, Fields}) ->
-    hsep(
+    beside(
       [ text("{")
-      , type(Type)
-      , text("|")
-      , par(punctuate(
-              text(","),
-              [ hsep([name(FName), text(" : "), type(FType)])
-                || {FName, FType} <- Fields]
-             ))
+      , hsep(
+          [ type(Type)
+          , text("<:")
+          , par(punctuate(
+                  text(","),
+                  [ case FType of
+                        {refined_t, _, Id, _, _} when Id == FName ->
+                            dep_type(FType);
+                        _ -> hsep([name(FName), text(":"), type(FType)])
+                    end
+                    || {dep_field_t, _, FName, FType} <- Fields]
+                 ))
+          ])
       , text("}")
       ]);
 dep_type({dep_variant_t, _, Type, Pred, Constrs}) ->
-    hsep(
+    PredList = if is_list(Pred) -> Pred;
+                  true -> []
+               end,
+    IsTags =
+        [lists:last(Tag)
+         || {is_tag, _, _, {qcon, _, Tag}, _} <- PredList],
+    NotIsTags =
+        [lists:last(Tag)
+         || {app, _, {'!', _}, [{is_tag, _, _, {qcon, _, Tag}, _}]} <- PredList],
+    Constrs1 =
+        case IsTags of
+            [] -> [ Con
+                   || Con = {dep_constr_t, _, {con, _, CName}, _} <- Constrs,
+                      not lists:member(CName, NotIsTags)
+                  ];
+            _ ->
+                [ Con
+                  || Con = {dep_constr_t, _, {con, _, CName}, _} <- Constrs,
+                     lists:member(CName, IsTags)
+                ]
+        end,
+    beside(
       [ text("{")
-      , type(Type)
-      , text(" | ")
-      , predicate(Pred)
-      , text("; ")
-      , par(punctuate(text(" |"), lists:map(fun dep_constructor_t/1, Constrs)))
+      , hsep(
+          [ type(Type)
+          , text("<:")
+          , if is_list(Pred) -> prettypr:empty();
+               true -> predicate(Pred)
+            end
+          , par(punctuate(text(" |"), lists:map(fun dep_constructor_t/1, Constrs1)))
+          ])
       , text("}")
       ]);
 dep_type({dep_list_t, _, Elem, []}) ->
-    hsep(
+    beside(
       [ text("list(")
       , type(Elem)
       , text(")")
@@ -367,27 +411,28 @@ dep_constructor_t({dep_constr_t, _, C, []}) -> name(C);
 dep_constructor_t({dep_constr_t, _, C, Args}) ->
     hsep(name(C), args_type(Args)).
 
+subst(Subst) ->
+    beside(
+      [ text("[")
+      , hsep(
+          [ par(punctuate(
+                  text(";"),
+                  [ beside([text(V), text("/"), expr(Q)])
+                    || {V, Q} <- Subst
+                  ]))
+          ])
+      , text("]")
+      ]
+     ).
 
-predicate({template, _, {ltvar, Var}}) -> text(Var);
+predicate({template, [], {ltvar, Var}}) -> text(Var);
+predicate({template, Subst, {ltvar, Var}}) ->
+    beside(subst(Subst), text(Var));
 predicate([]) -> text("true");
 predicate(L) when is_list(L) ->
     par(punctuate(text(" &&"), [expr(E) || E <- L]));
 predicate(Constraints) when is_list(Constraints) ->
-    par(punctuate(text(","), [expr(C) || C <- Constraints]));
-predicate({[], LTVar}) ->
-    ltvar(LTVar);
-predicate({Subst, LTVar}) ->
-    hsep(
-      [ ltvar(LTVar)
-      , text("[")
-      , par(punctuate(
-              text(";"),
-              [ beside([text(V), text("/"), expr(Q)])
-                || {V, Q} <- Subst
-              ]))
-      , text("]")
-      ]
-     ).
+    par(punctuate(text(","), [expr(C) || C <- Constraints])).
 
 ltvar({ltvar, Ref}) ->
     Id = case get({ltvar_print, Ref}) of

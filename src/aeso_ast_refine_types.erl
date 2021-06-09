@@ -167,7 +167,7 @@ id(X) ->
 id(Ann, X) ->
     {id, Ann, X}.
 
-qcon(X) ->
+qcon(X) when is_list(X) ->
     qcon(ann(), X).
 -spec qcon(ann(), qname()) -> aeso_syntax:con() | aeso_syntax:qcon().
 qcon(Ann, [X]) -> {con, Ann, X};
@@ -219,6 +219,7 @@ bind_var(Id, T, Env = #env{var_env = VarEnv}) ->
         none -> ok;
         V    ->
             ?DBG("SHADOW OF ~p : ~p IN\n~p", [Id, V, VarEnv]),
+            error({jebudu, Id}),
             throw({overwrite, Id})
     end,
     Env#env{ var_env = VarEnv#{name(Id) => T}}.
@@ -499,8 +500,7 @@ bind_ast_funs(TCEnv, AST, Env) ->
                                    TCEnv, term, FAnn, qname(Con) ++ qname(Id)),
                              check_arg_assumptions(Id, FAnn, ArgsT),
                              DepArgsT =
-                                 [ {dep_arg_t, aeso_syntax:get_ann(Arg),
-                                    Arg, fresh_liquid(Env, contravariant, name(Arg), ArgT)}
+                                 [ fresh_liquid_arg(Env, Arg, ArgT)
                                    || {?typed_p(Arg), ArgT} <- lists:zip(Args, ArgsT)
                                  ],
                              DepRetT = fresh_liquid(Env1, "rete", RetT),
@@ -665,8 +665,7 @@ fresh_liquid(Env, Variance, Hint,
                     fresh_liquid(Env, Variance, Hint, apply_subst(Subst, Type1));
                 {record_t, Fields} ->
                     {dep_record_t, Ann, Type,
-                     [ {Field, fresh_liquid(Env, Variance, Hint ++ "_" ++ name(Field),
-                                            apply_subst(Subst, FType))}
+                     [ fresh_liquid_field(Env, Variance, Qid, Field, apply_subst(Subst, FType))
                       || {field_t, _, Field, FType} <- Fields
                      ]
                     };
@@ -718,6 +717,10 @@ fresh_liquid_arg(Env, Variance, Id, Type) ->
             T -> T
         end,
     {dep_arg_t, aeso_syntax:get_ann(Id), Id, DepType}.
+
+fresh_liquid_field(Env, Variance, Qid, Id, Type) ->
+    {dep_arg_t, A, I, DT} = fresh_liquid_arg(Env, Variance, Id, Type),
+    {dep_field_t, A, I, DT}.
 
 -spec switch_variance(variance()) -> variance().
 switch_variance(covariant) ->
@@ -880,7 +883,9 @@ constr_expr(Env, {record, Ann, FieldVals}, T, S0) ->
     {Fields, Vals} =
         lists:unzip([{Field, Val} || {field, _, [{proj, _, Field}], Val} <- FieldVals]),
     {ValsT, S1} = constr_expr_list(Env, Vals, S0),
-    {{dep_record_t, Ann, T, lists:zip(Fields, ValsT)},
+    {{dep_record_t, Ann, T,
+      [{dep_field_t, aeso_syntax:get_ann(Field), Field, ValT}
+       || {Field, ValT} <- lists:zip(Fields, ValsT)]},
      S1
     };
 
@@ -996,7 +1001,7 @@ constr_expr(Env, {app, Ann, ?typed_p(QCon = {qcon, _, QName}), Args}, Type, S0) 
         [ {dep_constr_t, CAnn, Con,
            case lists:last(QName) == name(Con) of
                true  -> ArgsT;
-               false -> [?refined(Arg) || Arg <- ConArgs]
+               false -> [?refined(Arg, [?bool(false)]) || Arg <- ConArgs]
            end
           }
           || {constr_t, CAnn, Con, ConArgs} <- Constrs
@@ -1070,7 +1075,7 @@ constr_expr(Env, {proj, Ann, Rec, Field}, T, S0) ->
     {{dep_record_t, _, _, Fields}, S1} = constr_expr(Env, Rec, S0),
     [FieldT] =
         [ RecFieldT
-         || {RecFieldName, RecFieldT} <- Fields,
+         || {dep_field_t, _, RecFieldName, RecFieldT} <- Fields,
             name(Field) == name(RecFieldName)
         ],
     {ExprT,
@@ -1144,12 +1149,12 @@ constr_cases(_Env, _Switched, _SwitchedT, _ExprT, Alts, S) ->
     constr_cases(_Env, _Switched, _SwitchedT, _ExprT, Alts, 0, S).
 constr_cases(Env, Switched, _SwitchedT, _ExprT, [], _N, S) ->
     [{unreachable, aeso_syntax:get_ann(Switched), Env}|S];
-constr_cases(Env, Switched, _SwitchedT, _ExprT, [], _N, S) ->
-    [{reachable, aeso_syntax:get_ann(Switched), Env}|S];
 constr_cases(Env0, Switched, SwitchedT, ExprT,
              [{'case', Ann, Pat, Case}|Rest], N, S0) ->
     {EnvCase, EnvCont} = match_to_pattern(Env0, Pat, Switched, SwitchedT),
     {CaseDT, S1} = constr_expr(EnvCase, Case, S0),
+    ?DBG("CASE SUBTYPE:\n~p\n<:\n~p", [CaseDT, ExprT]),
+    ?DBG("CASE SUBTYPE:\n~s\n<:\n~s", [aeso_pretty:pp(type, CaseDT), aeso_pretty:pp(type, ExprT)]),
     constr_cases(EnvCont, Switched, SwitchedT, ExprT, Rest,
                  [ {subtype, [{context, {switch, N}}|Ann], EnvCase, CaseDT, ExprT}
                  , {reachable, Ann, EnvCase}
@@ -1198,7 +1203,7 @@ match_to_pattern(Env, {tuple, _, Pats}, Expr, {dep_tuple_t, _, Types}, Pred) ->
      );
 match_to_pattern(Env, {record, _, Fields}, Expr, {dep_record_t, _, Type, FieldsT}, Pred) ->
     FieldTypes =
-        [{Field, FieldT} || {{id, _, Field}, FieldT} <- FieldsT],
+        [{dep_field_t, Ann, Field, FieldT} || {{id, Ann, Field}, FieldT} <- FieldsT],
     Qid = case Type of
               {qid, _, _} -> Type;
               {app_t, _, Q, _} -> Q
@@ -1277,6 +1282,8 @@ apply_subst({ltvar, X}, Expr, {ltvar, X}) ->
     Expr;
 apply_subst(X, Expr, {template, S1, T}) ->
     {template, [{X, Expr}|S1], T};
+apply_subst({id, _, Name}, _, T = {refined_t, _, {id, _, Name}, T, _}) ->
+    T;
 apply_subst(X, Expr, {refined_t, Ann, Id, T, Qual}) ->
     {refined_t, Ann, Id, T, apply_subst(X, Expr, Qual)};
 apply_subst(X, Expr, {dep_fun_t, Ann, Args, RetT}) ->
@@ -1328,7 +1335,10 @@ var_int_qualifiers(SelfId, Var) ->
     int_qualifiers(SelfId, Var) ++ plus_int_qualifiers(SelfId, ?int(1), Var).
 
 inst_pred_variant_tag(SelfId, Qid, Constrs) ->
-    [ {is_tag, ann(), SelfId, qid(lists:droplast(qname(Qid)) ++ [name(Con)]), Args}
+    [ {is_tag, ann(), SelfId, qcon(lists:droplast(qname(Qid)) ++ [name(Con)]), Args}
+      || {constr_t, _, Con, Args} <- Constrs
+    ] ++
+    [ ?op('!', {is_tag, ann(), SelfId, qcon(lists:droplast(qname(Qid)) ++ [name(Con)]), Args})
       || {constr_t, _, Con, Args} <- Constrs
     ].
 
@@ -1378,9 +1388,9 @@ inst_pred(Env, SelfId, BaseT) ->
             case lookup_type(Env, Qid) of
                 {_, {AppArgs, {variant_t, Constrs}}} ->
                     inst_pred_variant_tag(
-                      apply_subst(lists:zip(Args, AppArgs), Constrs),
                       SelfId,
-                      Qid
+                      Qid,
+                      apply_subst(lists:zip(Args, AppArgs), Constrs)
                      );
                 X -> error({todo, {inst_pred, X}})
             end;
@@ -1458,7 +1468,7 @@ flatten_type_binds(Assg, Access, TB) ->
                      flatten_type_binds(
                        Assg,
                        fun(X) -> {proj, ann(), Access(Var), X} end,
-                       [{qid(QName ++ [name(Field)]), T} || {Field, T} <- Fields]
+                       [{qid(QName ++ [name(Field)]), T} || {dep_field_t, _, Field, T} <- Fields]
                       );
                  {dep_variant_t, _, VT, Tag, Constrs} ->
                      QName = case VT of
@@ -1488,6 +1498,7 @@ flatten_type_binds(Assg, Access, TB) ->
 
 simplify_assg(Assg) ->
     maps:map(fun(_K, V = #ltinfo{env = KEnv, id = Id, base = BaseType, predicate = Qs}) ->
+                     ?DBG("SIMPLING: ~p :\n ~p", [Id, BaseType]),
                      V#ltinfo{
                        predicate =
                            simplify_pred(
@@ -1532,17 +1543,23 @@ split_constr1(C = {subtype, Ann, Env0, SubT, SupT}) ->
             FieldsSup1 = lists:keysort(1, FieldsSup),
             split_constr(
               [ {subtype, Ann, Env0, FTSub, FTSup}
-               || {{_, FTSub}, {_, FTSup}} <- lists:zip(FieldsSub1, FieldsSup1)
+               || {{dep_field_t, _, _, FTSub}, {dep_field_t, _, _, FTSup}} <- lists:zip(FieldsSub1, FieldsSup1)
               ]
              );
         { {dep_variant_t, _, TypeSub, TagSub, ConstrsSub}
         , {dep_variant_t, _, TypeSup, TagSup, ConstrsSup}
         } ->
+            ?DBG("AEH ~p", [[ {subtype, ArgSub, ArgSup}
+              || { {dep_constr_t, _, _, ArgsSub}
+                 , {dep_constr_t, _, _, ArgsSup}
+                 } <- lists:zip(ConstrsSub, ConstrsSup),
+                 {ArgSub, ArgSup} <- lists:zip(ArgsSub, ArgsSup)
+            ]]),
             split_constr(
               [ {subtype, Ann, Env0, ?refined(TypeSub, TagSub), ?refined(TypeSup, TagSup)}
               | [ {subtype, Ann, Env0, ArgSub, ArgSup}
                  || { {dep_constr_t, _, _, ArgsSub}
-                    , {dep_constr_t, _, _, ArgsSup} %% TODO is_tag path pred?
+                    , {dep_constr_t, _, _, ArgsSup}
                     } <- lists:zip(ConstrsSub, ConstrsSup),
                     {ArgSub, ArgSup} <- lists:zip(ArgsSub, ArgsSup)
                 ]
@@ -1570,7 +1587,7 @@ split_constr1(C = {well_formed, Env0, T}) ->
         {dep_tuple_t, _, Ts} ->
             split_constr([{well_formed, Env0, Tt} || Tt <- Ts]);
         {dep_record_t, _, _, Fields} ->
-            split_constr([{well_formed, Env0, TF} || {_, TF} <- Fields]);
+            split_constr([{well_formed, Env0, TF} || {dep_field_t, _, _, TF} <- Fields]);
         {dep_variant_t, _, Type, Tag, Constrs} ->
             split_constr(
               [ {well_formed, Env0, ?refined(Type, Tag)}
@@ -1662,14 +1679,16 @@ valid_in(_, _) ->
     true.
 
 
-weaken({subtype_group, Subs, Base, SubPredVar}, Assg) ->
-    Ltinfo = assg_of(Assg, SubPredVar),
+weaken({subtype_group, Subs, Base, SupPredVar}, Assg) ->
+    ?DBG("WEAKENING"),
+    Ltinfo = assg_of(Assg, SupPredVar),
     Filtered =
         [ Q || Q <- Ltinfo#ltinfo.predicate,
                lists:all(fun({subtypes, Env, _, Id, Subst, Sub}) ->
                                  SubPred = pred_of(Assg, Sub),
                                  AssumpPred = apply_subst(Id, nu(), SubPred),
                                  ConclPred  = apply_subst([{Ltinfo#ltinfo.id, nu()}|Subst], Q),
+
                                  impl_holds(Assg, bind_var(nu(), Base, Env),
                                             AssumpPred, ConclPred)
                          end, Subs)
@@ -1680,7 +1699,7 @@ weaken({subtype_group, Subs, Base, SubPredVar}, Assg) ->
     ?DBG("WEAKENED FROM\n~s\nTO\n~s", [aeso_pretty:pp(predicate, Ltinfo#ltinfo.predicate),
                                        aeso_pretty:pp(predicate, Filtered)
                                       ]),
-    Assg#{SubPredVar => NewLtinfo};
+    Assg#{SupPredVar => NewLtinfo};
 weaken({well_formed, _Env, {refined_t, _, _, _, _}}, Assg) ->
     Assg.
 
@@ -1815,10 +1834,10 @@ impl_holds(Assg, Env, Assump, Concl) ->
               case aeso_smt:check_sat() of
                   {error, Err} -> throw({smt_error, Err});
                   Res ->
-                      %% case Res of
-                      %%     true -> ?DBG("FALSE");
-                      %%     false  -> ?DBG("HOLDS")
-                      %% end,
+                      case Res of
+                          true -> ?DBG("FALSE");
+                          false  -> ?DBG("HOLDS")
+                      end,
                       not Res
               end
       end).
