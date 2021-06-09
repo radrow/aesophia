@@ -1472,8 +1472,8 @@ flatten_type_binds(Assg, Access, TB) ->
     [ Q
      || {Var, Type} <- TB,
         Q <- case Type of
-                 {refined_t, _, _, _, P} ->
-                     apply_subst(nu(), Access(Var), pred_of(Assg, P));
+                 {refined_t, _, Id, _, P} ->
+                     apply_subst(Id, Access(Var), pred_of(Assg, P));
                  {tuple_t, _, Fields} ->
                      N = length(Fields),
                      flatten_type_binds(
@@ -1824,7 +1824,6 @@ declare_type_binds(Assg, Env) ->
          is_smt_expr(Var),
          is_smt_type(T)
     ],
-    ?DBG("KURWA ~p", [Env]),
     [ aeso_smt:assert(expr_to_smt(Q))
      || Q <- pred_of(Assg, Env)
     ].
