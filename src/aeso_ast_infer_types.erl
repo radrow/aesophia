@@ -893,8 +893,80 @@ check_type(Env, {refined_t, Ann, Id, T, Pred}, Arity) ->
     ensure_base_type(T, Arity),
     T1 = check_type(Env, T, Arity),
     Env1 = bind_var(Id, T, Env),
-    [check_expr(Env1, Q, {id, [], "bool"}) || Q <- Pred],
-    {refined_t, Ann, Id, T1, Pred};
+    Pred1 = [check_expr(Env1, Q, {id, aeso_syntax:get_ann(Q), "bool"}) || Q <- Pred],
+    {refined_t, Ann, Id, T1, Pred1};
+check_type(Env, T = {dep_record_t, Ann, Id, Fields}, Arity) ->
+    %% TODO Validate fields in record
+    Id1 = check_type(Env, Id, Arity),
+    {QId, TrueFields} =
+        case lookup_type(Env, Id1) of
+            {QName, {QAnn, {_, {record_t, F}}}} -> {qid(QAnn, QName), F};
+            _ -> type_error({not_a_record_type, Id, T}),
+                 {Id, []}
+        end,
+    Fields1 =
+        [ case [ FieldNew
+                 || FieldNew = {field_t, _, FNameNew, _} <- Fields,
+                    name(FNameNew) == name(FNameOld)] of
+              [{field_t, FAnn, FName, FType}] ->
+                  {field_t, FAnn, FName, check_type(Env, FType)};
+              _ -> FieldOld
+          end
+         || FieldOld = {field_t, _, FNameOld, _} <- TrueFields
+        ],
+    constrain(
+      [ #field_constraint{
+           record_t = QId,
+           field    = FName,
+           field_t  = FType,
+           kind     = project,
+           context  = {proj, Ann, QId, FName} }
+        || {field_t, _, FName, FType} <- Fields
+      ]),
+    {dep_record_t, Ann, QId, Fields1};
+check_type(Env, T = {dep_variant_t, Ann, Id, undefined, Constrs}, Arity) ->
+    %% TODO Validate constructors in adt
+    Id1 = check_type(Env, Id, Arity),
+    TrueConstrs =
+        case lookup_type(Env, Id) of
+            {_, {_, {_, {variant_t, Cs}}}} -> Cs;
+            _ -> type_error({not_a_variant_type, Id, T}),
+                 []
+        end,
+    Constrs1 =
+        [ case [ ConstrNew
+                 || ConstrNew = {constr_t, _, CNameNew, _} <- Constrs,
+                    name(CNameNew) == name(CNameOld)] of
+              [{constr_t, FAnn, CName, CArgs}] ->
+                  {constr_t, FAnn, CName,
+                   [ check_type(Env, CArg) || CArg <- CArgs ]
+                  };
+              _ -> ConstrOld
+          end
+          || ConstrOld = {constr_t, _, CNameOld, _} <- TrueConstrs
+        ],
+    TagPred =
+        case Constrs of
+            [] -> [{bool, [], false}];
+            [{constr_t, CAnn, Con, Args}] ->
+                [{is_tag, CAnn, aeso_ast_refine_types:nu(), Id, Args}];
+            _ ->
+                [ {app, Ann, {'!', Ann},
+                   [{is_tag, CAnn, aeso_ast_refine_types:nu(), Id, Args}]}
+                 || {constr_t, CAnn, TrueCon, Args} <- TrueConstrs,
+                    lists:all(
+                      fun({constr_t, _, Con, _}) ->
+                              qname(Con) /= qname(TrueCon)
+                      end, Constrs
+                     )
+                ]
+        end,
+    {dep_variant_t, Ann, Id1, TagPred, Constrs1};
+check_type(Env, {dep_list_t, Ann, ElemT, LenPred}, Arity) ->
+    ElemT1 = check_type(Env, ElemT),
+    Env1 = bind_var({id, [], "length"}, {id, [], "int"}, Env),
+    LenPred1 = [check_expr(Env1, Q, {id, [], "bool"}) || Q <- LenPred],
+    {dep_list_t, Ann, ElemT1, LenPred1};
 check_type(_Env, {args_t, Ann, Ts}, _) ->
     type_error({new_tuple_syntax, Ann, Ts}),
     {tuple_t, Ann, Ts}.
@@ -1921,7 +1993,7 @@ solve_known_record_types(Env, Constraints) ->
                              unify(Env, FreshRecType, RecType, {record_constraint, FreshRecType, RecType, When}),
                              C
                      end;
-                _ ->
+                X ->
                     type_error({not_a_record_type, instantiate(RecType), When}),
                     not_solved
              end
@@ -1956,6 +2028,8 @@ destroy_and_report_unsolved_field_constraints(Env) ->
 record_type_name({app_t, _Attrs, RecId, _Args}) when ?is_type_id(RecId) ->
     RecId;
 record_type_name(RecId) when ?is_type_id(RecId) ->
+    RecId;
+record_type_name({dep_record_t, _, RecId, _}) when ?is_type_id(RecId) ->
     RecId;
 record_type_name(_Other) ->
     %% io:format("~p is not a record type\n", [Other]),
@@ -2166,6 +2240,18 @@ unify1(Env, A, {refined_t, _, _, B, _}, When) ->
     unify1(Env, A, B, When);
 unify1(Env, {refined_t, _, _, A, _}, B, When) ->
     unify1(Env, A, B, When);
+unify1(Env, A, {dep_record_t, _, B, _}, When) ->
+    unify1(Env, A, B, When);
+unify1(Env, {dep_record_t, _, A, _}, B, When) ->
+    unify1(Env, A, B, When);
+unify1(Env, A, {dep_variant_t, _, B, _, _}, When) ->
+    unify1(Env, A, B, When);
+unify1(Env, {dep_variant_t, _, A, _}, B, When) ->
+    unify1(Env, A, B, When);
+unify1(Env, A, {dep_list_t, Ann, B, _}, When) ->
+    unify1(Env, A, {app_t, Ann, {id, Ann, "list"}, [B]}, When);
+unify1(Env, {dep_list_t, Ann, A, _}, B, When) ->
+    unify1(Env, {app_t, Ann, {id, Ann, "list"}, [A]}, B, When);
 unify1(Env, {named_t, _, _, A}, B, When) ->
     unify1(Env, A, B, When);
 unify1(Env, A, {named_t, _, _, B}, When) ->
@@ -2219,6 +2305,12 @@ occurs_check1(R, [H | T]) ->
 occurs_check1(R, {named_t, _, _, T}) ->
     occurs_check1(R, T);
 occurs_check1(R, {refined_t, _, _, T, _}) ->
+    occurs_check1(R, T);
+occurs_check1(R, {dep_record_t, _, _, T}) ->
+    occurs_check1(R, T);
+occurs_check1(R, {dep_variant_t, _, _, _, T}) ->
+    occurs_check1(R, T);
+occurs_check1(R, {dep_list_t, _, T, _}) ->
     occurs_check1(R, T);
 occurs_check1(_, []) -> false.
 
@@ -2387,6 +2479,9 @@ mk_error({unbound_variable, Id}) ->
 mk_error({undefined_field, Id}) ->
     Msg = io_lib:format("Unbound field ~s at ~s\n", [pp(Id), pp_loc(Id)]),
     mk_t_err(pos(Id), Msg);
+mk_error({not_a_variant_type, Type}) ->
+    Msg = io_lib:format("~s\n", [pp_type("Not a variant type: ", Type)]),
+    mk_t_err(pos(Type), Msg);
 mk_error({not_a_record_type, Type, Why}) ->
     Msg = io_lib:format("~s\n", [pp_type("Not a record type: ", Type)]),
     {Pos, Ctxt} = pp_why_record(Why),
@@ -2758,8 +2853,11 @@ pp_why_record(Fld = {field, _Ann, LV, _E}) ->
 pp_why_record({proj, _Ann, Rec, FldName}) ->
     {pos(Rec),
      io_lib:format("arising from the projection of the field ~s (at ~s)",
-         [pp(FldName), pp_loc(Rec)])}.
-
+                   [pp(FldName), pp_loc(Rec)])};
+pp_why_record({dep_record_t, _, Rec, _}) ->
+    {pos(Rec),
+     io_lib:format("arising from the record refinement of the type ~s (at ~s)",
+                   [pp(Rec), pp_loc(Rec)])}.
 
 if_branches(If = {'if', Ann, _, Then, Else}) ->
     case proplists:get_value(format, Ann) of

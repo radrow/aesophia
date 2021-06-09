@@ -327,6 +327,10 @@ global_type_binds(#env{scopes = Scopes}) ->
 local_type_binds(#env{var_env = VEnv}) ->
     [ {qid([Var]), Type}
       || {Var, Type} <- maps:to_list(VEnv)
+    ] ++
+    [ {Id, Type}
+      || {Var, Type = {refined_t, _, Id, _, _}} <- maps:to_list(VEnv),
+         Var /= name(Id)
     ].
 
 -spec type_binds(env()) -> [{expr(), lutype()}].
@@ -555,7 +559,7 @@ has_assumptions(Variance, {type_sig, _, _, Named, Args, RetT}) ->
 has_assumptions(Variance, {app_t, _, {id, _, "map"}, [K, V]}) ->
     has_assumptions(switch_variance(Variance), K)
         orelse has_assumptions(Variance, V);
-has_assumptions(Variance, {dep_tuple_t, _, Args}) ->
+has_assumptions(Variance, {tuple_t, _, Args}) ->
     has_assumptions(Variance, Args);
 has_assumptions(Variance, {dep_record_t, _, _, Fields}) ->
     has_assumptions(Variance, Fields);
@@ -613,16 +617,27 @@ fresh_liquid(_Env, _Variance, _Hint, Type = {dep_fun_t, _, _, _}) ->
     Type;
 fresh_liquid(_Env, _Variance, _Hint, Type = {dep_arg_t, _, _, _}) ->
     Type;
-fresh_liquid(_Env, _Variance, _Hint, Type = {dep_tuple_t, _, _}) ->
-    Type;
-fresh_liquid(_Env, _Variance, _Hint, Type = {dep_record_t, _, _}) ->
-    Type;
-fresh_liquid(_Env, _Variance, _Hint, Type = {dep_variant_t, _, _, _, _}) ->
-    Type;
-fresh_liquid(_Env, _Variance, _Hint, Type = {dep_constr_t, _, _, _}) ->
-    Type;
-fresh_liquid(_Env, _Variance, _Hint, Type = {dep_list_t, _, _, _}) ->
-    Type;
+fresh_liquid(Env, Variance, _, {dep_record_t, Ann, Rec, Fields}) ->
+    Qid = case Rec of
+              {app_t, _, Q, _} -> Q;
+              _ -> Rec
+          end,
+    {dep_record_t, Ann, Rec,
+     [ fresh_liquid_field(Env, Variance, Qid, Field, FType)
+       || {field_t, _, Field, FType} <- Fields
+     ]
+    };
+fresh_liquid(Env, Variance, Hint, {dep_variant_t, Ann, Type, TagPred, Constrs}) ->
+    {dep_variant_t, Ann, Type, TagPred,
+     [ {dep_constr_t, CAnn, Con,
+        fresh_liquid(Env, Variance, Hint ++ "_" ++ name(Con), Vals)}
+       || {constr_t, CAnn, Con, Vals} <- Constrs
+     ]
+    };
+%% fresh_liquid(_Env, _Variance, _Hint, Type = {dep_constr_t, _, _, _}) ->
+%%     Type;
+fresh_liquid(Env, Variance, Hint, {dep_list_t, Ann, ElemT, LenPred}) ->
+    {dep_list_t, Ann, fresh_liquid(Env, Variance, Hint, ElemT), LenPred};
 fresh_liquid(_Env, Variance, Hint, Type = {id, Ann, Name}) ->
     {refined_t, Ann,
      fresh_id(case Name of
@@ -699,7 +714,7 @@ fresh_liquid(Env, Variance, Hint, {fun_t, Ann, Named, Args, Ret}) ->
     , fresh_liquid(Env, Variance, Hint, Ret)
     };
 fresh_liquid(Env, Variance, Hint, {tuple_t, Ann, Types}) ->
-    {dep_tuple_t, Ann, fresh_liquid(Env, Variance, Hint, Types)};
+    {tuple_t, Ann, fresh_liquid(Env, Variance, Hint, Types)};
 fresh_liquid(_Env, _, _, []) -> [];
 fresh_liquid(Env, Variance, Hint, [H|T]) ->
     [fresh_liquid(Env, Variance, Hint, H)|fresh_liquid(Env, Variance, Hint, T)];
@@ -736,6 +751,7 @@ switch_variance(forced_contravariant) ->
 %% -- Entrypoint ---------------------------------------------------------------
 
 refine_ast(TCEnv, AST) ->
+    ?DBG("INP AST\n~p", [AST]),
     Env0 = init_env(),
     Env1 = with_cool_ints_from(AST, Env0),
     Env2 = register_typedefs(AST, Env1),
@@ -792,14 +808,21 @@ constr_con(Env0, {Tag, Ann, Con, Defs}, S0)
     {{Tag, Ann, Con, Defs1}, S1}.
 
 -spec constr_letfun(env(), letfun(), [constr()]) -> {fundecl(), [constr()]}.
-constr_letfun(Env0, {letfun, Ann, Id, _, _, Body}, S0) ->
-    {_, GlobFunT = {dep_fun_t, _, GlobArgsT, GlobRetT}} = type_of(Env0, Id),
-    Env1 = bind_args(GlobArgsT, Env0),
+constr_letfun(Env0, {letfun, Ann, Id, Args, _, Body}, S0) ->
+    {_, GlobFunT = {dep_fun_t, _, GlobArgsT, _}} = type_of(Env0, Id),
+    ArgsT =
+        [ fresh_liquid_arg(Env0, Arg, Type)
+         || ?typed_p(Arg, Type) <- Args
+        ],
+    Env1 = bind_args(ArgsT, Env0),
     Body1 = a_normalize(Body),
     ?DBG("NORMALIZED\n~s\nTO\n~s", [aeso_pretty:pp(expr, Body), aeso_pretty:pp(expr, Body1)]),
+    ?DBG("\nLOC ARGS ~p\nIN FUN\n~p", [ArgsT, GlobFunT]),
     {BodyT, S1} = constr_expr(Env1, Body1, S0),
-    S3 = [ {subtype, Ann, Env1, BodyT, GlobRetT}
+    InnerFunT = {dep_fun_t, Ann, ArgsT, BodyT},
+    S3 = [ {subtype, Ann, Env0, InnerFunT, GlobFunT}
          , {well_formed, Env0, GlobFunT}
+         , {well_formed, Env0, InnerFunT}
          | S1
          ],
 
@@ -862,8 +885,9 @@ constr_expr(Env, Expr = {IdHead, _, Name}, T, S)
         {_, {refined_t, Ann, Id, B, _}} ->
             %% The missed predicate can be inferred from the equality
             TId = fresh_id(name(Id)),
-            Eq = ?op(TId, '==', Expr),
-            {{refined_t, Ann, TId, B, [Eq]}
+            EqEx = ?op(TId, '==', Expr),
+            EqId = ?op(TId, '==', Id),
+            {{refined_t, Ann, TId, B, [EqEx, EqId]}
             , S
             };
         {_, T1} -> {T1, S}
@@ -875,7 +899,7 @@ constr_expr(_Env, {bool, _, B}, T, S) ->
 
 constr_expr(Env, {tuple, Ann, Elems}, _, S0) ->
     {ElemsT, S1} = constr_expr_list(Env, Elems, S0),
-    {{dep_tuple_t, Ann, ElemsT},
+    {{tuple_t, Ann, ElemsT},
      S1
     };
 
@@ -1191,7 +1215,7 @@ match_to_pattern(Env, _Pat, {id, _, "_"}, _Type, Pred) ->
     {Env, Pred}; % Useful in lists
 match_to_pattern(Env, I = {int, _, _}, Expr, _Type, Pred) ->
     {Env, [?op(Expr, '==', I)|Pred]};
-match_to_pattern(Env, {tuple, _, Pats}, Expr, {dep_tuple_t, _, Types}, Pred) ->
+match_to_pattern(Env, {tuple, _, Pats}, Expr, {tuple_t, _, Types}, Pred) ->
     N = length(Pats),
     lists:foldl(
       fun({{Pat, PatT}, I}, {Env0, Pred0}) ->
@@ -1450,7 +1474,7 @@ flatten_type_binds(Assg, Access, TB) ->
         Q <- case Type of
                  {refined_t, _, _, _, P} ->
                      apply_subst(nu(), Access(Var), pred_of(Assg, P));
-                 {dep_tuple_t, _, Fields} ->
+                 {tuple_t, _, Fields} ->
                      N = length(Fields),
                      flatten_type_binds(
                        Assg,
@@ -1533,7 +1557,7 @@ split_constr1(C = {subtype, Ann, Env0, SubT, SupT}) ->
                 [{Id1, Id2} || {{dep_arg_t, _, Id1, _}, {dep_arg_t, _, Id2, _}}
                                    <- lists:zip(ArgsSub, ArgsSup)],
             split_constr([{subtype, Ann, Env1, apply_subst(Subst, RetSub), RetSup}|Contra]);
-        {{dep_tuple_t, _, TSubs}, {dep_tuple_t, _, TSups}} ->
+        {{tuple_t, _, TSubs}, {tuple_t, _, TSups}} ->
             split_constr([{subtype, Ann, Env0, TSub, TSup} ||
                              {TSub, TSup} <- lists:zip(TSubs, TSups)]);
         { {dep_record_t, _, _, FieldsSub}
@@ -1549,12 +1573,6 @@ split_constr1(C = {subtype, Ann, Env0, SubT, SupT}) ->
         { {dep_variant_t, _, TypeSub, TagSub, ConstrsSub}
         , {dep_variant_t, _, TypeSup, TagSup, ConstrsSup}
         } ->
-            ?DBG("AEH ~p", [[ {subtype, ArgSub, ArgSup}
-              || { {dep_constr_t, _, _, ArgsSub}
-                 , {dep_constr_t, _, _, ArgsSup}
-                 } <- lists:zip(ConstrsSub, ConstrsSup),
-                 {ArgSub, ArgSup} <- lists:zip(ArgsSub, ArgsSup)
-            ]]),
             split_constr(
               [ {subtype, Ann, Env0, ?refined(TypeSub, TagSub), ?refined(TypeSup, TagSup)}
               | [ {subtype, Ann, Env0, ArgSub, ArgSup}
@@ -1584,7 +1602,7 @@ split_constr1(C = {well_formed, Env0, T}) ->
                 ],
             Env1 = bind_args(Args, Env0),
             split_constr([{well_formed, Env1, Ret}|FromArgs]);
-        {dep_tuple_t, _, Ts} ->
+        {tuple_t, _, Ts} ->
             split_constr([{well_formed, Env0, Tt} || Tt <- Ts]);
         {dep_record_t, _, _, Fields} ->
             split_constr([{well_formed, Env0, TF} || {dep_field_t, _, _, TF} <- Fields]);
@@ -1663,7 +1681,6 @@ valid_in({subtype, Ann, Env,
     ?DBG("SIMPLE SUBTYPE\n~p\n<:\n~p", [SubP, SupP]),
     SubPred = pred_of(Assg, SubP),
     SupPred = pred_of(Assg, SupP),
-    ?DBG("\nIDS: SUB ~p, SUP ~p", [SubId, SupId]),
     AssumpPred = apply_subst(SubId, nu(), SubPred),
     ConclPred  = apply_subst(SupId, nu(), SupPred),
     case impl_holds(Assg, bind_var(nu(), Base, Env), AssumpPred, ConclPred) of
@@ -1807,6 +1824,7 @@ declare_type_binds(Assg, Env) ->
          is_smt_expr(Var),
          is_smt_type(T)
     ],
+    ?DBG("KURWA ~p", [Env]),
     [ aeso_smt:assert(expr_to_smt(Q))
      || Q <- pred_of(Assg, Env)
     ].
@@ -1864,8 +1882,6 @@ type_to_smt({tvar, _, _}) ->
     {var, "Int"}; % lol
 type_to_smt({qid, _, QVar}) ->
     {var, string:join(QVar, ".")};
-type_to_smt({dep_tuple_t, Ann, Ts}) ->
-    type_to_smt({tuple_t, Ann, Ts});
 type_to_smt(?tuple_tp(Types)) ->
     N = length(Types),
     {app, "$tuple" ++ integer_to_list(N),
