@@ -183,8 +183,8 @@ con_args()   -> paren_list(con_arg()).
 type_args()  -> paren_list(type()).
 field_type() ->
     ?LAZY_P(choice(
-    [ ?RULE(id(), tok(':'), typeRefinable(), tok('|'), comma_sep(expr()),
-            {field_t, get_ann(_1), _1, {refined_t, get_ann(_3), _1, _3, _5}})
+    [ ?RULE(tok('{'), id(), tok(':'), typeRefinable(), tok('|'), comma_sep1(expr()), tok('}'),
+            {field_t, get_ann(_2), _2, {refined_t, get_ann(_4), _2, _4, _6}})
     , ?RULE(id(), tok(':'), type(), {field_t, get_ann(_1), _1, _3})
     ])).
 
@@ -245,7 +245,7 @@ type400() ->
            refined_t(get_ann(_1), _2, _4, [])
           ),
      %% Dep record
-     ?RULE(tok('{'), id(), tok('<:'), typedef(record), tok('}'),
+     ?RULE(tok('{'), id(), tok('<:'), comma_sep1(field_type()), tok('}'),
            dep_record_t(get_ann(_1), _2, _4)
           ),
      %% Dep variant
@@ -507,6 +507,7 @@ parens(P)   -> between(tok('('), P, tok(')')).
 braces(P)   -> between(tok('{'), P, tok('}')).
 brackets(P) -> between(tok('['), P, tok(']')).
 comma_sep(P) -> sep(P, tok(',')).
+comma_sep1(P) -> sep1(P, tok(',')).
 
 paren_list(P)   -> parens(comma_sep(P)).
 brace_list(P)   -> braces(comma_sep(P)).
@@ -589,7 +590,7 @@ else_branches(Stmts, Acc) ->
 refined_t(Ann, Id, Type, Pred) ->
     {refined_t, Ann, Id, Type, Pred}.
 
-dep_record_t(Ann, Id, {record_t, Fields}) ->
+dep_record_t(Ann, Id, Fields) ->
     {dep_record_t, Ann, Id, Fields}.
 
 dep_variant_t(Ann, Id, {variant_t, Constrs}) ->
