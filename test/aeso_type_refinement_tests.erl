@@ -26,8 +26,8 @@ unsetup(_) ->
 hagia_test_() ->
     {inorder,
      {foreach, local, fun setup/0, fun unsetup/1,
-      [ {timeout, 10, smt_solver_test_group()}
-      , {timeout, 10, refiner_test_group()}
+      [ {timeout, 5, smt_solver_test_group()}
+      , {timeout, 20, refiner_test_group()}
       ]
      }
     }.
