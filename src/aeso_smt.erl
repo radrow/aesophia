@@ -11,7 +11,7 @@
 
 start_z3() ->
     PortOpts = [exit_status, {line, 100000}],
-    Port = open_port({spawn, "z3 -in"}, PortOpts),
+    Port = open_port({spawn, "z3 -in -t:10000"}, PortOpts),
     persistent_term:put(z3_connection, Port),
     send_z3_success({app, "set-option", [{param, "print-success"}, {var, "true"}]}),
     ok.

@@ -1096,15 +1096,13 @@ check_type(Env, Type = {fun_t, Ann, NamedArgs, Args, Ret}, Arity) ->
     ensure_base_type(Type, Arity),
     NamedArgs1 = [ check_named_arg(Env, NamedArg) || NamedArg <- NamedArgs ],
     Args1      = [ check_type(Env, Arg, 0) || Arg <- Args ],
-    NamedTArgs = [{Var, T} || {named_t, _, Var, T} <- Args1],
+    NamedTArgs = [{Var, T} || {refined_t, _, Var, T, _} <- Args1],
     Env1       = bind_vars(NamedTArgs, Env),
     Ret1       = check_type(Env1, Ret, 0),
     {fun_t, Ann, NamedArgs1, Args1, Ret1};
 check_type(_Env, Type = {uvar, _, _}, Arity) ->
     ensure_base_type(Type, Arity),
     Type;
-check_type(Env, {named_t, Ann, Var, T}, Arity) ->
-    {named_t, Ann, Var, check_type(Env, T, Arity)};
 check_type(Env, {refined_t, Ann, Id, T, Pred}, Arity) ->
     ensure_base_type(T, Arity),
     T1 = check_type(Env, T, Arity),
@@ -1143,11 +1141,11 @@ check_type(Env, T = {dep_record_t, Ann, Id, Fields}, Arity) ->
 check_type(Env, T = {dep_variant_t, Ann, Id, undefined, Constrs}, Arity) ->
     %% TODO Validate constructors in adt
     Id1 = check_type(Env, Id, Arity),
-    TrueConstrs =
-        case lookup_type(Env, Id) of
-            {_, {_, {_, {variant_t, Cs}}}} -> Cs;
+    {QId, TrueConstrs} =
+        case lookup_type(Env, Id1) of
+            {Q, {QAnn, {_, {variant_t, Cs}}}} -> {{qid, QAnn, Q}, Cs};
             _ -> type_error({not_a_variant_type, Id, T}),
-                 []
+                 {Id, []}
         end,
     Constrs1 =
         [ case [ ConstrNew
@@ -1161,14 +1159,15 @@ check_type(Env, T = {dep_variant_t, Ann, Id, undefined, Constrs}, Arity) ->
           end
           || ConstrOld = {constr_t, _, CNameOld, _} <- TrueConstrs
         ],
+    OnQid = fun(A) -> qid(aeso_syntax:get_ann(QId), lists:droplast(qname(QId)) ++ qname(A)) end,
     TagPred =
         case Constrs of
             [] -> [{bool, [], false}];
             [{constr_t, CAnn, Con, Args}] ->
-                [{is_tag, CAnn, aeso_ast_refine_types:nu(), Id, Args}];
+                [{is_tag, CAnn, aeso_ast_refine_types:nu(), OnQid(Con), Args}];
             _ ->
                 [ {app, Ann, {'!', Ann},
-                   [{is_tag, CAnn, aeso_ast_refine_types:nu(), Id, Args}]}
+                   [{is_tag, CAnn, aeso_ast_refine_types:nu(), OnQid(TrueCon), Args}]}
                  || {constr_t, CAnn, TrueCon, Args} <- TrueConstrs,
                     lists:all(
                       fun({constr_t, _, Con, _}) ->
@@ -1177,7 +1176,7 @@ check_type(Env, T = {dep_variant_t, Ann, Id, undefined, Constrs}, Arity) ->
                      )
                 ]
         end,
-    {dep_variant_t, Ann, Id1, TagPred, Constrs1};
+    {dep_variant_t, Ann, QId, TagPred, Constrs1};
 check_type(Env, {dep_list_t, Ann, ElemT, LenPred}, Arity) ->
     ElemT1 = check_type(Env, ElemT),
     Env1 = bind_var({id, [], "length"}, {id, [], "int"}, Env),
