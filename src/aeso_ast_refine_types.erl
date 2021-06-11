@@ -19,7 +19,7 @@
 -define(DBG(A, B), ?debugFmt(?DBG_COLOR(A), B)).
 -define(DBG(A), ?debugMsg(?DBG_COLOR(A))).
 
--define(refined(Id, T, Q), {refined_t, element(2, T), Id, T, Q}).
+-define(refined(Id, T, Q), {refined_t, element(2, T), Id, T, strip_typed(Q)}).
 -define(refined(T, Q),
         (fun() ->
                  Id = fresh_id(
@@ -245,6 +245,11 @@ ensure_var(Id, T, Env = #env{var_env = VarEnv}) ->
         _    -> Env
     end.
 
+-spec ensure_vars([{id(), lutype()}], env()) -> env().
+ensure_vars([], Env) -> Env;
+ensure_vars([{X, T}|Rest], Env) ->
+    ensure_vars(Rest, ensure_var(X, T, Env)).
+
 -spec bind_nu(lutype(), env()) -> env().
 bind_nu(Type, Env) ->
     bind_var(nu(), Type, Env).
@@ -258,6 +263,11 @@ bind_vars([{X, T} | Vars], Env) ->
 bind_args([], Env) -> Env;
 bind_args([{dep_arg_t, _, X, T} | Vars], Env) ->
     bind_args(Vars, bind_var(X, T, Env)).
+
+-spec ensure_args([dep_arg_t(liquid_qual())], env()) -> env().
+ensure_args([], Env) -> Env;
+ensure_args([{dep_arg_t, _, X, T} | Vars], Env) ->
+    ensure_args(Vars, ensure_var(X, T, Env)).
 
 -spec bind_fun(name(), lutype(), env()) -> env().
 bind_fun(X, Type, Env) ->
@@ -635,6 +645,16 @@ has_assumptions(Variance, T) when is_tuple(T) ->
 has_assumptions(_, _) ->
     false.
 
+strip_typed({typed, _, X, _}) ->
+    X;
+strip_typed([H|T]) ->
+    [strip_typed(H)|strip_typed(T)];
+strip_typed(T) when is_tuple(T) ->
+    list_to_tuple(strip_typed(tuple_to_list(T)));
+strip_typed(X) -> X.
+
+
+
 %% -- Fresh stuff --------------------------------------------------------------
 
 -spec fresh_ltvar(name()) -> ltvar().
@@ -871,16 +891,21 @@ constr_con(Env0, {Tag, Ann, Con, Defs}, S0)
 
 -spec constr_letfun(env(), letfun(), [constr()]) -> {fundecl(), [constr()]}.
 constr_letfun(Env0, {letfun, Ann, Id, Args, _, Body}, S0) ->
-    ?DBG("BODY ~p", [Body]),
     {_, GlobFunT = {dep_fun_t, _, GlobArgsT, _}} = type_of(Env0, Id),
     ArgsT =
-        [ {dep_arg_t, ArgAnn, Arg, ArgT}
-          || {?typed_p(Arg), {dep_arg_t, ArgAnn, _, ArgT}} <- lists:zip(Args, GlobArgsT)
-        ],
+        [fresh_liquid_arg(Env0, Arg, ArgT) || ?typed_p(Arg, ArgT) <- Args],
     Env1 = bind_args(ArgsT, Env0),
+    Env2 = ensure_args(GlobArgsT, Env1),
+    Env3 =
+        assert(
+          [ ?op(Arg1, '==', Arg2)
+           || {{dep_arg_t, _, Arg1, _}, {dep_arg_t, _, Arg2, {refined_t, _, _, _, _}}}
+                  <- lists:zip(ArgsT, GlobArgsT)
+          ],
+          Env2),
     Body1 = a_normalize(Body),
     ?DBG("NORMALIZED\n~s\nTO\n~s", [aeso_pretty:pp(expr, Body), aeso_pretty:pp(expr, Body1)]),
-    {BodyT, S1} = constr_expr(Env1, Body1, S0),
+    {BodyT, S1} = constr_expr(Env3, Body1, S0),
     InnerFunT = {dep_fun_t, Ann, ArgsT, BodyT},
     ?DBG("\nINNER:\n~p\n\nOUTER:\n~p", [InnerFunT, GlobFunT]),
     S3 = [ {subtype, Ann, Env0, InnerFunT, GlobFunT}
