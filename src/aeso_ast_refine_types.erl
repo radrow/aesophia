@@ -561,19 +561,14 @@ bind_ast_funs(TCEnv, AST, Env) ->
                                    TCEnv, term, FAnn, qname(Con) ++ qname(Id)),
                              check_arg_assumptions(Id, FAnn, ArgsT),
                              DepArgsT =
-                                 [ fresh_liquid_arg(Env, Arg, ArgT)
+                                 [ case ArgT of
+                                       {refined_t, ArgAnn, ArgId, _, _} ->
+                                           {dep_arg_t, ArgAnn, ArgId, ArgT};
+                                       _ -> fresh_liquid_arg(Env, Arg, ArgT)
+                                   end
                                    || {?typed_p(Arg), ArgT} <- lists:zip(Args, ArgsT)
                                  ],
-                             RetT1 =
-                                 apply_subst(
-                                   [ {PreId, Arg}
-                                     || {?typed_p(Arg), {refined_t, _, PreId, _, _}}
-                                           <- lists:zip(Args, ArgsT)
-                                   ],
-                                   RetT
-                                  ),
-                             DepRetT = fresh_liquid(Env1, "rete", RetT1),
-                             ?DBG("RETT ~p", [DepRetT]),
+                             DepRetT = fresh_liquid(Env1, "rete", RetT),
                              TypeDep = {dep_fun_t, TSAnn, DepArgsT, DepRetT},
                              {Name, TypeDep}
                          end
@@ -879,13 +874,8 @@ constr_letfun(Env0, {letfun, Ann, Id, Args, _, Body}, S0) ->
     ?DBG("BODY ~p", [Body]),
     {_, GlobFunT = {dep_fun_t, _, GlobArgsT, _}} = type_of(Env0, Id),
     ArgsT =
-        [ case Arg of
-              ?typed_p(Arg1) -> {dep_arg_t, ArgAnn, Arg1, ArgT};
-              {dep_arg_t, _, _, _} -> Arg
-          end
-         || {Arg,
-             {dep_arg_t, ArgAnn, _, ArgT}
-            } <- lists:zip(Args, GlobArgsT)
+        [ {dep_arg_t, ArgAnn, Arg, ArgT}
+          || {?typed_p(Arg), {dep_arg_t, ArgAnn, _, ArgT}} <- lists:zip(Args, GlobArgsT)
         ],
     Env1 = bind_args(ArgsT, Env0),
     Body1 = a_normalize(Body),
