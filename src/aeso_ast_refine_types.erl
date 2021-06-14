@@ -1384,10 +1384,14 @@ match_to_pattern(Env, {record, _, Fields}, Expr, {dep_record_t, _, Type, FieldsT
       end,
       {Env, Pred}, Fields
      );
+match_to_pattern(Env, {con, Ann, CName}, Expr, DepT, Pred0) ->
+    match_to_pattern(Env, {qcon, Ann, [CName]}, Expr, DepT, Pred0);
 match_to_pattern(Env, QCon = {qcon, Ann, _},
                  Expr, DepT = {dep_variant_t, _, Type, _, _}, Pred0) ->
     %% This is for sure a nullary constructor
     match_to_pattern(Env, {app, Ann, ?typed(QCon, Type), []}, Expr, DepT, Pred0);
+match_to_pattern(Env, {app, Ann, ?typed_p({con, Ann, CName}, T), Args}, Expr, DepT, Pred0) ->
+    match_to_pattern(Env, {app, Ann, ?typed({qcon, Ann, [CName]}, T), Args}, Expr, DepT, Pred0);
 match_to_pattern(Env, {app, Ann, ?typed_p(QCon = {qcon, _, QName}), Args},
                  Expr, {dep_variant_t, _, _Type, _Tag, Constrs}, Pred0) ->
     N = length(Args),
@@ -1630,7 +1634,9 @@ type_binds_pred(Assg, Access, TB) ->
                  {dep_variant_t, _, VT, Tag, Constrs} ->
                      QName = case VT of
                                  {qid, _, Q} -> Q;
-                                 {app_t, _, {qid, _, Q}, _} -> Q
+                                 {app_t, _, {qid, _, Q}, _} -> Q;
+                                 {id, _, Q} -> [Q];
+                                 {app_t, _, {id, _, Q}, _} -> [Q]
                              end,
                      TagPred = apply_subst(nu(), Access(Var), pred_of(Assg, Tag)),
                      ConPred =
