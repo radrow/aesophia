@@ -727,7 +727,8 @@ fresh_liquid(Env, Variance, Hint, {dep_variant_t, Ann, Type, TagPred, Constrs}) 
      ]
     };
 fresh_liquid(Env, Variance, Hint, {dep_list_t, Ann, ElemT, LenPred}) ->
-    {dep_list_t, Ann, fresh_liquid(Env, Variance, Hint, ElemT), LenPred};
+    {dep_list_t, Ann, fresh_liquid(Env, Variance, Hint, ElemT),
+     apply_subst(length_user(), length(), LenPred)};
 fresh_liquid(_Env, Variance, Hint, Type = {id, Ann, Name}) ->
     {refined_t, Ann,
      fresh_id(case Name of
@@ -1801,8 +1802,9 @@ valid_in({subtype, Ann, Env,
     ?DBG("RIGID SUBTYPE\n~p\n<:\n~p", [SubP, SupP]),
     SubPred = pred_of(Assg, SubP),
     SupPred = pred_of(Assg, SupP),
-    AssumpPred = apply_subst(SubId, SupId, SubPred),
-    ConclPred  = SupPred,
+    AssumpPred = SubPred,
+    ConclPred  = apply_subst(SupId, SubId, SupPred),
+    ?DBG("~s <: ~s\nASSUMP: ~s\nCONCL: ~s", [name(SubId), name(SupId), aeso_pretty:pp(predicate, AssumpPred), aeso_pretty:pp(predicate, ConclPred)]),
     Env1 = ensure_var(SupId, Base, Env),
     case impl_holds(Assg, Env1, AssumpPred, ConclPred) of
         true ->
