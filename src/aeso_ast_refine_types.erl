@@ -674,7 +674,7 @@ strip_typed(X) -> X.
 fresh_ltvar(Name) ->
     I = get(ltvar_supply),
     put(ltvar_supply, I + 1),
-    {ltvar, Name ++ "_" ++ integer_to_list(I)}.
+    {ltvar, lists:flatten(Name) ++ "_" ++ integer_to_list(I)}.
 
 -spec fresh_template(name()) -> lutype().
 fresh_template(Name) -> fresh_template(covariant, Name).
@@ -841,10 +841,10 @@ switch_variance(forced_contravariant) ->
     forced_contravariant.
 
 -define(IS_LIQUID(T),
-        (element(1, T) =/= refined_t andalso
-         element(1, T) =/= dep_list_t andalso
-         element(1, T) =/= dep_variant_t andalso
-         element(1, T) =/= dep_record_t andalso
+        (element(1, T) =/= refined_t orelse
+         element(1, T) =/= dep_list_t orelse
+         element(1, T) =/= dep_variant_t orelse
+         element(1, T) =/= dep_record_t orelse
          element(1, T) =/= dep_fun_t)
        ).
 base_type({refined_t, _, _, T, _}) ->
@@ -931,7 +931,6 @@ constr_con(Env0, {Tag, Ann, Con, Defs}, S0)
 
 -spec constr_letfun(env(), letfun(), [constr()]) -> {fundecl(), [constr()]}.
 constr_letfun(Env0, {letfun, Ann, Id, Args, _, Body}, S0) ->
-    ?DBG("IN FUN ~p", [Id]),
     {_, GlobFunT = {dep_fun_t, _, GlobArgsT, GlobRetT}} = type_of(Env0, Id),
     ArgsT =
         [fresh_liquid_arg(Env0, Arg, ArgT) || ?typed_p(Arg, ArgT) <- Args],
@@ -983,7 +982,6 @@ constr_expr_list(Env, [H|T], Acc, S0) ->
 constr_expr(Env, ?typed_p(Expr, Type), S0) when ?IS_LIQUID(Type) ->
     Base = base_type(Type),
     {ExprT, S1} = constr_expr(Env, Expr, Base, S0),
-    ?DBG("FUNNY ~p <:\n ~p", [ExprT, Type]),
     {ExprT,
      [ {subtype, aeso_syntax:get_ann(Type), Env, ExprT, Type}
      | S1
@@ -1522,7 +1520,7 @@ inst_pred_tvar(Env, SelfId, TVar) ->
     [ Q || {Var, {refined_t, _, _, {tvar, _, TVar1}, _}} <- maps:to_list(Env#env.var_env),
            TVar == TVar1,
            Q <- eq_qualifiers(SelfId, {id, ann(), Var})
-    ].
+    ] ++ [?bool(false)].
 
 inst_pred(Env, SelfId, {refined_t, _, _, BaseT, _}) ->
     inst_pred(Env, SelfId, BaseT);
@@ -1836,6 +1834,10 @@ valid_in({subtype, _, Env,
         ),
     Env1 = bind_var(Id, Base, Env),
     impl_holds(Assg, Env1, AssumpPred, ConclPred);
+valid_in({subtype, Ann, Env, Sub, Sup}, Assg)
+  when element(1, Sub) =:= id;
+       element(1, Sub) =:= tvar ->
+    valid_in({subtype, Ann, Env, ?refined(Sub), Sup}, Assg);
 valid_in(C = {subtype, _, _, _, _}, _) -> %% In typechecker we trust
     ?DBG("SKIPPING SUBTYPE: ~s", [aeso_pretty:pp(constr, C)]),
     true;
