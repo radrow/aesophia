@@ -1186,8 +1186,8 @@ check_type(Env, T = {dep_variant_t, Ann, Id, undefined, Constrs}, Arity) ->
     {dep_variant_t, Ann, QId, TagPred, Constrs1};
 check_type(Env, T = {dep_list_t, Ann, ElemT, LenPred}, Arity) ->
     [type_error({illegal_liquid, T}) || not Env#env.allow_liquid],
+    ElemT1 = check_type(Env, ElemT),
     Env1 = Env#env{allow_liquid = false},
-    ElemT1 = check_type(Env1, ElemT),
     Env2 = bind_var({id, [], "length"}, {id, [], "int"}, Env1),
     LenPred1 = [check_expr(Env2, Q, {id, [], "bool"}) || Q <- LenPred],
     {dep_list_t, Ann, ElemT1, LenPred1};
