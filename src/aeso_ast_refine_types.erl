@@ -129,12 +129,8 @@
         }).
 -type env() :: #env{}.
 
-%% Grouped subtype constraint
--type subtype_group() :: {subtype_group, [{subtypes, env(), ann(), id(), subst(), liquid_qual()}], type(), ltvar()}.
-
 %% Constraint
 -type constr() :: {subtype, ann(), env(), lutype(), lutype()}
-                | subtype_group()
                 | {well_formed, env(), lutype()}
                 | {reachable, ann(), env()}
                 | {unreachable, ann(), env()}.
@@ -865,12 +861,11 @@ refine_ast(TCEnv, AST) ->
         Env3 = bind_ast_funs(TCEnv, AST, Env2),
         {AST1, CS0} = constr_ast(Env3, AST),
         CS1 = split_constr(CS0),
-        CS2 = group_subtypes(CS1),
         case aeso_smt:scoped(
           fun() ->
                   declare_tuples(find_tuple_sizes(AST)),
                   declare_datatypes(type_defs(Env3)),
-                  solve(Env3, CS2)
+                  solve(Env3, CS1)
           end) of
             Assg ->
                 AST2 = apply_assg(Assg, AST1),
@@ -1409,23 +1404,6 @@ match_to_pattern(Env0, {app, _, {'::', _}, [H,T]}, Expr, {dep_list_t, TAnn, Elem
                      {dep_list_t, TAnn, ElemT, [?op(length(), '==', ?op(Expr, '-', ?int(1)))]},
                      Pred2).
 
-group_subtypes(Cs) ->
-    Subts = [C || C = {subtype, _, _, _, {refined_t, _, _, _, {template, _, _}}} <- Cs],
-    Rest = Cs -- Subts,
-
-    SubtsMap =
-        lists:foldl(
-          fun ({subtype, Ann, Env,
-                {refined_t, _, Id, _, SubQual},
-                {refined_t, _, _, Base, {template, Subst, LV}}}, Map) ->
-                  maps:put(LV, {Base, [{subtypes, Env, Ann, Id, Subst, SubQual}|element(2, maps:get(LV, Map, {{}, []}))]}, Map)
-          end, #{}, Subts
-         ),
-    Rest ++ [ {subtype_group, Ts, Base, LV}
-              || {LV, {Base, Ts}} <- maps:to_list(SubtsMap)
-            ].
-
-
 %% -- Substitution -------------------------------------------------------------
 
 apply_subst({id, _, N}, {id, _, N}, In) ->
@@ -1567,6 +1545,8 @@ init_assg(Cs) ->
          (_, Acc) -> Acc
       end, #{}, Cs).
 
+assg_of(Assg, {template, Subst, Var}) ->
+    apply_subst(Subst, assg_of(Assg, Var));
 assg_of(Assg, Var = {ltvar, _}) ->
     case maps:get(Var, Assg, undef) of
         undef -> error({undef_assg, Var});
@@ -1790,7 +1770,9 @@ solve(Assg, AllCs, [C|Rest]) ->
         false ->
             ?DBG("NOT VALID"),
             Weakened = weaken(C, Assg),
-            solve(Weakened, AllCs, AllCs);
+            if Weakened == Assg -> error({weaken_failed, Assg});
+               true -> solve(Weakened, AllCs, AllCs)
+            end;
         true  ->
             ?DBG("VALID"),
             solve(Assg, AllCs, Rest)
@@ -1798,27 +1780,10 @@ solve(Assg, AllCs, [C|Rest]) ->
 
 valid_in({well_formed, _, _}, _) ->
     true;
-valid_in({subtype_group, Subs, Base, SupPredVar}, Assg) ->
-    Ltinfo = assg_of(Assg, SupPredVar),
-    lists:all(
-      fun({subtypes, Env, _, Id, Subst, SubPredVar}) ->
-              SubPred = pred_of(Assg, SubPredVar),
-              SupPred = apply_subst(Subst, pred_of(Assg, SupPredVar)),
-              AssumpPred = apply_subst(Id, Ltinfo#ltinfo.id, SubPred),
-              ConclPred = SupPred,
-              ?DBG("COMPLEX SUBTYPE ON ~s and ~s\n~s\n<:\n~s",
-                   [name(Id), name(Ltinfo#ltinfo.id),
-                    aeso_pretty:pp(predicate, SubPred),
-                    aeso_pretty:pp(predicate, SupPred)
-                   ]
-                  ),
-              Env1 = bind_var(Ltinfo#ltinfo.id, Base, Env),
-              impl_holds(Assg, Env1, AssumpPred, ConclPred)
-      end,
-      Subs
-     );
 valid_in({subtype, Ann, Env,
-          {refined_t, _, SubId, _, SubP}, {refined_t, _, SupId, Base, SupP}}, Assg) when is_list(SupP) ->
+          {refined_t, _, SubId, _, SubP},
+          {refined_t, _, SupId, Base, SupP}
+         }, Assg) when is_list(SupP) ->
     ?DBG("RIGID SUBTYPE\n~p\n<:\n~p", [SubP, SupP]),
     SubPred = pred_of(Assg, SubP),
     SupPred = pred_of(Assg, SupP),
@@ -1833,6 +1798,25 @@ valid_in({subtype, Ann, Env,
             SimpAssump = simplify_pred(Assg, Env1, pred_of(Assg, Env1) ++ AssumpPred),
             throw({contradict, {Ann, SimpAssump, ConclPred}})
     end;
+valid_in({subtype, _, Env,
+          {refined_t, _, SubId,    _, SubPredVar},
+          {refined_t, _, SupId, Base, SupPredVar}
+         }, Assg)
+  when element(1, SupPredVar) =:= template ->
+    Ltinfo = assg_of(Assg, SupPredVar),
+    Id = Ltinfo#ltinfo.id,
+    SubPred = pred_of(Assg, SubPredVar),
+    SupPred = pred_of(Assg, SupPredVar),
+    AssumpPred = apply_subst(SubId, Id, SubPred),
+    ConclPred = apply_subst(SupId, Id, SupPred),
+    ?DBG("WOBBLY SUBTYPE ON (~s <: ~s) -> ~s\n~s\n<:\n~s",
+         [name(SubId), name(SupId), name(Id),
+          aeso_pretty:pp(predicate, SubPred),
+          aeso_pretty:pp(predicate, SupPred)
+         ]
+        ),
+    Env1 = bind_var(Id, Base, Env),
+    impl_holds(Assg, Env1, AssumpPred, ConclPred);
 valid_in(C = {subtype, _, _, _, _}, _) -> %% In typechecker we trust
     ?DBG("SKIPPING SUBTYPE: ~s", [aeso_pretty:pp(constr, C)]),
     true;
@@ -1840,18 +1824,19 @@ valid_in(_, _) ->
     true.
 
 
-weaken({subtype_group, Subs, Base, SupPredVar}, Assg) ->
+weaken({subtype, _, Env,
+        {refined_t, _, SubId,    _, SubPredVar},
+        {refined_t, _, SupId, Base, SupPredVar = {template, _, Var}}
+       }, Assg) ->
     ?DBG("WEAKENING"),
     Ltinfo = assg_of(Assg, SupPredVar),
+    Id = Ltinfo#ltinfo.id,
+    SubPred = pred_of(Assg, SubPredVar),
+    AssumpPred = apply_subst(SubId, Id, SubPred),
+    Env1 = bind_var(Id, Base, Env),
     Filtered =
-        [ Q || Q <- Ltinfo#ltinfo.predicate,
-               lists:all(fun({subtypes, Env, _, Id, Subst, Sub}) ->
-                                 SubPred = pred_of(Assg, Sub),
-                                 AssumpPred = apply_subst(Id, Ltinfo#ltinfo.id, SubPred),
-                                 ConclPred  = apply_subst(Subst, Q),
-                                 Env1 = bind_var(Ltinfo#ltinfo.id, Base, Env),
-                                 impl_holds(Assg, Env1, AssumpPred, ConclPred)
-                         end, Subs)
+        [ Q || Q <- pred_of(Assg, SupPredVar),
+               impl_holds(Assg, Env1, AssumpPred, apply_subst(SupId, Id, Q))
         ],
     NewLtinfo = Ltinfo#ltinfo{
                  predicate = Filtered
@@ -1859,7 +1844,7 @@ weaken({subtype_group, Subs, Base, SupPredVar}, Assg) ->
     ?DBG("WEAKENED FROM\n~s\nTO\n~s", [aeso_pretty:pp(predicate, Ltinfo#ltinfo.predicate),
                                        aeso_pretty:pp(predicate, Filtered)
                                       ]),
-    Assg#{SupPredVar => NewLtinfo};
+    Assg#{Var => NewLtinfo};
 weaken({well_formed, _Env, {refined_t, _, _, _, _}}, Assg) ->
     Assg.
 
