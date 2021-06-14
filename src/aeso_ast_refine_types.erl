@@ -349,6 +349,15 @@ type_of(Env, Id) ->
         {QId, Ty} -> {set_qname(QId, Id), Ty}
     end.
 
+-spec bind_assg(assignment(), env()) -> env().
+bind_assg(Assg, Env) ->
+    lists:foldl(
+      fun({_, LT}, Env0) ->
+              Type = ?refined(LT#ltinfo.id, LT#ltinfo.base, LT#ltinfo.predicate),
+              ensure_var(LT#ltinfo.id, Type, Env0)
+      end, Env, maps:to_list(Assg)
+     ).
+
 -spec global_type_binds(env()) -> [{expr(), lutype()}].
 global_type_binds(#env{scopes = Scopes}) ->
     [ {qid(ScopePath ++ [Var]), Type}
@@ -356,8 +365,10 @@ global_type_binds(#env{scopes = Scopes}) ->
          {Var, Type} <- maps:to_list(FEnv)
     ].
 
--spec local_type_binds(env()) -> [{expr(), lutype()}].
-local_type_binds(#env{var_env = VEnv}) ->
+-spec local_type_binds(assignment(), env()) -> [{expr(), lutype()}].
+local_type_binds(Assg, Env) ->
+    Env1 = bind_assg(Assg, Env),
+    VEnv = Env1#env.var_env,
     [ begin
           Qid = qid(aeso_syntax:get_ann(Type), [Var]),
           {Qid,
@@ -373,11 +384,14 @@ local_type_binds(#env{var_env = VEnv}) ->
           }
       end
       || {Var, Type} <- maps:to_list(VEnv)
-    ] ++ [{length(), ?d_nonneg_int}].
+    ].
 
 -spec type_binds(env()) -> [{expr(), lutype()}].
 type_binds(Env) ->
-    global_type_binds(Env) ++ local_type_binds(Env).
+    type_binds(#{}, Env).
+-spec type_binds(assignment(), env()) -> [{expr(), lutype()}].
+type_binds(Assg, Env) ->
+    global_type_binds(Env) ++ local_type_binds(Assg, Env).
 
 
 -spec type_defs(env()) -> [{qid(), typedef()}]. %% FIXME really typedef? what about args?
@@ -712,8 +726,6 @@ fresh_liquid(Env, Variance, Hint, {dep_variant_t, Ann, Type, TagPred, Constrs}) 
        || {constr_t, CAnn, Con, Vals} <- Constrs
      ]
     };
-%% fresh_liquid(_Env, _Variance, _Hint, Type = {dep_constr_t, _, _, _}) ->
-%%     Type;
 fresh_liquid(Env, Variance, Hint, {dep_list_t, Ann, ElemT, LenPred}) ->
     {dep_list_t, Ann, fresh_liquid(Env, Variance, Hint, ElemT), LenPred};
 fresh_liquid(_Env, Variance, Hint, Type = {id, Ann, Name}) ->
@@ -825,7 +837,7 @@ switch_variance(forced_covariant) ->
 switch_variance(forced_contravariant) ->
     forced_contravariant.
 
--define(IS_BASE(T),
+-define(IS_LIQUID(T),
         (element(1, T) =/= refined_t andalso
          element(1, T) =/= dep_list_t andalso
          element(1, T) =/= dep_variant_t andalso
@@ -845,6 +857,10 @@ base_type({dep_fun_t, Ann, Args, Ret}) ->
      [base_type(ArgT) || {dep_arg_t, _, _, ArgT} <- Args],
      base_type(Ret)
     };
+base_type({tuple_t, Ann, Types}) ->
+    {tuple_t, Ann, [base_type(T) || T <- Types]};
+base_type({app_t, Ann, T, Args}) ->
+    {app_t, Ann, T, [base_type(A) || A <- Args]};
 base_type(T) -> T.
 
 
@@ -929,7 +945,6 @@ constr_letfun(Env0, {letfun, Ann, Id, Args, _, Body}, S0) ->
     ?DBG("NORMALIZED\n~s\nTO\n~s", [aeso_pretty:pp(expr, Body), aeso_pretty:pp(expr, Body1)]),
     {BodyT, S1} = constr_expr(Env3, Body1, S0),
     InnerFunT = {dep_fun_t, Ann, ArgsT, BodyT},
-    ?DBG("\nINNER:\n~p\n\nOUTER:\n~p", [InnerFunT, GlobFunT]),
     S3 = [ {subtype, Ann, Env3, BodyT, GlobRetT}
          , {well_formed, Env0, GlobFunT}
          , {well_formed, Env0, InnerFunT}
@@ -961,7 +976,7 @@ constr_expr_list(Env, [H|T], Acc, S0) ->
     {H1, S1} = constr_expr(Env, H, S0),
     constr_expr_list(Env, T, [H1|Acc], S1).
 
-constr_expr(Env, ?typed_p(Expr, Type), S0) when not ?IS_BASE(Type) ->
+constr_expr(Env, ?typed_p(Expr, Type), S0) when ?IS_LIQUID(Type) ->
     Base = base_type(Type),
     {ExprT, S1} = constr_expr(Env, Expr, Base, S0),
     ?DBG("FUNNY ~p <:\n ~p", [ExprT, Type]),
@@ -1004,7 +1019,6 @@ constr_expr(Env, Expr = {IdHead, Ann, Name}, T, S)
     BaseT = base_type(T),
     if element(1, BaseT) =:= id;
        element(1, BaseT) =:= tvar ->
-            ?DBG("AEH ~p ->\n~p", [T, ?refined(BaseT, [?op(nu(), '==', Expr)])]),
             {?refined(BaseT, [?op(nu(), '==', Expr)]), S};
        true ->
             {_, DT} = type_of(Env, Expr),
@@ -1520,8 +1534,8 @@ inst_pred(Env, SelfId, BaseT) ->
                     inst_pred_variant_tag(SelfId, BaseT, Constrs);
                 X -> error({todo, {inst_pred, X}})
             end;
-        {app_t, _, {id, Ann, "list"}, _} ->
-            inst_pred_int(Env, {id, Ann, "length"});
+        {app_t, _, {id, _, "list"}, _} ->
+            inst_pred_int(Env, length());
         {app_t, _, Qid = {qid, _, _}, Args} ->
             case lookup_type(Env, Qid) of
                 {_, {AppArgs, {variant_t, Constrs}}} ->
@@ -1707,8 +1721,8 @@ split_constr1(C = {subtype, Ann, Env0, SubT, SupT}) ->
         } ->
             split_constr(
               [ {subtype, Ann, Env0,
-                 ?refined(?int_t, apply_subst(length_user(), length(), LenQualSub)),
-                 ?refined(?int_t, apply_subst(length_user(), length(), LenQualSup))}
+                 ?refined(length(), ?int_t, LenQualSub),
+                 ?refined(length(), ?int_t, LenQualSup)}
               , {subtype, Ann, Env0, DepElemSub, DepElemSup}
               ]
              );
@@ -1737,7 +1751,7 @@ split_constr1(C = {well_formed, Env0, T}) ->
               ]
              );
         {dep_list_t, _, DepElem, LenQual} ->
-            [ {well_formed, Env0, ?refined(?int_t, apply_subst(length_user(), length(), LenQual))}
+            [ {well_formed, Env0, ?refined(length(), ?int_t, LenQual)}
             , {well_formed, Env0, DepElem}
             ];
         _ -> [C]
@@ -1808,7 +1822,7 @@ valid_in({subtype, _, Env,
     SubPred = pred_of(Assg, SubPredVar),
     SupPred = pred_of(Assg, SupPredVar),
     AssumpPred = apply_subst(SubId, Id, SubPred),
-    ConclPred = apply_subst(SupId, Id, SupPred),
+    ConclPred  = apply_subst(SupId, Id, SupPred),
     ?DBG("WOBBLY SUBTYPE ON (~s <: ~s) -> ~s\n~s\n<:\n~s",
          [name(SubId), name(SupId), name(Id),
           aeso_pretty:pp(predicate, SubPred),
@@ -1948,12 +1962,12 @@ declare_type_binds(Assg, Env) ->
     [ begin
           aeso_smt:declare_const(expr_to_smt(Var), type_to_smt(T))
       end
-      || {Var, T} <- type_binds(Env), element(1, T) =/= dep_fun_t,
+      || {Var, T} <- type_binds(Assg, Env), element(1, T) =/= dep_fun_t,
          is_smt_expr(Var),
          is_smt_type(T)
     ],
     [ aeso_smt:assert(expr_to_smt(Q))
-     || Q <- pred_of(Assg, Env)
+      || Q <- pred_of(Assg, Env)
     ].
 
 impl_holds(Env, Assump, Concl) ->
