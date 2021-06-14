@@ -131,6 +131,7 @@
     , stateful   = false              :: boolean()
     , current_function = none         :: none | aeso_syntax:id()
     , what       = top                :: top | namespace | contract | contract_interface
+    , allow_liquid = true             :: boolean()
     }).
 
 -type env() :: #env{}.
@@ -1103,17 +1104,21 @@ check_type(Env, Type = {fun_t, Ann, NamedArgs, Args, Ret}, Arity) ->
 check_type(_Env, Type = {uvar, _, _}, Arity) ->
     ensure_base_type(Type, Arity),
     Type;
-check_type(Env, {refined_t, Ann, Id, T, Pred}, Arity) ->
-    ensure_base_type(T, Arity),
-    T1 = check_type(Env, T, Arity),
-    Env1 = bind_var(Id, T, Env),
-    Pred1 = [check_expr(Env1, Q, {id, aeso_syntax:get_ann(Q), "bool"}) || Q <- Pred],
-    {refined_t, Ann, Id, T1, Pred1};
+check_type(Env, T = {refined_t, Ann, Id, Base, Pred}, Arity) ->
+    [type_error({illegal_liquid, T}) || not Env#env.allow_liquid],
+    ensure_base_type(Base, Arity),
+    Env1 = Env#env{allow_liquid = false},
+    Base1 = check_type(Env1, Base, Arity),
+    Env2 = bind_var(Id, Base, Env1),
+    Pred1 = [check_expr(Env2, Q, {id, aeso_syntax:get_ann(Q), "bool"}) || Q <- Pred],
+    {refined_t, Ann, Id, Base1, Pred1};
 check_type(Env, T = {dep_record_t, Ann, Id, Fields}, Arity) ->
+    [type_error({illegal_liquid, T}) || not Env#env.allow_liquid],
+    Env1 = Env#env{allow_liquid = false},
     %% TODO Validate fields in record
-    Id1 = check_type(Env, Id, Arity),
+    Id1 = check_type(Env1, Id, Arity),
     {QId, TrueFields} =
-        case lookup_type(Env, Id1) of
+        case lookup_type(Env1, Id1) of
             {QName, {QAnn, {_, {record_t, F}}}} -> {qid(QAnn, QName), F};
             _ -> type_error({not_a_record_type, Id, T}),
                  {Id, []}
@@ -1123,7 +1128,7 @@ check_type(Env, T = {dep_record_t, Ann, Id, Fields}, Arity) ->
                  || FieldNew = {field_t, _, FNameNew, _} <- Fields,
                     name(FNameNew) == name(FNameOld)] of
               [{field_t, FAnn, FName, FType}] ->
-                  {field_t, FAnn, FName, check_type(Env, FType)};
+                  {field_t, FAnn, FName, check_type(Env1, FType)};
               _ -> FieldOld
           end
          || FieldOld = {field_t, _, FNameOld, _} <- TrueFields
@@ -1139,10 +1144,12 @@ check_type(Env, T = {dep_record_t, Ann, Id, Fields}, Arity) ->
       ]),
     {dep_record_t, Ann, QId, Fields1};
 check_type(Env, T = {dep_variant_t, Ann, Id, undefined, Constrs}, Arity) ->
+    [type_error({illegal_liquid, T}) || not Env#env.allow_liquid],
+    Env1 = Env#env{allow_liquid = false},
     %% TODO Validate constructors in adt
-    Id1 = check_type(Env, Id, Arity),
+    Id1 = check_type(Env1, Id, Arity),
     {QId, TrueConstrs} =
-        case lookup_type(Env, Id1) of
+        case lookup_type(Env1, Id1) of
             {Q, {QAnn, {_, {variant_t, Cs}}}} -> {{qid, QAnn, Q}, Cs};
             _ -> type_error({not_a_variant_type, Id, T}),
                  {Id, []}
@@ -1153,7 +1160,7 @@ check_type(Env, T = {dep_variant_t, Ann, Id, undefined, Constrs}, Arity) ->
                     name(CNameNew) == name(CNameOld)] of
               [{constr_t, FAnn, CName, CArgs}] ->
                   {constr_t, FAnn, CName,
-                   [ check_type(Env, CArg) || CArg <- CArgs ]
+                   [ check_type(Env1, CArg) || CArg <- CArgs ]
                   };
               _ -> ConstrOld
           end
@@ -1177,10 +1184,12 @@ check_type(Env, T = {dep_variant_t, Ann, Id, undefined, Constrs}, Arity) ->
                 ]
         end,
     {dep_variant_t, Ann, QId, TagPred, Constrs1};
-check_type(Env, {dep_list_t, Ann, ElemT, LenPred}, Arity) ->
-    ElemT1 = check_type(Env, ElemT),
-    Env1 = bind_var({id, [], "length"}, {id, [], "int"}, Env),
-    LenPred1 = [check_expr(Env1, Q, {id, [], "bool"}) || Q <- LenPred],
+check_type(Env, T = {dep_list_t, Ann, ElemT, LenPred}, Arity) ->
+    [type_error({illegal_liquid, T}) || not Env#env.allow_liquid],
+    Env1 = Env#env{allow_liquid = false},
+    ElemT1 = check_type(Env1, ElemT),
+    Env2 = bind_var({id, [], "length"}, {id, [], "int"}, Env1),
+    LenPred1 = [check_expr(Env2, Q, {id, [], "bool"}) || Q <- LenPred],
     {dep_list_t, Ann, ElemT1, LenPred1};
 check_type(_Env, {args_t, Ann, Ts}, _) ->
     type_error({new_tuple_syntax, Ann, Ts}),
@@ -3110,6 +3119,9 @@ mk_error({contract_lacks_definition, Type, When}) ->
            ),
     {Pos, Ctxt} = pp_when(When),
     mk_t_err(Pos, Msg, Ctxt);
+mk_error({illegal_liquid, T}) ->
+    Msg = io_lib:format("Illegal liquid type ~s", [pp_type("", T)]),
+    mk_t_err(pos(T), Msg);
 mk_error(Err) ->
     Msg = io_lib:format("Unknown error: ~p\n", [Err]),
     mk_t_err(pos(0, 0), Msg).
