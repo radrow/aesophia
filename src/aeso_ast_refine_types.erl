@@ -483,12 +483,12 @@ init_env() ->
 
     #env{ scopes =
             #{ []           => TopScope
-             , ["Chain"]    => ChainScope
-             , ["Contract"] => ContractScope
-             , ["Call"]     => CallScope
-             , ["String"]   => StringScope
-             , ["Bits"]     => BitsScope
-             , ["Bytes"]    => BytesScope
+             %% , ["Chain"]    => ChainScope
+             %% , ["Contract"] => ContractScope
+             %% , ["Call"]     => CallScope
+             %% , ["String"]   => StringScope
+             %% , ["Bits"]     => BitsScope
+             %% , ["Bytes"]    => BytesScope
              } }.
 
 find_cool_ints(Expr) ->
@@ -828,10 +828,34 @@ switch_variance(forced_covariant) ->
 switch_variance(forced_contravariant) ->
     forced_contravariant.
 
+-define(IS_BASE(T),
+        (element(1, T) =/= refined_t andalso
+         element(1, T) =/= dep_list_t andalso
+         element(1, T) =/= dep_variant_t andalso
+         element(1, T) =/= dep_record_t andalso
+         element(1, T) =/= dep_fun_t)
+       ).
+base_type({refined_t, _, _, T, _}) ->
+    T;
+base_type({dep_list_t, Ann, ElemT, _}) ->
+    {app_t, Ann, {id, Ann, "list"}, [ElemT]};
+base_type({dep_record_t, _, T, _}) ->
+    T;
+base_type({dep_variant_t, _, T, _, _}) ->
+    T;
+base_type({dep_fun_t, Ann, Args, Ret}) ->
+    {fun_t, Ann, [],
+     [base_type(ArgT) || {dep_arg_t, _, _, ArgT} <- Args],
+     base_type(Ret)
+    };
+base_type(T) -> T.
+
+
 
 %% -- Entrypoint ---------------------------------------------------------------
 
 refine_ast(TCEnv, AST) ->
+    ?DBG("AST : ~p", [AST]),
     Env0 = init_env(),
     Env1 = with_cool_ints_from(TCEnv, with_cool_ints_from(AST, Env0)),
     ?DBG("COOL INTS: ~p", [Env1#env.cool_ints]),
@@ -891,9 +915,11 @@ constr_con(Env0, {Tag, Ann, Con, Defs}, S0)
 
 -spec constr_letfun(env(), letfun(), [constr()]) -> {fundecl(), [constr()]}.
 constr_letfun(Env0, {letfun, Ann, Id, Args, _, Body}, S0) ->
-    {_, GlobFunT = {dep_fun_t, _, GlobArgsT, _}} = type_of(Env0, Id),
+    ?DBG("IN FUN ~p", [Id]),
+    {_, GlobFunT = {dep_fun_t, _, GlobArgsT, GlobRetT}} = type_of(Env0, Id),
     ArgsT =
         [fresh_liquid_arg(Env0, Arg, ArgT) || ?typed_p(Arg, ArgT) <- Args],
+    ?DBG("ARGS ~p\n\n~p", [ArgsT, GlobArgsT]),
     Env1 = bind_args(ArgsT, Env0),
     Env2 = ensure_args(GlobArgsT, Env1),
     Env3 =
@@ -908,7 +934,7 @@ constr_letfun(Env0, {letfun, Ann, Id, Args, _, Body}, S0) ->
     {BodyT, S1} = constr_expr(Env3, Body1, S0),
     InnerFunT = {dep_fun_t, Ann, ArgsT, BodyT},
     ?DBG("\nINNER:\n~p\n\nOUTER:\n~p", [InnerFunT, GlobFunT]),
-    S3 = [ {subtype, Ann, Env0, InnerFunT, GlobFunT}
+    S3 = [ {subtype, Ann, Env3, BodyT, GlobRetT}
          , {well_formed, Env0, GlobFunT}
          , {well_formed, Env0, InnerFunT}
          | S1
@@ -939,10 +965,12 @@ constr_expr_list(Env, [H|T], Acc, S0) ->
     {H1, S1} = constr_expr(Env, H, S0),
     constr_expr_list(Env, T, [H1|Acc], S1).
 
-constr_expr(Env, ?typed_p(Expr, Type = {refined_t, Ann, _, Base, _}), S0) ->
+constr_expr(Env, ?typed_p(Expr, Type), S0) when not ?IS_BASE(Type) ->
+    Base = base_type(Type),
     {ExprT, S1} = constr_expr(Env, Expr, Base, S0),
+    ?DBG("FUNNY ~p <:\n ~p", [ExprT, Type]),
     {ExprT,
-     [ {subtype, Ann, Env, ExprT, Type}
+     [ {subtype, aeso_syntax:get_ann(Type), Env, ExprT, Type}
      | S1
      ]
     };
@@ -977,17 +1005,20 @@ constr_expr(Env, {typed, Ann, E, T1}, T2, S0) ->
     };
 constr_expr(Env, Expr = {IdHead, Ann, Name}, T, S)
   when IdHead =:= id; IdHead =:= qid ->
-    case element(1, T) =:= id orelse element(1, T) =:= tvar of
-        true ->
-            {?refined(T, [?op(nu(), '==', Expr)]), S};
-        _ -> {_, DT} = type_of(Env, Expr),
-             TExpr = fresh_liquid(Env, Name, T),
-             {TExpr
-             , [ {subtype, Ann, Env, DT, TExpr}
-               , {well_formed, Env, TExpr}
-               | S
-               ]
-             }
+    BaseT = base_type(T),
+    if element(1, BaseT) =:= id;
+       element(1, BaseT) =:= tvar ->
+            ?DBG("AEH ~p ->\n~p", [T, ?refined(BaseT, [?op(nu(), '==', Expr)])]),
+            {?refined(BaseT, [?op(nu(), '==', Expr)]), S};
+       true ->
+            {_, DT} = type_of(Env, Expr),
+            TExpr = fresh_liquid(Env, Name, BaseT),
+            {TExpr
+            , [ {subtype, Ann, Env, DT, TExpr}
+              , {well_formed, Env, TExpr}
+              | S
+              ]
+            }
     end;
 constr_expr(_Env, I = {int, _, _}, T = ?int_tp, S) ->
     {?refined(T, [?op(nu(), '==', I)]), S};
@@ -1496,6 +1527,8 @@ inst_pred_tvar(Env, SelfId, TVar) ->
            Q <- eq_qualifiers(SelfId, {id, ann(), Var})
     ].
 
+inst_pred(Env, SelfId, {refined_t, _, _, BaseT, _}) ->
+    inst_pred(Env, SelfId, BaseT);
 inst_pred(Env, SelfId, BaseT) ->
     case BaseT of
         ?int_tp ->
@@ -1668,8 +1701,8 @@ split_constr1(C = {subtype, Ann, Env0, SubT, SupT}) ->
         { {dep_record_t, _, _, FieldsSub}
         , {dep_record_t, _, _, FieldsSup}
         } ->
-            FieldsSub1 = lists:keysort(1, FieldsSub),
-            FieldsSup1 = lists:keysort(1, FieldsSup),
+            FieldsSub1 = lists:keysort(3, FieldsSub),
+            FieldsSup1 = lists:keysort(3, FieldsSup),
             split_constr(
               [ {subtype, Ann, Env0, FTSub, FTSup}
                || {{dep_field_t, _, _, FTSub}, {dep_field_t, _, _, FTSup}} <- lists:zip(FieldsSub1, FieldsSup1)
@@ -1797,7 +1830,7 @@ valid_in({subtype, Ann, Env,
             SimpAssump = simplify_pred(Assg, Env1, pred_of(Assg, Env1) ++ AssumpPred),
             throw({contradict, {Ann, SimpAssump, ConclPred}})
     end;
-valid_in(C = {subtype, _, _, _, _}, _) -> %% We trust the typechecker
+valid_in(C = {subtype, _, _, _, _}, _) -> %% In typechecker we trust
     ?DBG("SKIPPING SUBTYPE: ~s", [aeso_pretty:pp(constr, C)]),
     true;
 valid_in(_, _) ->
@@ -1924,7 +1957,6 @@ declare_datatypes([{Name, {Args, TDef}}|Rest]) ->
     declare_datatypes(Rest).
 
 declare_type_binds(Assg, Env) ->
-    ?DBG("TB: ~p", [type_binds(Env)]),
     [ begin
           aeso_smt:declare_const(expr_to_smt(Var), type_to_smt(T))
       end
