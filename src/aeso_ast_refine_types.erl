@@ -657,11 +657,13 @@ has_assumptions(_, _) ->
     false.
 
 strip_typed({typed, _, X, _}) ->
-    X;
+    strip_typed(X);
 strip_typed([H|T]) ->
     [strip_typed(H)|strip_typed(T)];
 strip_typed(T) when is_tuple(T) ->
     list_to_tuple(strip_typed(tuple_to_list(T)));
+strip_typed(M) when is_map(M) ->
+    maps:from_list(strip_typed(maps:to_list(M)));
 strip_typed(X) -> X.
 
 
@@ -886,7 +888,8 @@ refine_ast(TCEnv, AST) ->
           end) of
             Assg ->
                 AST2 = apply_assg(Assg, AST1),
-                {ok, AST2}
+                AST3 = strip_typed(AST2),
+                {ok, AST3}
         end
     catch {ErrType, _}=E
                 when ErrType =:= contradict;
