@@ -415,7 +415,7 @@ subst(Subst) ->
       , hsep(
           [ par(punctuate(
                   text(";"),
-                  [ beside([text(V), text("/"), expr(Q)])
+                  [ beside([expr(V), text("/"), expr(Q)])
                     || {V, Q} <- Subst
                   ]))
           ])
@@ -472,12 +472,6 @@ constr({subtype, _, Env, T1, T2}) ->
              , text(" <: ")
              , type(T2)
              ]));
-constr({subtype_group, Subs, _, {ltvar, T}}) when is_list(Subs) ->
-    above([ text(T)
-          | [ beside([text("  :> "), constr_env(Env), text(" |- "), type(T1)])
-             || {Env, _, _, T1} <- Subs
-            ]
-          ]);
 constr({unreachable, _, Env}) ->
     under_constr_env(Env, text("false"));
 constr({reachable, _, Env}) ->
