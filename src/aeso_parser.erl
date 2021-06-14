@@ -241,7 +241,7 @@ type400() ->
            dep_variant_t(get_ann(_1), _2, _4)
           ),
      %% Dep list
-     ?RULE(tok('{'), id("list"), parens(type()), tok('|'), comma_sep(expr), tok('}'),
+     ?RULE(tok('{'), id("list"), parens(type()), tok('|'), comma_sep(expr()), tok('}'),
            dep_list_t(get_ann(_1), _3, _5)
           )
     ]).

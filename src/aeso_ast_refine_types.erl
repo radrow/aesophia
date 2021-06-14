@@ -157,7 +157,8 @@ ann(L) -> [{origin, hagia}|L].
 nu() -> {id, ann(), "$self"}.
 -define(nu_p, {id, _, "$self"}).
 
-length() -> {id, ann(), "length"}.
+length_user() -> {id, ann(), "length"}.
+length() -> {id, ann(), "$length"}.
 
 %% -- Name manipulation --------------------------------------------------------
 
@@ -376,7 +377,7 @@ local_type_binds(#env{var_env = VEnv}) ->
           }
       end
       || {Var, Type} <- maps:to_list(VEnv)
-    ].
+    ] ++ [{length(), ?d_nonneg_int}].
 
 -spec type_binds(env()) -> [{expr(), lutype()}].
 type_binds(Env) ->
@@ -1725,7 +1726,9 @@ split_constr1(C = {subtype, Ann, Env0, SubT, SupT}) ->
         , {dep_list_t, _, DepElemSup, LenQualSup}
         } ->
             split_constr(
-              [ {subtype, Ann, Env0, ?refined(?int_t, LenQualSub), ?refined(?int_t, LenQualSup)}
+              [ {subtype, Ann, Env0,
+                 ?refined(?int_t, apply_subst(length_user(), length(), LenQualSub)),
+                 ?refined(?int_t, apply_subst(length_user(), length(), LenQualSup))}
               , {subtype, Ann, Env0, DepElemSub, DepElemSup}
               ]
              );
@@ -1754,7 +1757,7 @@ split_constr1(C = {well_formed, Env0, T}) ->
               ]
              );
         {dep_list_t, _, DepElem, LenQual} ->
-            [ {well_formed, Env0, ?refined(?int_t, LenQual)}
+            [ {well_formed, Env0, ?refined(?int_t, apply_subst(length_user(), length(), LenQual))}
             , {well_formed, Env0, DepElem}
             ];
         _ -> [C]
