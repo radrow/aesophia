@@ -85,6 +85,7 @@ parse_expr(Text) ->
 round_trip(Text) ->
     Contract  = parse_string(Text),
     Text1     = prettypr:format(aeso_pretty:decls(strip_stdlib(Contract))),
+    io:format("REPARSING\n~s", [Text1]),
     Contract1 = parse_string(Text1),
     NoSrcLoc  = remove_line_numbers(Contract),
     NoSrcLoc1 = remove_line_numbers(Contract1),

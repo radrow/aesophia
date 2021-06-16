@@ -111,8 +111,8 @@
 %% Liquid type, possibly uninstantiated
 -type lutype() :: dep_type(liquid_qual()).
 
--type fun_env() :: #{name() => template()}.
--type var_env() :: #{name() => template()}.
+-type fun_env()  :: #{name() => template()}.
+-type var_env()  :: #{name() => template()}.
 -type type_env() :: [{name(), typedef()}]. % order matters
 
 -record(scope, { fun_env = #{} :: fun_env()
@@ -155,6 +155,9 @@ nu() -> {id, ann(), "$self"}.
 
 length_user() -> {id, ann(), "length"}.
 length() -> {id, ann(), "$length"}.
+
+state_t(#env{namespace = NS}) ->
+    {qid, ann(), NS ++ ["state"]}.
 
 %% -- Name manipulation --------------------------------------------------------
 
@@ -407,6 +410,9 @@ path_pred(#env{path_pred = PathPred}) ->
     PathPred.
 
 
+%% -- Constraint generator state -----------------------------------------------
+
+
 %% -- Initialization -----------------------------------------------------------
 
 -spec init_refiner() -> ok.
@@ -437,7 +443,8 @@ init_env() ->
     ChainScope = #scope
         { fun_env = MkDefs(
                      %% Spend transaction.
-                    [{"spend",        StateDFun([Arg("addr", Address), Arg("amount", ?d_nonneg_int)], Unit)},
+                    [{"spend",        StateDFun([Arg("addr", Address),
+                                                 Arg("amount", ?refined(?int_t, [?op(nu(), '=<', {qid, ann(), ["Contract", "balance"]})]))], Unit)},
                      %% Chain environment
                      {"balance",      DFun1(Arg("addr", Address), ?d_nonneg_int)},
                      {"block_hash",   DFun1(Arg("h", ?d_nonneg_int), Option(Hash))},
@@ -479,7 +486,8 @@ init_env() ->
                    [{"to_int", DFun1(Arg("bytes", Bytes(any)), ?d_nonneg_int)}]) },
 
     TopScope = #scope
-        { fun_env  = MkDefs([])
+        { fun_env  = MkDefs(
+                    [])
         , type_env =
               [ {"option", {[{tvar, ann(), "'a"}],
                             {variant_t,
@@ -513,24 +521,24 @@ find_cool_ints({app, _, {'::', _}, [H, T]}, Acc0) ->
     sets:union(Acc1,
                sets:from_list([I + 1 || I <- sets:to_list(Acc1)])
               );
-find_cool_ints({app, _, {'-', _}, [L, R]}, Acc0) ->
-    Acc1 = find_cool_ints([L, R], Acc0),
-    AccL = sets:to_list(Acc1),
-    sets:union(Acc1,
-               sets:from_list([I1 - I2
-                               || I1 <- AccL,
-                                  I2 <- AccL
-                              ])
-              );
-find_cool_ints({app, _, {'+', _}, [L, R]}, Acc0) ->
-    Acc1 = find_cool_ints([L, R], Acc0),
-    AccL = sets:to_list(Acc1),
-    sets:union(Acc1,
-               sets:from_list([I1 + I2
-                               || I1 <- AccL,
-                                  I2 <- AccL
-                              ])
-              );
+%% find_cool_ints({app, _, {'-', _}, [L, R]}, Acc0) ->
+%%     Acc1 = find_cool_ints([L, R], Acc0),
+%%     AccL = sets:to_list(Acc1),
+%%     sets:union(Acc1,
+%%                sets:from_list([I1 - I2
+%%                                || I1 <- AccL,
+%%                                   I2 <- AccL
+%%                               ])
+%%               );
+%% find_cool_ints({app, _, {'+', _}, [L, R]}, Acc0) ->
+%%     Acc1 = find_cool_ints([L, R], Acc0),
+%%     AccL = sets:to_list(Acc1),
+%%     sets:union(Acc1,
+%%                sets:from_list([I1 + I2
+%%                                || I1 <- AccL,
+%%                                   I2 <- AccL
+%%                               ])
+%%               );
 find_cool_ints({app, _, {'++', _}, [L, R]}, Acc0) ->
     Acc1 = find_cool_ints([L, R], Acc0),
     AccL = sets:to_list(Acc1),
@@ -577,6 +585,7 @@ bind_ast_funs(TCEnv, AST, Env) ->
               Env1 = push_scope(Con, Env0),
               Env2 = bind_funs(
                        [ begin
+                             Stateful = proplists:get_value(stateful, FAnn, false),
                              {_, {_, {type_sig, TSAnn, _, [], ArgsT, RetT}}} =
                                  aeso_ast_infer_types:lookup_env(
                                    TCEnv, term, FAnn, qname(Con) ++ qname(Id)),
@@ -585,12 +594,24 @@ bind_ast_funs(TCEnv, AST, Env) ->
                                  [ case ArgT of
                                        {refined_t, ArgAnn, ArgId, _, _} ->
                                            {dep_arg_t, ArgAnn, ArgId, ArgT};
-                                       _ -> fresh_liquid_arg(Env, Arg, ArgT)
+                                       _ -> fresh_liquid_arg(Env1, Arg, ArgT)
                                    end
                                    || {?typed_p(Arg), ArgT} <- lists:zip(Args, ArgsT)
                                  ],
                              DepRetT = fresh_liquid(Env1, "rete", RetT),
-                             TypeDep = {dep_fun_t, TSAnn, DepArgsT, DepRetT},
+                             {DepArgsT1, DepRetT1} =
+                                 case Stateful of
+                                     false ->
+                                         {DepArgsT, DepRetT};
+                                     true ->
+                                         {[ fresh_liquid_arg(Env1, init_state_var(state_t(Env1)))
+                                          , fresh_liquid_arg(Env1, init_balance_var())
+                                          | DepArgsT
+                                          ],
+                                          fresh_liquid(Env1, "ret", wrap_state_t(DepRetT, init_purifier_st(Env1)))
+                                         }
+                                 end,
+                             TypeDep = {dep_fun_t, TSAnn, DepArgsT1, DepRetT1},
                              {Name, TypeDep}
                          end
                          || {letfun, FAnn, Id = {id, _, Name}, Args, _, _} <- Defs
@@ -815,6 +836,8 @@ fresh_liquid(Env, Variance, Hint, T) when is_tuple(T) ->
     list_to_tuple(fresh_liquid(Env, Variance, Hint, tuple_to_list(T)));
 fresh_liquid(_Env, _, _, X) -> X.
 
+fresh_liquid_arg(Env, ?typed_p(Id, Type)) ->
+    fresh_liquid_arg(Env, Id, Type).
 fresh_liquid_arg(Env, Id, Type) ->
     fresh_liquid_arg(Env, contravariant, Id, Type).
 fresh_liquid_arg(Env, Variance, Id, Type) ->
@@ -931,12 +954,18 @@ constr_con(Env0, {Tag, Ann, Con, Defs}, S0)
 
 -spec constr_letfun(env(), letfun(), [constr()]) -> {fundecl(), [constr()]}.
 constr_letfun(Env0, {letfun, Ann, Id, Args, _, Body}, S0) ->
+    Stateful = proplists:get_value(stateful, Ann, false),
     {_, GlobFunT = {dep_fun_t, _, GlobArgsT, GlobRetT}} = type_of(Env0, Id),
+    Args1 =
+        case Stateful of
+            false -> Args;
+            true  -> [init_state_var(state_t(Env0)), init_balance_var() | Args]
+        end,
     ArgsT =
-        [fresh_liquid_arg(Env0, Arg, ArgT) || ?typed_p(Arg, ArgT) <- Args],
-    ?DBG("ARGS ~p\n\n~p", [ArgsT, GlobArgsT]),
+        [fresh_liquid_arg(Env0, Arg, ArgT) || ?typed_p(Arg, ArgT) <- Args1],
     Env1 = bind_args(ArgsT, Env0),
     Env2 = ensure_args(GlobArgsT, Env1),
+    ?DBG("CHUJ ~p\n====\n~p", [ArgsT, GlobArgsT]),
     Env3 =
         assert(
           [ ?op(Arg1, '==', Arg2)
@@ -944,9 +973,19 @@ constr_letfun(Env0, {letfun, Ann, Id, Args, _, Body}, S0) ->
                   <- lists:zip(ArgsT, GlobArgsT)
           ],
           Env2),
+    ?DBG("INITIAL:\n~s",  [aeso_pretty:pp(expr, strip_typed(Body))]),
     Body1 = a_normalize(Body),
-    ?DBG("NORMALIZED\n~s\nTO\n~s", [aeso_pretty:pp(expr, Body), aeso_pretty:pp(expr, Body1)]),
-    {BodyT, S1} = constr_expr(Env3, Body1, S0),
+    ?DBG("A-NORM:\n~s",   [aeso_pretty:pp(expr, strip_typed(Body1))]),
+    Body2 =
+        case proplists:get_value(stateful, Ann, false) of
+            false -> Body1;
+            true  -> case purify_state(Body1, init_purifier_st(Env3)) of
+                         {impure, B} -> B;
+                         {pure, B} -> wrap_state(B, init_purifier_st(Env3))
+                     end
+        end,
+    ?DBG("PURIFIED:\n~s", [aeso_pretty:pp(expr, strip_typed(Body2))]),
+    {BodyT, S1} = constr_expr(Env3, Body2, S0),
     InnerFunT = {dep_fun_t, Ann, ArgsT, BodyT},
     S3 = [ {subtype, Ann, Env3, BodyT, GlobRetT}
          , {well_formed, Env0, GlobFunT}
@@ -1023,14 +1062,23 @@ constr_expr(Env, Expr = {IdHead, Ann, Name}, T, S)
        element(1, BaseT) =:= tvar ->
             {?refined(BaseT, [?op(nu(), '==', Expr)]), S};
        true ->
-            {_, DT} = type_of(Env, Expr),
-            TExpr = fresh_liquid(Env, Name, BaseT),
-            {TExpr
-            , [ {subtype, Ann, Env, DT, TExpr}
-              , {well_formed, Env, TExpr}
-              | S
-              ]
-            }
+            case type_of(Env, Expr) of
+                {_, DT} ->
+                    TExpr = fresh_liquid(Env, Name, BaseT),
+                    {TExpr
+                    , [ {subtype, Ann, Env, DT, TExpr}
+                      , {well_formed, Env, TExpr}
+                      | S
+                      ]
+                    };
+                undefined ->
+                    DT = fresh_liquid(Env, Name, T),
+                    {DT,
+                     [ {well_formed, Env, DT}
+                     | S
+                     ]
+                    }
+            end
     end;
 constr_expr(_Env, I = {int, _, _}, T = ?int_tp, S) ->
     {?refined(T, [?op(nu(), '==', I)]), S};
@@ -1084,9 +1132,9 @@ constr_expr(_Env, Expr = {CmpOp, Ann}, {fun_t, _, _, [OpLT, OpRT], RetT = ?int_t
        , {dep_arg_t, aeso_syntax:get_ann(OpRT), OpRV,
           ?refined(OpRV, OpRT,
                    case CmpOp of
-                       'mod' -> [?op(nu(), '>',  ?int(0))];
-                       '/'   -> [?op(nu(), '!=', ?int(0))];
-                       '^'   -> [?op(nu(), '>=', ?int(0))];
+                       'mod' -> [?op(OpRV, '>',  ?int(0))];
+                       '/'   -> [?op(OpRV, '!=', ?int(0))];
+                       '^'   -> [?op(OpRV, '>=', ?int(0))];
                        _     -> []
                    end)}
        ], ?refined(RetT, [?op(nu(), '==', {app, [{format, infix}|Ann], Expr, [OpLV, OpRV]})])
@@ -1441,7 +1489,7 @@ apply_subst(X, Expr, {template, S1, T}) ->
 apply_subst({id, _, Name}, _, T = {refined_t, _, {id, _, Name}, T, _}) ->
     T;
 apply_subst(X, Expr, {refined_t, Ann, Id, T, Qual}) ->
-    {refined_t, Ann, Id, T, apply_subst(X, Expr, Qual)};
+    {refined_t, Ann, Id, apply_subst(X, Expr, T), apply_subst(X, Expr, Qual)};
 apply_subst(X, Expr, {dep_fun_t, Ann, Args, RetT}) ->
     {dep_fun_t, Ann, apply_subst(X, Expr, Args),
      case X of
@@ -1812,7 +1860,7 @@ valid_in({subtype, Ann, Env,
     AssumpPred = SubPred,
     ConclPred  = apply_subst(SupId, SubId, SupPred),
     ?DBG("~s <: ~s\nASSUMP: ~s\nCONCL: ~s", [name(SubId), name(SupId), aeso_pretty:pp(predicate, AssumpPred), aeso_pretty:pp(predicate, ConclPred)]),
-    Env1 = ensure_var(SupId, Base, Env),
+    Env1 = ensure_var(SubId, Base, Env),
     case impl_holds(Assg, Env1, AssumpPred, ConclPred) of
         true ->
             true;
@@ -2271,22 +2319,28 @@ a_normalize({list, Ann, Elems}, Type, Decls0) ->
      Decls1
     };
 a_normalize({block, Ann, Stmts}, Type, Decls0) ->
-    {Stmts1, Decls1} = a_normalize(Stmts, Decls0),
+    Stmts1 = a_normalize_block(Stmts, []),
     {?typed({block, Ann, Stmts1}, Type),
-     Decls1
+     Decls0
     };
 a_normalize(Expr, Type, Decls) ->
     {?typed(Expr, Type),
      Decls
     }.
 
+a_normalize_block([], Acc) ->
+    lists:reverse(Acc);
+a_normalize_block([{letval, Ann, Pat, Body}|Rest], Acc0) ->
+    {Body1, Acc1} = a_normalize(Body, Acc0),
+    a_normalize_block(Rest, [{letval, Ann, Pat, Body1}|Acc1]);
+a_normalize_block([{letfun, Ann, Name, Args, RetT, Body}|Rest], Acc) ->
+    a_normalize_block(Rest, [{letfun, Ann, Name, Args, RetT, a_normalize(Body)}|Acc]);
+a_normalize_block([Expr|Rest], Acc0) ->
+    {Expr1, Acc1} = a_normalize(Expr, Acc0),
+    a_normalize_block(Rest, [Expr1|Acc1]).
+
 a_normalize_list([], Acc, Decls) ->
     {lists:reverse(Acc), Decls};
-a_normalize_list([{letval, Ann, Pat, Body}|Rest], Acc, Decls0) ->
-    {Body1, Decls1} = a_normalize(Body, Decls0),
-    a_normalize_list(Rest, Acc, [{letval, Ann, Pat, Body1}|Decls1]);
-a_normalize_list([{letfun, Ann, Name, Args, RetT, Body}|Rest], Acc, Decls0) ->
-    a_normalize_list(Rest, Acc, [{letfun, Ann, Name, Args, RetT, a_normalize(Body)}|Decls0]);
 a_normalize_list([Expr|Rest], Acc, Decls0) ->
     {Expr1, Decls1} = a_normalize(Expr, Decls0),
     a_normalize_list(Rest, [Expr1|Acc], Decls1).
@@ -2331,3 +2385,172 @@ a_normalize_to_simpl_list([{letval, Ann, Pat, Body}|Rest], Acc, Decls0) ->
 a_normalize_to_simpl_list([Expr|Rest], Acc, Decls0) ->
     {Expr1, Decls1} = a_normalize_to_simpl(Expr, Decls0),
     a_normalize_to_simpl_list(Rest, [Expr1|Acc], Decls1).
+
+
+%% -- State purification ------------------------------------------------------
+
+balance_t() ->
+    ?int_t.
+
+init_state_var() ->
+    {id, ann(), "$init_state"}.
+init_state_var(Type) ->
+    ?typed({id, ann(), "$init_state"}, Type).
+
+init_balance_var() ->
+    ?typed({id, ann(), "$init_balance"}, balance_t()).
+
+-record (purifier_st,
+         { state :: expr()
+         , balance = init_balance_var() :: expr()
+         }).
+-type purifier_st() :: #purifier_st{}.
+
+-spec init_purifier_st(env() | lutype()) -> purifier_st().
+init_purifier_st(Env = #env{}) ->
+    init_purifier_st(state_t(Env));
+init_purifier_st(StateType) ->
+    #purifier_st{state = init_state_var(StateType)}.
+
+get_state_t(#purifier_st{state = ?typed_p(_, StateT)}) ->
+    StateT.
+
+wrap_pure({Pure, E}, ST) ->
+    wrap_pure(Pure, E, ST).
+wrap_pure(pure, E, ST) ->
+    wrap_state(E, ST);
+wrap_pure(impure, E, _) ->
+    E.
+
+wrap_impure({Pure, E}, ST) ->
+    wrap_impure(Pure, E, ST).
+wrap_impure(impure, E, ST) ->
+    wrap_state(E, ST);
+wrap_impure(pure, E, _) ->
+    E.
+
+wrap_state(E = ?typed_p(_, T), ST) ->
+    ?typed(
+       {tuple, aeso_syntax:get_ann(E),
+        [E, ST#purifier_st.state, ST#purifier_st.balance]
+       }, wrap_state_t(T, ST)).
+
+wrap_state_t(T, ST) ->
+    {tuple_t, aeso_syntax:get_ann(T),
+     [T, get_state_t(ST), balance_t()]
+    }.
+
+unwrap_state(Pat, ST) ->
+    STVar = fresh_id("$state", get_state_t(ST)),
+    BLVar = fresh_id("$balance", balance_t()),
+    Pat1 = {tuple, ann(), [Pat, STVar, BLVar]},
+    {Pat1, #purifier_st{state = STVar, balance = BLVar}}.
+
+pure_plus(pure, pure) ->
+    pure;
+pure_plus(_, _) ->
+    impure.
+
+pure_prod(impure, impure) ->
+    impure;
+pure_prod(_, _) ->
+    pure.
+
+switch_pure(pure) ->
+    impure;
+switch_pure(impure) ->
+    pure.
+
+
+purify_many(E1, E2, ST) ->
+    case {purify_state(E1, ST), purify_state(E2, ST)} of
+        {{pure, P1}, {pure, P2}} ->
+            {pure, {P1, P2}};
+        {S1, S2} ->
+            {impure, {wrap_pure(S1, ST), wrap_pure(S2, ST)}}
+    end.
+purify_many([], _) ->
+    {pure, []};
+purify_many([H|T], ST) ->
+    {Pure, {H1, T1}} = purify_many(H, T, ST),
+    {Pure, [H1|T1]}.
+
+
+purify_state(?typed_p(E, T), ST) ->
+    purify_state(E, T, ST);
+purify_state(Ex, _) ->
+    error({untyped, Ex}).
+
+purify_typed(pure, E, T, _) ->
+    ?typed(E, T);
+purify_typed(impure, E, T, ST) ->
+    ?typed(E, wrap_state_t(T, ST)).
+
+purify_state(?typed_p(E, T), _, ST) ->
+    purify_state(E, T, ST);
+purify_state({qid, _, [_, "state"]}, T, ST) ->
+    {pure, ?typed(ST#purifier_st.state, T)};
+purify_state({qid, _, ["Contract", "balance"]}, _, ST) ->
+    {pure, ?typed(ST#purifier_st.balance, ?d_nonneg_int)};
+purify_state({app, Ann, Fun, Args}, T, ST) ->
+    case {Fun, Args} of
+        {?typed_p({qid, QAnn, [_, "put"]}), [State]} ->
+            {impure, wrap_state(?typed({tuple, QAnn, []}, T), ST#purifier_st{state = State})};
+        _ -> %% Assuming a-normal form %% TODO stateful function!
+            {pure,
+             ?typed(
+                {app, Ann, element(2, purify_state(Fun, ST)),
+                 [element(2, purify_state(A, ST)) || A <- Args]},
+                T
+               )
+            }
+    end;
+purify_state({'if', Ann, Cond, Then, Else}, T, ST) ->
+    {Pure, {Then1, Else1}} = purify_many(Then, Else, ST),
+    {Pure, purify_typed(Pure, {'if', Ann, Cond, Then1, Else1}, T, ST)};
+purify_state({block, Ann, Stmts}, T, ST) ->
+    {Pure, Expr} = purify_state_block(pure, Stmts, T, ST),
+    {Pure, purify_typed(Pure, {block, Ann, Expr}, T, ST)};
+purify_state(E, T, _) ->
+    {pure, ?typed(E, T)}.
+
+purify_state_block(PurePrev, [Expr], Type, ST) ->
+    {PureExpr, Expr1} = purify_state(Expr, Type, ST),
+    Pure = pure_plus(PurePrev, PureExpr),
+    PureToWrap = pure_prod(switch_pure(PureExpr), PurePrev),
+    {Pure, [wrap_impure(PureToWrap, Expr1, ST)]};
+purify_state_block(PurePrev, [{letval, Ann, Pat, Expr}|Rest], Type, ST) ->
+    {PureExpr, Expr1} = purify_state(Expr, ST),
+    PureNext = pure_plus(PurePrev, PureExpr),
+    case PureExpr of
+        pure ->
+            {Pure, Rest1} = purify_state_block(PureNext, Rest, Type, ST),
+            {Pure, [{letval, Ann, Pat, Expr1}|Rest1]};
+        impure ->
+            {Pat1, ST1} = unwrap_state(Pat, ST),
+            {_, Rest1} = purify_state_block(PureNext, Rest, Type, ST1),
+            {impure,
+             [ {letval, ann(), Pat1, Expr1}
+             | Rest1
+             ]}
+    end;
+purify_state_block(PurePrev, [Stmt|Rest], Type, ST) ->
+    {PureStmt, Stmt1} = purify_state(Stmt, ST),
+    PureNext = pure_plus(PurePrev, PureStmt),
+    case PureStmt of
+        pure ->
+            {Pure, Rest1} = purify_state_block(PureNext, Rest, Type, ST),
+            {Pure, [Stmt1|Rest1]};
+        impure ->
+            {Pat, ST1} = unwrap_state({id, ann(), "_"}, ST),
+            {_, Rest1} = purify_state_block(PureNext, Rest, Type, ST1),
+            {impure,
+            [ {letval, ann(), Pat, Stmt1}
+            | Rest1
+            ]}
+    end.
+
+drop_purity({impure, E}) ->
+    E;
+drop_purity({pure, E}) ->
+    E.

@@ -1554,7 +1554,7 @@ infer_op(Env, As, Op, Args, InferOp) ->
     ArgTypes = [T || {typed, _, _, T} <- TypedArgs],
     Inferred = {fun_t, _, _, OperandTypes, ResultType} = InferOp(Op),
     unify(Env, ArgTypes, OperandTypes, {infer_app, Op, Args, Inferred, ArgTypes}),
-    {typed, As, {app, As, Op, TypedArgs}, ResultType}.
+    {typed, As, {app, As, {typed, As, Op, Inferred}, TypedArgs}, ResultType}.
 
 infer_pattern(Env, Pattern) ->
     Vars = free_vars(Pattern),
