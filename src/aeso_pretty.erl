@@ -540,6 +540,8 @@ expr_p(P, {assign, _, LV, E}) ->
 %% -- Operators
 expr_p(_, {app, _, {'..', _}, [A, B]}) ->
     list([infix(0, '..', A, B)]);
+expr_p(P, {app, As, {typed, _, {Op, OpAs}, _}, Args}) when is_atom(Op) ->
+    expr_p(P, {app, As, {Op, OpAs}, Args});
 expr_p(P, E = {app, _, F = {Op, _}, Args}) when is_atom(Op) ->
     case {aeso_syntax:get_ann(format, E), Args} of
         {infix, [A, B]} -> infix(P, Op, A, B);
