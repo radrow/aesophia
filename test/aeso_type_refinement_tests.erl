@@ -38,7 +38,7 @@ smt_solver_test_group() ->
                 ?assert(aeso_ast_refine_types:impl_holds(
                           aeso_ast_refine_types:bind_var(
                             {id, [], "x"}, {id, [], "int"},
-                            aeso_ast_refine_types:init_env()),
+                            aeso_ast_refine_types:init_env(undefined)),
                           [],
                           [{app, [], {'==', []}, [{id, [], "x"}, {id, [], "x"}]}]))
         end

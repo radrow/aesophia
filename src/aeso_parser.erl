@@ -217,12 +217,7 @@ type300() ->
 
 type400() ->
     choice(
-    [?RULE(typeAtom(), optional(type_args()),
-          case _2 of
-            none       -> _1;
-            {ok, Args} -> {app_t, get_ann(_1), _1, Args}
-          end),
-     ?RULE(id("bytes"), parens(token(int)),
+    [?RULE(id("bytes"), parens(token(int)),
            {bytes_t, get_ann(_1), element(3, _2)}),
      %% Refined
      ?RULE(tok('{'), id(), tok(':'), typeRefinable(), tok('|'), comma_sep(expr()), tok('}'),
@@ -233,18 +228,26 @@ type400() ->
            refined_t(get_ann(_1), _2, _4, [])
           ),
      %% Dep record
-     ?RULE(tok('{'), id(), tok('<:'), comma_sep1(field_type()), tok('}'),
+     ?RULE(tok('{'), type500(), tok('<:'), comma_sep1(field_type()), tok('}'),
            dep_record_t(get_ann(_1), _2, _4)
           ),
      %% Dep variant
-     ?RULE(tok('{'), id(), tok('<:'), typedef(variant), tok('}'),
+     ?RULE(tok('{'), type500(), tok('<:'), typedef(variant), tok('}'),
            dep_variant_t(get_ann(_1), _2, _4)
           ),
      %% Dep list
      ?RULE(tok('{'), id("list"), parens(type()), tok('|'), comma_sep(expr()), tok('}'),
            dep_list_t(get_ann(_1), _3, _5)
-          )
+          ),
+     ?RULE(type500(), _1)
     ]).
+
+type500() ->
+    ?RULE(typeAtom(), optional(type_args()),
+          case _2 of
+              none       -> _1;
+              {ok, Args} -> {app_t, get_ann(_1), _1, Args}
+          end).
 
 typeAtom() ->
     ?LAZY_P(choice(
@@ -578,11 +581,11 @@ else_branches(Stmts, Acc) ->
 refined_t(Ann, Id, Type, Pred) ->
     {refined_t, Ann, Id, Type, Pred}.
 
-dep_record_t(Ann, Id, Fields) ->
-    {dep_record_t, Ann, Id, Fields}.
+dep_record_t(Ann, Base, Fields) ->
+    {dep_record_t, Ann, Base, Fields}.
 
-dep_variant_t(Ann, Id, {variant_t, Constrs}) ->
-    {dep_variant_t, Ann, Id, undefined, Constrs}.
+dep_variant_t(Ann, Base, {variant_t, Constrs}) ->
+    {dep_variant_t, Ann, Base, undefined, Constrs}.
 
 dep_list_t(Ann, ElemT, LenPred) ->
     {dep_list_t, Ann, ElemT, LenPred}.

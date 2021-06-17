@@ -555,7 +555,10 @@ find_cool_ints({app, _, {'++', _}, [L, R]}, Acc0) ->
 find_cool_ints([H|T], Acc) ->
     find_cool_ints(T, find_cool_ints(H, Acc));
 find_cool_ints(T, Acc) when is_tuple(T) ->
-    find_cool_ints(tuple_to_list(T), Acc);
+    case tuple_to_list(T) of
+        [_Tag, _Ann|Rest] -> find_cool_ints(Rest, Acc);
+        L -> find_cool_ints(L, Acc)
+    end;
 find_cool_ints(M, Acc) when is_map(M) ->
     find_cool_ints(maps:to_list(M), Acc);
 find_cool_ints(_, Acc) ->
@@ -566,7 +569,7 @@ with_cool_ints_from(AST, Env = #env{cool_ints = CI}) ->
 
 
 find_tuple_sizes(Expr) ->
-    sets:to_list(find_tuple_sizes(Expr, sets:new())).
+    sets:to_list(find_tuple_sizes(Expr, sets:from_list([0]))).
 find_tuple_sizes({tuple_t, _, T}, Acc) ->
     find_tuple_sizes(T, sets:add_element(length(T), Acc));
 find_tuple_sizes({tuple, _, T}, Acc) ->
@@ -789,7 +792,10 @@ fresh_liquid(Env, Variance, Hint,
              Type = {app_t, _, Qid = {qid, Ann, _}, Args}) ->
     case lookup_type(Env, Qid) of
         false ->
-            error({undefined_type, Qid});
+            case Qid of
+                {qid, _, [_, "state"]} -> {tuple_t, Ann, []};
+                _ -> error({undefined_type, Qid})
+            end;
         {_, {TArgs, TDef}} ->
             Subst = lists:zip(TArgs, Args),
             case TDef of
@@ -1839,13 +1845,13 @@ solve(Assg, _, []) ->
 solve(Assg, AllCs, [C|Rest]) ->
     case valid_in(C, Assg) of
         false ->
-            ?DBG("NOT VALID"),
+            %% ?DBG("NOT VALID"),
             Weakened = weaken(C, Assg),
             if Weakened == Assg -> error({weaken_failed, Assg});
                true -> solve(Weakened, AllCs, AllCs)
             end;
         true  ->
-            ?DBG("VALID"),
+            %% ?DBG("VALID"),
             solve(Assg, AllCs, Rest)
     end.
 
@@ -1855,7 +1861,7 @@ valid_in({subtype, Ann, Env,
           {refined_t, _, SubId, _, SubP},
           {refined_t, _, SupId, Base, SupP}
          }, Assg) when is_list(SupP) ->
-    ?DBG("RIGID SUBTYPE\n~p\n<:\n~p", [SubP, SupP]),
+    %% ?DBG("RIGID SUBTYPE\n~p\n<:\n~p", [SubP, SupP]),
     SubPred = pred_of(Assg, SubP),
     SupPred = pred_of(Assg, SupP),
     AssumpPred = SubPred,
@@ -1881,12 +1887,12 @@ valid_in({subtype, _, Env,
     SupPred = pred_of(Assg, SupPredVar),
     AssumpPred = apply_subst(SubId, Id, SubPred),
     ConclPred  = apply_subst(SupId, Id, SupPred),
-    ?DBG("WOBBLY SUBTYPE ON (~s <: ~s) -> ~s\n~s\n<:\n~s",
-         [name(SubId), name(SupId), name(Id),
-          aeso_pretty:pp(predicate, SubPred),
-          aeso_pretty:pp(predicate, SupPred)
-         ]
-        ),
+    %% ?DBG("WOBBLY SUBTYPE ON (~s <: ~s) -> ~s\n~s\n<:\n~s",
+    %%      [name(SubId), name(SupId), name(Id),
+    %%       aeso_pretty:pp(predicate, SubPred),
+    %%       aeso_pretty:pp(predicate, SupPred)
+    %%      ]
+    %%     ),
     Env1 = bind_var(Id, Base, Env),
     impl_holds(Assg, Env1, AssumpPred, ConclPred);
 valid_in({subtype, Ann, Env, Sub, Sup}, Assg)
@@ -1894,7 +1900,7 @@ valid_in({subtype, Ann, Env, Sub, Sup}, Assg)
        element(1, Sub) =:= tvar ->
     valid_in({subtype, Ann, Env, ?refined(Sub), Sup}, Assg);
 valid_in(C = {subtype, _, _, _, _}, _) -> %% In typechecker we trust
-    ?DBG("SKIPPING SUBTYPE: ~s", [aeso_pretty:pp(constr, C)]),
+    %% ?DBG("SKIPPING SUBTYPE: ~s", [aeso_pretty:pp(constr, C)]),
     true;
 valid_in(_, _) ->
     true.
@@ -1917,9 +1923,9 @@ weaken({subtype, _, Env,
     NewLtinfo = Ltinfo#ltinfo{
                  predicate = Filtered
                 },
-    ?DBG("WEAKENED FROM\n~s\nTO\n~s", [aeso_pretty:pp(predicate, Ltinfo#ltinfo.predicate),
-                                       aeso_pretty:pp(predicate, Filtered)
-                                      ]),
+    %% ?DBG("WEAKENED FROM\n~s\nTO\n~s", [aeso_pretty:pp(predicate, Ltinfo#ltinfo.predicate),
+    %%                                    aeso_pretty:pp(predicate, Filtered)
+    %%                                   ]),
     Assg#{Var => NewLtinfo};
 weaken({well_formed, _Env, {refined_t, _, _, _, _}}, Assg) ->
     Assg.

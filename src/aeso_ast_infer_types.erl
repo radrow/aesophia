@@ -896,13 +896,16 @@ check_type(Env, T = {refined_t, Ann, Id, Base, Pred}, Arity) ->
     Env2 = bind_var(Id, Base, Env1),
     Pred1 = [check_expr(Env2, Q, {id, aeso_syntax:get_ann(Q), "bool"}) || Q <- Pred],
     {refined_t, Ann, Id, Base1, Pred1};
-check_type(Env, T = {dep_record_t, Ann, Id, Fields}, Arity) ->
+check_type(Env, T = {dep_record_t, Ann, Base, Fields}, Arity) ->
     [type_error({illegal_liquid, T}) || not Env#env.allow_liquid],
-    Env1 = Env#env{allow_liquid = false},
+    Base1 = check_type(Env, Base, Arity),
+    Id = case Base1 of
+             {app_t, _, I, _} -> I;
+             _ -> Base1
+         end,
     %% TODO Validate fields in record
-    Id1 = check_type(Env1, Id, Arity),
     {QId, TrueFields} =
-        case lookup_type(Env1, Id1) of
+        case lookup_type(Env, Id) of
             {QName, {QAnn, {_, {record_t, F}}}} -> {qid(QAnn, QName), F};
             _ -> type_error({not_a_record_type, Id, T}),
                  {Id, []}
@@ -912,7 +915,7 @@ check_type(Env, T = {dep_record_t, Ann, Id, Fields}, Arity) ->
                  || FieldNew = {field_t, _, FNameNew, _} <- Fields,
                     name(FNameNew) == name(FNameOld)] of
               [{field_t, FAnn, FName, FType}] ->
-                  {field_t, FAnn, FName, check_type(Env1, FType)};
+                  {field_t, FAnn, FName, check_type(Env, FType)};
               _ -> FieldOld
           end
          || FieldOld = {field_t, _, FNameOld, _} <- TrueFields
@@ -927,13 +930,16 @@ check_type(Env, T = {dep_record_t, Ann, Id, Fields}, Arity) ->
         || {field_t, _, FName, FType} <- Fields
       ]),
     {dep_record_t, Ann, QId, Fields1};
-check_type(Env, T = {dep_variant_t, Ann, Id, undefined, Constrs}, Arity) ->
+check_type(Env, T = {dep_variant_t, Ann, Base, undefined, Constrs}, Arity) ->
     [type_error({illegal_liquid, T}) || not Env#env.allow_liquid],
-    Env1 = Env#env{allow_liquid = false},
+    Base1 = check_type(Env, Base, Arity),
+    Id = case Base1 of
+             {app_t, _, I, _} -> I;
+             _ -> Base1
+         end,
     %% TODO Validate constructors in adt
-    Id1 = check_type(Env1, Id, Arity),
     {QId, TrueConstrs} =
-        case lookup_type(Env1, Id1) of
+        case lookup_type(Env, Id) of
             {Q, {QAnn, {_, {variant_t, Cs}}}} -> {{qid, QAnn, Q}, Cs};
             _ -> type_error({not_a_variant_type, Id, T}),
                  {Id, []}
@@ -944,7 +950,7 @@ check_type(Env, T = {dep_variant_t, Ann, Id, undefined, Constrs}, Arity) ->
                     name(CNameNew) == name(CNameOld)] of
               [{constr_t, FAnn, CName, CArgs}] ->
                   {constr_t, FAnn, CName,
-                   [ check_type(Env1, CArg) || CArg <- CArgs ]
+                   [ check_type(Env, CArg) || CArg <- CArgs ]
                   };
               _ -> ConstrOld
           end
@@ -967,7 +973,7 @@ check_type(Env, T = {dep_variant_t, Ann, Id, undefined, Constrs}, Arity) ->
                      )
                 ]
         end,
-    {dep_variant_t, Ann, QId, TagPred, Constrs1};
+    {dep_variant_t, Ann, Base1, TagPred, Constrs1};
 check_type(Env, T = {dep_list_t, Ann, ElemT, LenPred}, Arity) ->
     [type_error({illegal_liquid, T}) || not Env#env.allow_liquid],
     ElemT1 = check_type(Env, ElemT),
