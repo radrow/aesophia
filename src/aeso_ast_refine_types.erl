@@ -126,6 +126,7 @@
         , path_pred        = []                :: predicate()
         , cool_ints        = []                :: [integer()]
         , namespace        = []                :: qname()
+        , tc_env
         }).
 -type env() :: #env{}.
 
@@ -156,8 +157,9 @@ nu() -> {id, ann(), "$self"}.
 length_user() -> {id, ann(), "length"}.
 length() -> {id, ann(), "$length"}.
 
-state_t(#env{namespace = NS}) ->
-    {qid, ann(), NS ++ ["state"]}.
+state_t(#env{namespace = NS, tc_env = TCEnv}) ->
+    Qid = {qid, ann(), NS ++ ["state"]},
+    aeso_ast_infer_types:unfold_types_in_type(TCEnv, Qid, []).
 
 %% -- Name manipulation --------------------------------------------------------
 
@@ -421,7 +423,7 @@ init_refiner() ->
     put(id_supply, 0),
     ok.
 
-init_env() ->
+init_env(TCEnv) ->
     Ann     = ann(),
     Bool    = ?bool_t,
     String  = {id, Ann, "string"},
@@ -508,7 +510,9 @@ init_env() ->
              %% , ["String"]   => StringScope
              %% , ["Bits"]     => BitsScope
              %% , ["Bytes"]    => BytesScope
-             } }.
+             }
+        , tc_env = TCEnv
+        }.
 
 find_cool_ints(Expr) ->
     sets:to_list(find_cool_ints(Expr, sets:from_list([0, 1, -1]))).
@@ -894,7 +898,7 @@ base_type(T) -> T.
 
 refine_ast(TCEnv, AST) ->
     ?DBG("AST : ~p", [AST]),
-    Env0 = init_env(),
+    Env0 = init_env(TCEnv),
     Env1 = with_cool_ints_from(TCEnv, with_cool_ints_from(AST, Env0)),
     ?DBG("COOL INTS: ~p", [Env1#env.cool_ints]),
     Env2 = register_typedefs(AST, Env1),
@@ -961,7 +965,6 @@ constr_letfun(Env0, {letfun, Ann, Id, Args, _, Body}, S0) ->
         [fresh_liquid_arg(Env0, Arg, ArgT) || ?typed_p(Arg, ArgT) <- Args1],
     Env1 = bind_args(ArgsT, Env0),
     Env2 = ensure_args(GlobArgsT, Env1),
-    ?DBG("CHUJ ~p\n====\n~p", [ArgsT, GlobArgsT]),
     Env3 =
         assert(
           [ ?op(Arg1, '==', Arg2)
@@ -975,13 +978,14 @@ constr_letfun(Env0, {letfun, Ann, Id, Args, _, Body}, S0) ->
     PurifierST = init_purifier_st(Env3),
     Body2 =
         case proplists:get_value(stateful, Ann, false) of
-            false -> drop_purity(purify_state(Body1, PurifierST));
-            true  -> case purify_state(Body1, PurifierST) of
+            false -> drop_purity(purify_expr(Body1, PurifierST));
+            true  -> case purify_expr(Body1, PurifierST) of
                          {impure, B} -> B;
                          {pure, B} -> wrap_state(B, PurifierST)
                      end
         end,
-    ?DBG("PURIFIED:\n~s", [aeso_pretty:pp(expr, Body2)]),
+    ?DBG("PURIFIED:\n~s", [aeso_pretty:pp(expr, strip_typed(Body2))]),
+    ?DBG("PURIFIED:\n~p", [Body2]),
     {BodyT, S1} = constr_expr(Env3, Body2, S0),
     InnerFunT = {dep_fun_t, Ann, ArgsT, BodyT},
     S3 = [ {subtype, Ann, Env3, BodyT, GlobRetT}
@@ -2462,7 +2466,7 @@ switch_pure(impure) ->
 
 
 purify_many(E1, E2, ST) ->
-    case {purify_state(E1, ST), purify_state(E2, ST)} of
+    case {purify_expr(E1, ST), purify_expr(E2, ST)} of
         {{pure, P1}, {pure, P2}} ->
             {pure, {P1, P2}};
         {S1, S2} ->
@@ -2475,9 +2479,9 @@ purify_many([H|T], ST) ->
     {Pure, [H1|T1]}.
 
 
-purify_state(?typed_p(E, T), ST) ->
-    purify_state(E, T, ST);
-purify_state(Ex, _) ->
+purify_expr(?typed_p(E, T), ST) ->
+    purify_expr(E, T, ST);
+purify_expr(Ex, _) ->
     error({untyped, Ex}).
 
 purify_typed(pure, E, T, _) ->
@@ -2485,67 +2489,79 @@ purify_typed(pure, E, T, _) ->
 purify_typed(impure, E, T, ST) ->
     ?typed(E, wrap_state_t(T, ST)).
 
-purify_state(?typed_p(E, T), T1, ST) ->
-    {Pure, E1} = purify_state(E, T, ST),
-    {Pure, ?typed(E1, T1)};
-purify_state({qid, _, [_, "state"]}, T, ST) ->
+purify_expr(?typed_p(E, T), T1, ST) ->
+    {Pure, E1} = purify_expr(E, T, ST),
+    {Pure, purify_typed(Pure, E1, T1, ST)};
+purify_expr({qid, _, [_, "state"]}, T, ST) ->
     ?typed_p(STVar) = ST#purifier_st.state,
     {pure, ?typed(STVar, T)};
-purify_state({qid, _, ["Contract", "balance"]}, _, ST) ->
+purify_expr({qid, _, ["Contract", "balance"]}, _, ST) ->
     {pure, ?typed(ST#purifier_st.balance, ?d_nonneg_int)};
-purify_state({app, Ann, Fun, Args}, T, ST) ->
-    case {Fun, Args} of
-        {?typed_p({qid, QAnn, [_, "put"]}), [State]} ->
-            {pure, State1} = purify_state(State, ST),
-            {impure, wrap_state(?typed({tuple, QAnn, []}, T), ST#purifier_st{state = State1})};
-        _ -> %% Assuming a-normal form %% TODO stateful function!
+purify_expr({app, _, ?typed_p({qid, QAnn, [_, "put"]}), [State]}, T, ST) ->
+    {pure, ?typed_p(State1)} = purify_expr(State, ST),
+    {impure, wrap_state(
+               ?typed({tuple, QAnn, []}, T),
+               ST#purifier_st{state = ?typed(State1, get_state_t(ST))})};
+purify_expr({app, Ann, Fun, Args}, T, ST) ->
+    %% Assuming a-normal form
+    case aeso_syntax:get_ann(stateful, Fun, false) of
+        false ->
             {pure,
              ?typed(
-                {app, Ann, element(2, purify_state(Fun, ST)),
-                 [element(2, purify_state(A, ST)) || A <- Args]},
+                {app, Ann, element(2, purify_expr(Fun, ST)),
+                 [element(2, purify_expr(A, ST)) || A <- Args]},
+                T
+               )
+            };
+        true ->
+            {impure,
+             ?typed(
+                {app, Ann, element(2, purify_expr(Fun, ST)),
+                 [ ST#purifier_st.state, ST#purifier_st.balance
+                 | [element(2, purify_expr(A, ST)) || A <- Args]]},
                 T
                )
             }
     end;
-purify_state({'if', Ann, Cond, Then, Else}, T, ST) ->
+purify_expr({'if', Ann, Cond, Then, Else}, T, ST) ->
     {Pure, {Then1, Else1}} = purify_many(Then, Else, ST),
     {Pure, purify_typed(Pure, {'if', Ann, Cond, Then1, Else1}, T, ST)};
-purify_state({block, Ann, Stmts}, T, ST) ->
-    {Pure, Expr} = purify_state_block(pure, Stmts, T, ST),
+purify_expr({block, Ann, Stmts}, T, ST) ->
+    {Pure, Expr} = purify_block(pure, Stmts, T, ST),
     {Pure, purify_typed(Pure, {block, Ann, Expr}, T, ST)};
-purify_state(E, T, _) ->
+purify_expr(E, T, _) ->
     {pure, ?typed(E, T)}.
 
-purify_state_block(PurePrev, [Expr], Type, ST) ->
-    {PureExpr, Expr1} = purify_state(Expr, Type, ST),
+purify_block(PurePrev, [Expr], Type, ST) ->
+    {PureExpr, Expr1} = purify_expr(Expr, Type, ST),
     Pure = pure_plus(PurePrev, PureExpr),
     PureToWrap = pure_prod(switch_pure(PureExpr), PurePrev),
     {Pure, [wrap_impure(PureToWrap, Expr1, ST)]};
-purify_state_block(PurePrev, [{letval, Ann, Pat, Expr}|Rest], Type, ST) ->
-    {PureExpr, Expr1} = purify_state(Expr, ST),
+purify_block(PurePrev, [{letval, Ann, Pat, Expr}|Rest], Type, ST) ->
+    {PureExpr, Expr1} = purify_expr(Expr, ST),
     PureNext = pure_plus(PurePrev, PureExpr),
     case PureExpr of
         pure ->
-            {Pure, Rest1} = purify_state_block(PureNext, Rest, Type, ST),
+            {Pure, Rest1} = purify_block(PureNext, Rest, Type, ST),
             {Pure, [{letval, Ann, Pat, Expr1}|Rest1]};
         impure ->
             {Pat1, ST1} = unwrap_state(Pat, ST),
-            {_, Rest1} = purify_state_block(PureNext, Rest, Type, ST1),
+            {_, Rest1} = purify_block(PureNext, Rest, Type, ST1),
             {impure,
              [ {letval, ann(), Pat1, Expr1}
              | Rest1
              ]}
     end;
-purify_state_block(PurePrev, [Stmt|Rest], Type, ST) ->
-    {PureStmt, Stmt1} = purify_state(Stmt, ST),
+purify_block(PurePrev, [Stmt|Rest], Type, ST) ->
+    {PureStmt, Stmt1} = purify_expr(Stmt, ST),
     PureNext = pure_plus(PurePrev, PureStmt),
     case PureStmt of
         pure ->
-            {Pure, Rest1} = purify_state_block(PureNext, Rest, Type, ST),
+            {Pure, Rest1} = purify_block(PureNext, Rest, Type, ST),
             {Pure, [Stmt1|Rest1]};
         impure ->
             {Pat, ST1} = unwrap_state({id, ann(), "_"}, ST),
-            {_, Rest1} = purify_state_block(PureNext, Rest, Type, ST1),
+            {_, Rest1} = purify_block(PureNext, Rest, Type, ST1),
             {impure,
             [ {letval, ann(), Pat, Stmt1}
             | Rest1
