@@ -2478,12 +2478,13 @@ purify_many(E1, E2, ST) ->
         {S1, S2} ->
             {impure, {wrap_pure(S1, ST), wrap_pure(S2, ST)}}
     end.
-purify_many([], _) ->
-    {pure, []};
-purify_many([H|T], ST) ->
-    {Pure, {H1, T1}} = purify_many(H, T, ST),
-    {Pure, [H1|T1]}.
-
+purify_many(L, ST) when is_list(L) ->
+    L1 = [purify_expr(E, ST)|| E <- L],
+    case lists:any(fun({impure, _}) -> true; (_) -> false end, L1) of
+        true ->
+            {impure, [wrap_pure(E, ST) || {_, E} <- L1]};
+        false -> {pure, [E || {_, E} <- L1]}
+    end.
 
 purify_expr(?typed_p(E, T), ST) ->
     purify_expr(E, T, ST);
@@ -2530,8 +2531,21 @@ purify_expr({app, Ann, Fun, Args}, T, ST) ->
             }
     end;
 purify_expr({'if', Ann, Cond, Then, Else}, T, ST) ->
+    {pure, Cond1} = purify_expr(Cond, ST),
     {Pure, {Then1, Else1}} = purify_many(Then, Else, ST),
-    {Pure, purify_typed(Pure, {'if', Ann, Cond, Then1, Else1}, T, ST)};
+    {Pure, purify_typed(Pure, {'if', Ann, Cond1, Then1, Else1}, T, ST)};
+purify_expr({switch, Ann, Switch, Cases}, T, ST) ->
+    {pure, Switch1} = purify_expr(Switch, ST),
+    Bodies = [Body || {'case', _, _, Body} <- Cases],
+    {Pure, Bodies1} = purify_many(Bodies, ST),
+    {Pure,
+     purify_typed(
+       Pure,
+       {switch, Ann, Switch1,
+        [{'case', CAnn, Pat, Body}
+         || {Body, {'case', CAnn, Pat, _}} <- lists:zip(Bodies1, Cases)]},
+       T, ST)
+      };
 purify_expr({block, Ann, Stmts}, T, ST) ->
     {Pure, Expr} = purify_block(pure, Stmts, T, ST),
     {Pure, purify_typed(Pure, {block, Ann, Expr}, T, ST)};
