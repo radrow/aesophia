@@ -56,7 +56,7 @@ refiner_test_group() ->
                        ?assertEqual(ExAssump, Assump),
                        ?assertEqual(ExPromise, Promise);
                    {{error, {contradict, {Ann, Assump, Promise}}}, _} ->
-                       io:format("Could not prove the promise created at ~s ~p:~p\n"
+                       io:format("Could not prove the promise at ~s ~p:~p\n"
                                  "~s:\n"
                                  "  ~s\n"
                                  "from the assumption\n"
