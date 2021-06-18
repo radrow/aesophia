@@ -1153,13 +1153,19 @@ check_type(Env, T = {dep_variant_t, Ann, Base, undefined, Constrs}, Arity) ->
              {app_t, _, I, _} -> I;
              _ -> Base1
          end,
-    %% TODO Validate constructors in adt
     {QId, TrueConstrs} =
         case lookup_type(Env, Id) of
             {Q, {QAnn, {_, {variant_t, Cs}}}} -> {{qid, QAnn, Q}, Cs};
             _ -> type_error({not_a_variant_type, Id, T}),
                  {Id, []}
         end,
+    [ check_expr(Env, Con,
+            case Args of
+                [] -> Base1;
+                _ -> {fun_t, CAnn, [], Args, Base1}
+            end)
+      || {constr_t, CAnn, Con, Args} <- Constrs
+    ],
     Constrs1 =
         [ case [ ConstrNew
                  || ConstrNew = {constr_t, _, CNameNew, _} <- Constrs,
@@ -2824,8 +2830,9 @@ mk_error({fundecl_must_have_funtype, _Ann, Id, Type}) ->
                        , [pp(Id), pp_loc(Id), pp(instantiate(Type))]),
     mk_t_err(pos(Id), Msg);
 mk_error({cannot_unify, A, B, When}) ->
-    Msg = io_lib:format("Cannot unify ~s\n         and ~s\n",
-                        [pp(instantiate(A)), pp(instantiate(B))]),
+    AStr = pp(instantiate(A)),
+    BStr = pp(instantiate(B)),
+    Msg = io_lib:format("Cannot unify ~s\n         and ~s\n", [AStr, BStr]),
     {Pos, Ctxt} = pp_when(When),
     mk_t_err(Pos, Msg, Ctxt);
 mk_error({unbound_variable, Id}) ->
