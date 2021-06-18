@@ -18,7 +18,7 @@
 -export_type([type/0, constant/0, expr/0, arg_expr/0, field/1, stmt/0, alt/0, lvalue/0, elim/0, pat/0]).
 -export_type([letfun/0, letval/0, fundecl/0]).
 -export_type([ast/0]).
--export_type([predicate/0, liquid_type/0, dep_type/1]).
+-export_type([predicate/0, liquid_type/0, dep_type/1, dep_arg_t/1]).
 
 -type ast() :: [decl()].
 

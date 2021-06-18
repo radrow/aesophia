@@ -432,26 +432,12 @@ predicate(L) when is_list(L) ->
 predicate(Constraints) when is_list(Constraints) ->
     par(punctuate(text(","), [expr(C) || C <- Constraints])).
 
-ltvar({ltvar, Ref}) ->
-    Id = case get({ltvar_print, Ref}) of
-             undefined ->
-                 NextId = case get(ltvar_print_count) of
-                              undefined -> 0;
-                              N -> N + 1
-                          end,
-                 put(ltvar_print_count, NextId),
-                 put({ltvar_print, Ref}, NextId),
-                 NextId;
-             X -> X
-         end,
-    text(io_lib:format("k_~p", [Id])).
-
 constr_env(Env) ->
     above(
       [ par(punctuate(
               text(","),
               [beside([expr(Var), text(" : "), type(T)])
-               || {Var, T} <- aeso_ast_refine_types:type_binds(Env)])
+               || {Var, {_, T}} <- aeso_ast_refine_types:type_binds(Env)])
            )
       , predicate(aeso_ast_refine_types:path_pred(Env))
       ]).
