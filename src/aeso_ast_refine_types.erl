@@ -23,6 +23,7 @@
 -define(refined(T, Q),
         (fun() ->
                  Id = fresh_id(
+                        element(2, T),
                         case T of
                             ?int_tp -> "n";
                             ?bool_tp -> "b";
@@ -31,33 +32,33 @@
                             _ -> "v"
                         end
                        ),
-                 ?refined(Id, T, apply_subst(nu(), Id, Q))
+                 ?refined(Id, T, apply_subst(nu(element(2, T)), Id, Q))
          end %% Fuck Erlang scoping
         )()).
 -define(refined(T), ?refined(T, [])).
--define(op(A, Op, B), {app, [{format, infix}|ann()], {Op, ann()}, [A, B]}).
--define(op(Op, B), {app, [{format, prefix}|ann()], {Op, ann()}, [B]}).
+-define(op(Ann, A, Op, B), {app, [{format, infix}|Ann], {Op, Ann}, [A, B]}).
+-define(op(Ann, Op, B), {app, [{format, prefix}|Ann], {Op, Ann}, [B]}).
 
--define(int(I), {int, ann(), I}).
+-define(int(Ann, I), {int, Ann, I}).
 -define(int_tp, {id, _, "int"}).
--define(int_t, {id, ann(), "int"}).
+-define(int_t(Ann), {id, Ann, "int"}).
 
--define(d_pos_int, ?refined(?int_t, [?op(nu(), '>', ?int(0))])).
--define(d_nonneg_int, ?refined(?int_t, [?op(nu(), '>=', ?int(0))])).
+-define(d_pos_int(Ann), ?refined(?int_t(Ann), [?op(nu(Ann), '>', ?int(Ann, 0))])).
+-define(d_nonneg_int(Ann), ?refined(?int_t(Ann), [?op(nu(Ann), '>=', ?int(Ann, 0))])).
 %% -define(d_nonzero_int, ?refined(?int_t, [?op(nu(), '!=', ?int(0))])).
 
--define(bool(B), {bool, ann(), B}).
+-define(bool(Ann, B), {bool, Ann, B}).
 -define(bool_tp, {id, _, "bool"}).
--define(bool_t, {id, ann(), "bool"}).
+-define(bool_t(Ann), {id, Ann, "bool"}).
 
 %% -define(tuple(S), {tuple, _, S}).
 -define(tuple_tp(T), {tuple_t, _, T}).
 %% -define(tuple_t(T), {tuple_t, ann(), T}).
 
--define(tuple_proj_id(N, I),
-        {id, ann(), lists:flatten(io_lib:format("$tuple~p.~p", [N, I]))}).
--define(adt_proj_id(QCon, I),
-        {id, ann(), lists:flatten(io_lib:format("~s.~p", [string:join(qname(QCon), "."), I]))}).
+-define(tuple_proj_id(Ann, N, I),
+        {id, Ann, lists:flatten(io_lib:format("$tuple~p.~p", [N, I]))}).
+-define(adt_proj_id(Ann, QCon, I),
+        {id, Ann, lists:flatten(io_lib:format("~s.~p", [string:join(qname(QCon), "."), I]))}).
 
 %% -define(string(S), {string, _, S}).
 -define(string_tp, {id, _, "string"}).
@@ -111,9 +112,9 @@
 %% Liquid type, possibly uninstantiated
 -type lutype() :: dep_type(liquid_qual()).
 
--type fun_env()  :: #{name() => template()}.
--type var_env()  :: #{name() => template()}.
--type type_env() :: [{name(), typedef()}]. % order matters
+-type fun_env()  :: #{name() => {ann(), template()}}.
+-type var_env()  :: #{name() => {ann(), template()}}.
+-type type_env() :: [{name(),   {ann(), typedef()}}]. % order matters
 
 -record(scope, { fun_env = #{} :: fun_env()
                , type_env = [] :: type_env()
@@ -146,19 +147,20 @@
 %% Position in type
 -type variance() :: contravariant | covariant | forced_covariant | forced_contravariant.
 
--spec ann() -> ann().
-ann() -> [{origin, hagia}].
--spec ann(ann()) -> ann().
-ann(L) -> [{origin, hagia}|L].
+ann() ->
+    [{origin, hagia}].
 
-nu() -> {id, ann(), "$self"}.
+ann_of(E) ->
+    aeso_syntax:get_ann(E).
+
+nu(Ann) -> {id, Ann, "$self"}.
 -define(nu_p, {id, _, "$self"}).
 
-length_user() -> {id, ann(), "length"}.
-length() -> {id, ann(), "$length"}.
+length_user(Ann) -> {id, Ann, "length"}.
+length_var(Ann) -> {id, Ann, "$length"}.
 
-state_t(#env{namespace = NS, tc_env = TCEnv}) ->
-    Qid = {qid, ann(), NS ++ ["state"]},
+state_t(Ann, #env{namespace = NS, tc_env = TCEnv}) ->
+    Qid = {qid, Ann, NS ++ ["state"]},
     aeso_ast_infer_types:unfold_types_in_type(TCEnv, Qid, []).
 
 %% -- Name manipulation --------------------------------------------------------
@@ -172,22 +174,16 @@ qname({qid,  _, Xs}) -> Xs;
 qname({con,  _, X})  -> [X];
 qname({qcon, _, Xs}) -> Xs.
 
-qid(X) when is_list(X) ->
-    qid(ann(), X).
 -spec qid(ann(), qname()) -> aeso_syntax:id() | aeso_syntax:qid().
 qid(Ann, [X]) -> {id, Ann, X};
 qid(Ann, Xs) when is_list(Xs) -> {qid, Ann, Xs}.
 
-id(X) ->
-    id(ann(), X).
 id(Ann, X) ->
     {id, Ann, X}.
 
-qcon(X) when is_list(X) ->
-    qcon(ann(), X).
 -spec qcon(ann(), qname()) -> aeso_syntax:con() | aeso_syntax:qcon().
 qcon(Ann, [X]) -> {con, Ann, X};
-qcon(Ann, Xs)  -> {qcon, Ann, Xs}.
+qcon(Ann, Xs) when is_list(Xs)  -> {qcon, Ann, Xs}.
 
 -spec set_qname(qname(), type_id()) -> type_id().
 set_qname(Xs, {id,   Ann, _}) -> qid(Ann, Xs);
@@ -230,20 +226,19 @@ on_scopes(Env = #env{ scopes = Scopes }, Fun) ->
     Env#env{ scopes = maps:map(fun(_, Scope) -> Fun(Scope) end, Scopes) }.
 
 -spec bind_var(id(), lutype(), env()) -> env().
-bind_var(Id, T, Env = #env{var_env = VarEnv}) ->
-    case maps:get(name(Id), VarEnv, none) of
+bind_var(Id = {id, Ann, Name}, T, Env = #env{var_env = VarEnv}) ->
+    case maps:get(Name, VarEnv, none) of
         none -> ok;
         V    ->
-            ?DBG("SHADOW OF\n~p\n : ~p IN\n~p", [Id, V, VarEnv]),
-            error({jebudu, Id}),
+            ?DBG("SHADOW OF\n~s\n : ~p IN\n~p", [Name, V, VarEnv]),
             throw({overwrite, Id})
     end,
-    Env#env{ var_env = VarEnv#{name(Id) => T}}.
+    Env#env{ var_env = VarEnv#{Name => {Ann, T}}}.
 
 -spec ensure_var(id(), lutype(), env()) -> env().
-ensure_var(Id, T, Env = #env{var_env = VarEnv}) ->
-    case maps:get(name(Id), VarEnv, none) of
-        none -> Env#env{ var_env = VarEnv#{name(Id) => T}};
+ensure_var({id, Ann, Name}, T, Env = #env{var_env = VarEnv}) ->
+    case maps:get(Name, VarEnv, none) of
+        none -> Env#env{ var_env = VarEnv#{Name => {Ann, T}}};
         _    -> Env
     end.
 
@@ -254,7 +249,7 @@ ensure_vars([{X, T}|Rest], Env) ->
 
 -spec bind_nu(lutype(), env()) -> env().
 bind_nu(Type, Env) ->
-    bind_var(nu(), Type, Env).
+    bind_var(nu(ann_of(Type)), Type, Env).
 
 -spec bind_vars([{id(), lutype()}], env()) -> env().
 bind_vars([], Env) -> Env;
@@ -275,11 +270,7 @@ ensure_args([{dep_arg_t, _, X, T} | Vars], Env) ->
 bind_fun(X, Type, Env) ->
     on_current_scope(
       Env, fun(Scope = #scope{ fun_env = Funs }) ->
-                   case maps:get(X, Funs, none) of
-                       none -> ok;
-                       T -> error({jebebebe, X, T, Type})
-                   end,
-                   Scope#scope{ fun_env = Funs#{X => Type} }
+                   Scope#scope{ fun_env = Funs#{X => {ann_of(Type), Type}} }
            end).
 
 -spec bind_funs([{name(), lutype()}], env()) -> env().
@@ -288,9 +279,9 @@ bind_funs([{Id, Type} | Rest], Env) ->
     bind_funs(Rest, bind_fun(Id, Type, Env)).
 
 -spec bind_type(id(), [type()], typedef(), env()) -> env().
-bind_type(Id, Args, Def, Env) ->
+bind_type({id, Ann, Name}, Args, Def, Env) ->
     on_current_scope(Env, fun(Scope = #scope{ type_env = Types }) ->
-                                  Scope#scope{ type_env = [{Id, {Args, Def}}|Types] }
+                                  Scope#scope{ type_env = [{Name, {Ann, {Args, Def}}}|Types] }
                           end).
 
 -spec assert(expr() | predicate(), env()) -> env().
@@ -306,12 +297,12 @@ possible_scopes(#env{ namespace = Current}, Name) ->
     Qual = lists:droplast(Name),
     [ lists:sublist(Current, I) ++ Qual || I <- lists:seq(0, length(Current)) ].
 
--spec lookup_type(env(), type_id()) -> false | {qname(), typedef()}.
+-spec lookup_type(env(), type_id()) -> false | {qname(), ann(), typedef()}.
 lookup_type(Env, Id) ->
     lookup_env(Env, type, qname(Id)).
 
--spec lookup_env(env(), term, qname()) -> false | {qname(), lutype()};
-                (env(), type, qname()) -> false | {qname(), typedef()}.
+-spec lookup_env(env(), term, qname()) -> false | {qname(), ann(), lutype()};
+                (env(), type, qname()) -> false | {qname(), ann(), typedef()}.
 lookup_env(Env, Kind, Name) ->
     Var = case Name of
             [X] when Kind == term -> maps:get(X, Env#env.var_env, false);
@@ -326,10 +317,10 @@ lookup_env(Env, Kind, Name) ->
                 Many  ->
                     error({ambiguous_name, [Q || {Q, _} <- Many]})
             end;
-        Type -> {Name, Type}
+        {Ann, Type} -> {Name, Ann, Type}
     end.
 
--spec lookup_env1(env(), term | type, qname()) -> false | {qname(), lutype()}.
+-spec lookup_env1(env(), term | type, qname()) -> false | {qname(), {ann(), lutype()}}.
 lookup_env1(#env{ scopes = Scopes }, Kind, QName) ->
     Qual = lists:droplast(QName),
     Name = lists:last(QName),
@@ -345,13 +336,13 @@ lookup_env1(#env{ scopes = Scopes }, Kind, QName) ->
             end
     end.
 
--spec type_of(env(), type_id()) -> {qname(), lutype()}.
+-spec type_of(env(), type_id()) -> {qname(), ann(), lutype()}.
 type_of(Env, Id) ->
     case lookup_env(Env, term, qname(Id)) of
         false ->
             ?DBG("NOT TYPE FOR ~p", [Id]),
             undefined;
-        {QId, Ty} -> {set_qname(QId, Id), Ty}
+        {QId, Ann, Ty} -> {set_qname(QId, Id), Ann, Ty}
     end.
 
 -spec bind_assg(assignment(), env()) -> env().
@@ -365,9 +356,9 @@ bind_assg(Assg, Env) ->
 
 -spec global_type_binds(env()) -> [{expr(), lutype()}].
 global_type_binds(#env{scopes = Scopes}) ->
-    [ {qid(ScopePath ++ [Var]), Type}
+    [ {qid(Ann, ScopePath ++ [Var]), Type}
       || {ScopePath, #scope{fun_env = FEnv}} <- maps:to_list(Scopes),
-         {Var, Type} <- maps:to_list(FEnv)
+         {Var, {Ann, Type}} <- maps:to_list(FEnv)
     ].
 
 -spec local_type_binds(assignment(), env()) -> [{expr(), lutype()}].
@@ -375,15 +366,15 @@ local_type_binds(Assg, Env) ->
     Env1 = bind_assg(Assg, Env),
     VEnv = Env1#env.var_env,
     [ begin
-          Qid = qid(aeso_syntax:get_ann(Type), [Var]),
+          Qid = qid(ann_of(Type), [Var]),
           {Qid,
            case Type of
                {refined_t, _, Id, _, _} ->
                    apply_subst(Id, Qid, Type);
-               {dep_variant_t, _, _, _, _} ->
-                   apply_subst(nu(), Qid, Type);
-               {dep_list_t, _, _, _} ->
-                   apply_subst(length(), Qid, Type);
+               {dep_variant_t, Ann, _, _, _} ->
+                   apply_subst(nu(Ann), Qid, Type);
+               {dep_list_t, Ann, _, _} ->
+                   apply_subst(length_var(Ann), Qid, Type);
                _ -> Type
            end
           }
@@ -399,11 +390,11 @@ type_binds(Assg, Env) ->
     global_type_binds(Env) ++ local_type_binds(Assg, Env).
 
 
--spec type_defs(env()) -> [{qid(), typedef()}]. %% FIXME really typedef? what about args?
+-spec type_defs(env()) -> [{qid(), typedef()}].
 type_defs(#env{scopes = Scopes}) ->
-    Types = [ {qid(ScopePath ++ [Var]), TypeDef}
+    Types = [ {qid(Ann, ScopePath ++ [Var]), TypeDef}
               || {ScopePath, #scope{type_env = TEnv}} <- maps:to_list(Scopes),
-                 {Var, TypeDef} <- TEnv
+                 {Var, {Ann, TypeDef}} <- TEnv
             ],
     lists:reverse(Types).
 
@@ -425,7 +416,7 @@ init_refiner() ->
 
 init_env(TCEnv) ->
     Ann     = ann(),
-    Bool    = ?bool_t,
+    Bool    = {id, Ann, "bool"},
     String  = {id, Ann, "string"},
     Address = {id, Ann, "address"},
     Hash    = {id, Ann, "hash"},
@@ -438,7 +429,7 @@ init_env(TCEnv) ->
     %% Lambda    = fun(Ts, T) -> {fun_t, Ann, [], Ts, T} end,
     %% Lambda1   = fun(S, T) -> Lambda([S], T) end,
     StateDFun  = fun(Ts, T) -> {dep_fun_t, [stateful|Ann], Ts, T} end,
-    Arg     = fun(Name, Type) -> {dep_arg_t, ann(), id(Name), Type} end,
+    Arg     = fun(Name, Type) -> {dep_arg_t, Ann, id(Ann, Name), Type} end,
 
     MkDefs = fun maps:from_list/1,
 
@@ -446,55 +437,55 @@ init_env(TCEnv) ->
         { fun_env = MkDefs(
                      %% Spend transaction.
                     [{"spend",        StateDFun([Arg("addr", Address),
-                                                 Arg("amount", ?refined(?int_t, [?op(nu(), '=<', {qid, ann(), ["Contract", "balance"]})]))], Unit)},
+                                                 Arg("amount", ?refined(?int_t(Ann), [?op(Ann, nu(Ann), '=<', {qid, Ann, ["Contract", "balance"]})]))], Unit)},
                      %% Chain environment
-                     {"balance",      DFun1(Arg("addr", Address), ?d_nonneg_int)},
-                     {"block_hash",   DFun1(Arg("h", ?d_nonneg_int), Option(Hash))},
-                     {"timestamp",    ?d_pos_int},
-                     {"block_height", ?d_pos_int},
-                     {"difficulty",   ?d_nonneg_int},
-                     {"gas_limit",    ?d_pos_int}])
+                     {"balance",      DFun1(Arg("addr", Address), ?d_nonneg_int(Ann))},
+                     {"block_hash",   DFun1(Arg("h", ?d_nonneg_int(Ann)), Option(Hash))},
+                     {"timestamp",    ?d_pos_int(Ann)},
+                     {"block_height", ?d_pos_int(Ann)},
+                     {"difficulty",   ?d_nonneg_int(Ann)},
+                     {"gas_limit",    ?d_pos_int(Ann)}])
         },
 
     ContractScope = #scope
         { fun_env = MkDefs(
-                    [{"balance", ?d_nonneg_int}]) },
+                    [{"balance", ?d_nonneg_int(Ann)}]) },
 
     CallScope = #scope
         { fun_env = MkDefs(
-                    [{"value",     ?d_nonneg_int},
-                     {"gas_price", ?d_pos_int},
-                     {"gas_left",  DFun([], ?d_pos_int)}])
+                    [{"value",     ?d_nonneg_int(Ann)},
+                     {"gas_price", ?d_pos_int(Ann)},
+                     {"gas_left",  DFun([], ?d_pos_int(Ann))}])
         },
 
     %% Strings
     StringScope = #scope
         { fun_env = MkDefs(
-                     [{"length",  DFun1(Arg("str", String), ?d_nonneg_int)}])
+                     [{"length",  DFun1(Arg("str", String), ?d_nonneg_int(Ann))}])
         },
 
     %% Bits
     BitsScope = #scope
         { fun_env = MkDefs(
-                     [{"set",     DFun([Arg("bits", Bits), Arg("idx", ?d_nonneg_int)], Bits)},
-                      {"clear",   DFun([Arg("bits", Bits), Arg("idx", ?d_nonneg_int)], Bits)},
-                      {"test",    DFun([Arg("bits", Bits), Arg("idx", ?d_nonneg_int)], Bool)},
-                      {"sum",     DFun1(Arg("bits", Bits), ?d_nonneg_int)}])
+                     [{"set",     DFun([Arg("bits", Bits), Arg("idx", ?d_nonneg_int(Ann))], Bits)},
+                      {"clear",   DFun([Arg("bits", Bits), Arg("idx", ?d_nonneg_int(Ann))], Bits)},
+                      {"test",    DFun([Arg("bits", Bits), Arg("idx", ?d_nonneg_int(Ann))], Bool)},
+                      {"sum",     DFun1(Arg("bits", Bits), ?d_nonneg_int(Ann))}])
                      },
 
     %% Bytes
     BytesScope = #scope
         { fun_env = MkDefs(
-                   [{"to_int", DFun1(Arg("bytes", Bytes(any)), ?d_nonneg_int)}]) },
+                   [{"to_int", DFun1(Arg("bytes", Bytes(any)), ?d_nonneg_int(Ann))}]) },
 
     TopScope = #scope
         { fun_env  = MkDefs(
                     [])
         , type_env =
-              [ {"option", {[{tvar, ann(), "'a"}],
+              [ {"option", {[{tvar, Ann, "'a"}],
                             {variant_t,
-                             [ {constr_t, ann(), {con, ann(), "None"}, []}
-                             , {constr_t, ann(), {con, ann(), "Some"}, [{tvar, ann(), "'a"}]}
+                             [ {constr_t, Ann, {con, Ann, "None"}, []}
+                             , {constr_t, Ann, {con, Ann, "Some"}, [{tvar, Ann, "'a"}]}
                              ]
                             }
                            }
@@ -607,8 +598,8 @@ bind_ast_funs(TCEnv, AST, Env) ->
                                  ],
                              DepRetT = fresh_liquid(Env1, "rete", RetT),
                              DepArgsT1 =
-                                 [ fresh_liquid_arg(Env1, init_state_var(state_t(Env1)))
-                                 , fresh_liquid_arg(Env1, init_balance_var())
+                                 [ fresh_liquid_arg(Env1, init_state_var(state_t(FAnn, Env1)))
+                                 , fresh_liquid_arg(Env1, init_balance_var(FAnn))
                                  | DepArgsT
                                  ],
                              DepRetT1 =
@@ -716,15 +707,15 @@ fresh_name(Name) ->
     put(id_supply, I + 1),
     Name ++ "_" ++ integer_to_list(I).
 
--spec fresh_id(name()) -> type_id().
-fresh_id(Name) ->
+-spec fresh_id(ann(), name()) -> type_id().
+fresh_id(Ann, Name) ->
     N = fresh_name(Name),
-    {id, ann(), N}.
-fresh_id(Name, Type) ->
-    Id = fresh_id(Name),
+    {id, Ann, N}.
+fresh_id(Ann, Name, Type) ->
+    Id = fresh_id(Ann, Name),
     ?typed(Id, Type).
 
-fresh_nu() -> fresh_id("self").
+fresh_nu(Ann) -> fresh_id(Ann, "self").
 
 %% Decorates base types with templates through the AST
 -spec fresh_liquid(env(), name(), term()) -> term().
@@ -757,10 +748,11 @@ fresh_liquid(Env, Variance, Hint, {dep_variant_t, Ann, Type, TagPred, Constrs}) 
     };
 fresh_liquid(Env, Variance, Hint, {dep_list_t, Ann, ElemT, LenPred}) ->
     {dep_list_t, Ann, fresh_liquid(Env, Variance, Hint, ElemT),
-     apply_subst(length_user(), length(), LenPred)};
+     apply_subst(length_user(Ann), length_var(Ann), LenPred)};
 fresh_liquid(_Env, Variance, Hint, Type = {id, Ann, Name}) ->
     {refined_t, Ann,
-     fresh_id(case Name of
+     fresh_id(Ann,
+              case Name of
                   "int" -> "n";
                   "bool" -> "p";
                   "string" -> "s";
@@ -768,11 +760,11 @@ fresh_liquid(_Env, Variance, Hint, Type = {id, Ann, Name}) ->
               end),
      Type, fresh_template(Variance, Hint)};
 fresh_liquid(_Env, Variance, Hint, Type = {con, Ann, Name}) ->
-    {refined_t, Ann, fresh_id(string:to_lower(Name)), Type, fresh_template(Variance, Hint)};
+    {refined_t, Ann, fresh_id(Ann, string:to_lower(Name)), Type, fresh_template(Variance, Hint)};
 fresh_liquid(_Env, Variance, Hint, Type = {qcon, Ann, Name}) ->
-    {refined_t, Ann, fresh_id(string:to_lower(lists:last(Name))), Type, fresh_template(Variance, Hint)};
+    {refined_t, Ann, fresh_id(Ann, string:to_lower(lists:last(Name))), Type, fresh_template(Variance, Hint)};
 fresh_liquid(_Env, Variance, Hint, Type = {tvar, Ann, [_|Name]}) ->
-    {refined_t, Ann, fresh_id(Name), Type, fresh_template(Variance, Hint)};
+    {refined_t, Ann, fresh_id(Ann, Name), Type, fresh_template(Variance, Hint)};
 fresh_liquid(Env, Variance, Hint, Type = {qid, Ann, _}) ->
     fresh_liquid(Env, Variance, Hint, {app_t, Ann, Type, []});
 fresh_liquid(Env, Variance, Hint, {app_t, Ann, Id = {id, _, "map"}, [K, V]}) ->
@@ -782,7 +774,7 @@ fresh_liquid(Env, Variance, Hint, {app_t, Ann, Id = {id, _, "map"}, [K, V]}) ->
      ]};
 fresh_liquid(Env, Variance, Hint, {app_t, Ann, {id, _, "list"}, [Elem]})
   when Variance =:= contravariant; Variance =:= forced_contravariant ->
-    {dep_list_t, Ann, fresh_liquid(Env, Variance, Hint, Elem), [?op(length(), '>=', ?int(0))]};
+    {dep_list_t, Ann, fresh_liquid(Env, Variance, Hint, Elem), [?op(Ann, length_var(Ann), '>=', ?int(Ann, 0))]};
 fresh_liquid(Env, Variance, Hint, {app_t, Ann, {id, _, "list"}, [Elem]}) ->
     {dep_list_t, Ann, fresh_liquid(Env, Variance, Hint, Elem),
      fresh_template(Variance, Hint)};
@@ -796,7 +788,7 @@ fresh_liquid(Env, Variance, Hint,
                 {qid, _, [_, "state"]} -> {tuple_t, Ann, []};
                 _ -> error({undefined_type, Qid})
             end;
-        {_, {TArgs, TDef}} ->
+        {_, _, {TArgs, TDef}} ->
             Subst = lists:zip(TArgs, Args),
             case TDef of
                 {alias_t, Type1} ->
@@ -829,9 +821,9 @@ fresh_liquid(Env, Variance, Hint, {fun_t, Ann, Named, Args, Ret}) ->
                ArgT = fresh_liquid(Env, switch_variance(Variance), Hint ++ "_argtt", Arg),
                ArgId = case ArgT of
                            {refined_t, _, Id, _, _} -> Id;
-                           _ -> fresh_id("arg")
+                           _ -> fresh_id(ann_of(Arg), "arg")
                        end,
-               {dep_arg_t, aeso_syntax:get_ann(Arg), ArgId, ArgT}
+               {dep_arg_t, ann_of(Arg), ArgId, ArgT}
            end
           || Arg <- Args]
     , fresh_liquid(Env, Variance, Hint, Ret)
@@ -856,7 +848,7 @@ fresh_liquid_arg(Env, Variance, Id, Type) ->
                 {refined_t, Ann, Id, Base, apply_subst(TId, Id, Pred)};
             T -> T
         end,
-    {dep_arg_t, aeso_syntax:get_ann(Id), Id, DepType}.
+    {dep_arg_t, ann_of(Id), Id, DepType}.
 
 fresh_liquid_field(Env, Variance, _, Id, Type) ->
     {dep_arg_t, A, I, DT} = fresh_liquid_arg(Env, Variance, Id, Type),
@@ -964,16 +956,16 @@ constr_con(Env0, {Tag, Ann, Con, Defs}, S0)
 
 -spec constr_letfun(env(), letfun(), [constr()]) -> {fundecl(), [constr()]}.
 constr_letfun(Env0, {letfun, Ann, Id, Args, _, Body}, S0) ->
-    {_, GlobFunT = {dep_fun_t, _, GlobArgsT, GlobRetT}} = type_of(Env0, Id),
+    {_, _, GlobFunT = {dep_fun_t, _, GlobArgsT, GlobRetT}} = type_of(Env0, Id),
     Args1 =
-        [init_state_var(state_t(Env0)), init_balance_var() | Args],
+        [init_state_var(state_t(Ann, Env0)), init_balance_var(Ann) | Args],
     ArgsT =
         [fresh_liquid_arg(Env0, Arg, ArgT) || ?typed_p(Arg, ArgT) <- Args1],
     Env1 = bind_args(ArgsT, Env0),
     Env2 = ensure_args(GlobArgsT, Env1),
     Env3 =
         assert(
-          [ ?op(Arg1, '==', Arg2)
+          [ ?op(Ann, Arg1, '==', Arg2)
            || {{dep_arg_t, _, Arg1, _}, {dep_arg_t, _, Arg2, {refined_t, _, _, _, _}}}
                   <- lists:zip(ArgsT, GlobArgsT)
           ],
@@ -1029,7 +1021,7 @@ constr_expr(Env, ?typed_p(Expr, Type), S0) when ?IS_LIQUID(Type) ->
     Base = base_type(Type),
     {ExprT, S1} = constr_expr(Env, Expr, Base, S0),
     {ExprT,
-     [ {subtype, aeso_syntax:get_ann(Type), Env, ExprT, Type}
+     [ {subtype, ann_of(Type), Env, ExprT, Type}
      | S1
      ]
     };
@@ -1067,10 +1059,10 @@ constr_expr(Env, Expr = {IdHead, Ann, Name}, T, S)
     BaseT = base_type(T),
     if element(1, BaseT) =:= id;
        element(1, BaseT) =:= tvar ->
-            {?refined(BaseT, [?op(nu(), '==', Expr)]), S};
+            {?refined(BaseT, [?op(Ann, nu(Ann), '==', Expr)]), S};
        true ->
             case type_of(Env, Expr) of
-                {_, DT} ->
+                {_, _, DT} ->
                     TExpr = fresh_liquid(Env, Name, BaseT),
                     {TExpr
                     , [ {subtype, Ann, Env, DT, TExpr}
@@ -1087,10 +1079,10 @@ constr_expr(Env, Expr = {IdHead, Ann, Name}, T, S)
                     }
             end
     end;
-constr_expr(_Env, I = {int, _, _}, T = ?int_tp, S) ->
-    {?refined(T, [?op(nu(), '==', I)]), S};
-constr_expr(_Env, {bool, _, B}, T, S) ->
-    {?refined(T, [if B -> nu(); true -> ?op('!', nu()) end]), S};
+constr_expr(_Env, I = {int, Ann, _}, T = ?int_tp, S) ->
+    {?refined(T, [?op(Ann, nu(Ann), '==', I)]), S};
+constr_expr(_Env, {bool, Ann, B}, T, S) ->
+    {?refined(T, [if B -> nu(Ann); true -> ?op(Ann, '!', nu(Ann)) end]), S};
 
 constr_expr(Env, {tuple, Ann, Elems}, _, S0) ->
     {ElemsT, S1} = constr_expr_list(Env, Elems, S0),
@@ -1103,7 +1095,7 @@ constr_expr(Env, {record, Ann, FieldVals}, T, S0) ->
         lists:unzip([{Field, Val} || {field, _, [{proj, _, Field}], Val} <- FieldVals]),
     {ValsT, S1} = constr_expr_list(Env, Vals, S0),
     {{dep_record_t, Ann, T,
-      [{dep_field_t, aeso_syntax:get_ann(Field), Field, ValT}
+      [{dep_field_t, ann_of(Field), Field, ValT}
        || {Field, ValT} <- lists:zip(Fields, ValsT)]},
      S1
     };
@@ -1115,13 +1107,13 @@ constr_expr(_Env, Expr = {CmpOp, Ann}, {fun_t, _, _, [OpLT, OpRT], RetT = ?bool_
        CmpOp =:= '>=';
        CmpOp =:= '==';
        CmpOp =:= '!=' ->
-    OpLV = fresh_id("opl"),
-    OpRV = fresh_id("opr"),
+    OpLV = fresh_id(ann_of(OpLT), "opl"),
+    OpRV = fresh_id(ann_of(OpRT), "opr"),
     { {dep_fun_t, Ann,
-       [ {dep_arg_t, aeso_syntax:get_ann(OpLT), OpLV, ?refined(OpLV, OpLT, [])}
-       , {dep_arg_t, aeso_syntax:get_ann(OpRT), OpRV, ?refined(OpRV, OpRT, [])}
+       [ {dep_arg_t, ann_of(OpLT), OpLV, ?refined(OpLV, OpLT, [])}
+       , {dep_arg_t, ann_of(OpRT), OpRV, ?refined(OpRV, OpRT, [])}
        ],
-       ?refined(RetT, [?op(nu(), '==', {app, [{format, infix}|Ann], Expr, [OpLV, OpRV]})])
+       ?refined(RetT, [?op(Ann, nu(Ann), '==', {app, [{format, infix}|Ann], Expr, [OpLV, OpRV]})])
       }
     , S
     };
@@ -1132,36 +1124,36 @@ constr_expr(_Env, Expr = {CmpOp, Ann}, {fun_t, _, _, [OpLT, OpRT], RetT = ?int_t
        CmpOp =:= '/';
        CmpOp =:= 'mod';
        CmpOp =:= '^' ->
-    OpLV = fresh_id("opl"),
-    OpRV = fresh_id("opr"),
+    OpLV = fresh_id(ann_of(OpLT), "opl"),
+    OpRV = fresh_id(ann_of(OpRT), "opr"),
     { {dep_fun_t, Ann,
-       [ {dep_arg_t, aeso_syntax:get_ann(OpLT), OpLV, ?refined(OpLV, OpLT, [])}
-       , {dep_arg_t, aeso_syntax:get_ann(OpRT), OpRV,
+       [ {dep_arg_t, ann_of(OpLT), OpLV, ?refined(OpLV, OpLT, [])}
+       , {dep_arg_t, ann_of(OpRT), OpRV,
           ?refined(OpRV, OpRT,
                    case CmpOp of
-                       'mod' -> [?op(OpRV, '>',  ?int(0))];
-                       '/'   -> [?op(OpRV, '!=', ?int(0))];
-                       '^'   -> [?op(OpRV, '>=', ?int(0))];
+                       'mod' -> [?op(Ann, OpRV, '>',  ?int(Ann, 0))];
+                       '/'   -> [?op(Ann, OpRV, '!=', ?int(Ann, 0))];
+                       '^'   -> [?op(Ann, OpRV, '>=', ?int(Ann, 0))];
                        _     -> []
                    end)}
-       ], ?refined(RetT, [?op(nu(), '==', {app, [{format, infix}|Ann], Expr, [OpLV, OpRV]})])
+       ], ?refined(RetT, [?op(Ann, nu(Ann), '==', {app, [{format, infix}|Ann], Expr, [OpLV, OpRV]})])
       }
     , S
     };
-constr_expr(_Env, Expr = {'-', Ann}, _, S) ->
-    N = fresh_id("n"),
+constr_expr(_Env, Expr = {'-', Ann}, T, S) ->
+    N = fresh_id(Ann, "n"),
     { {dep_fun_t, Ann,
-       [{dep_arg_t, Ann, N, ?refined(N, ?int_t, [])}],
-       ?refined(?int_t,
-                [?op(nu(), '==', {app, [{format, prefix}|Ann], Expr, [N]})])
+       [{dep_arg_t, Ann, N, ?refined(N, ?int_t(ann_of(T)), [])}],
+       ?refined(?int_t(ann_of(T)),
+                [?op(Ann, nu(Ann), '==', {app, [{format, prefix}|Ann], Expr, [N]})])
       }
     , S
     };
-constr_expr(Env, {app, Ann, ?typed_p({'::', _}), [OpL, OpR]}, {app_t, _, {id, _, "list"}, [ElemT]}, S0) ->
+constr_expr(Env, {app, Ann, ?typed_p({'::', OpAnn}), [OpL, OpR]}, {app_t, _, {id, _, "list"}, [ElemT]}, S0) ->
     {DepElemLT, S1} = constr_expr(Env, OpL, S0),
     {{dep_list_t, _, DepElemRT, _}, S2} = constr_expr(Env, OpR, S1),
     DepElemT = fresh_liquid(Env, "elem_cat", ElemT),
-    LenPred = [?op(length(), '==', ?op(OpR, '+', ?int(1)))],
+    LenPred = [?op(Ann, length_var(OpAnn), '==', ?op(OpAnn, OpR, '+', ?int(OpAnn, 1)))],
     {{dep_list_t, Ann, DepElemT, LenPred},
      [ {well_formed, Env, DepElemT}
      , {subtype, Ann, Env, DepElemLT, DepElemT}
@@ -1169,11 +1161,11 @@ constr_expr(Env, {app, Ann, ?typed_p({'::', _}), [OpL, OpR]}, {app_t, _, {id, _,
      | S2
      ]
     };
-constr_expr(Env, {app, Ann, ?typed_p({'++', _}), [OpL, OpR]}, {app_t, _, {id, _, "list"}, [ElemT]}, S0) ->
+constr_expr(Env, {app, Ann, ?typed_p({'++', OpAnn}), [OpL, OpR]}, {app_t, _, {id, _, "list"}, [ElemT]}, S0) ->
     {{dep_list_t, _, DepElemLT, _}, S1} = constr_expr(Env, OpL, S0),
     {{dep_list_t, _, DepElemRT, _}, S2} = constr_expr(Env, OpR, S1),
     DepElemT = fresh_liquid(Env, "elem_cat", ElemT),
-    LenPred = [?op(length(), '==', ?op(OpL, '+', OpR))],
+    LenPred = [?op(OpAnn, length_var(OpAnn), '==', ?op(OpAnn, OpL, '+', OpR))],
     {{dep_list_t, Ann, DepElemT, LenPred},
      [ {well_formed, Env, DepElemT}
      , {subtype, Ann, Env, DepElemLT, DepElemT}
@@ -1196,7 +1188,7 @@ constr_expr(Env, QCon = {qcon, Ann, _}, Type = {fun_t, _, _, ArgsT, RetT}, S0) -
     Args = [ fresh_id("con_arg", ArgT) || ArgT <- ArgsT],
     Lam =
         {lam, Ann,
-         [ {arg, aeso_syntax:get_ann(ArgT), Arg, ArgT}
+         [ {arg, ann_of(ArgT), Arg, ArgT}
            || {?typed_p(Arg), ArgT} <- lists:zip(Args, ArgsT)
          ],
          ?typed({app, Ann, QCon, Args}, RetT)
@@ -1214,19 +1206,19 @@ constr_expr(Env, {app, Ann, ?typed_p(QCon = {qcon, _, QName}), Args}, Type, S0) 
             {app_t, _, T, A} -> {T, A}
         end,
     {ArgsT, S1} = constr_expr_list(Env, Args, S0),
-    {_, {DeclaredTypeArgs, {variant_t, Constrs}}} = lookup_type(Env, TypeQid),
+    {_, _, {DeclaredTypeArgs, {variant_t, Constrs}}} = lookup_type(Env, TypeQid),
     TypeSubst = lists:zip(DeclaredTypeArgs, AppliedTypeArgs),
 
     DepConstrs =
         [ {dep_constr_t, CAnn, Con,
            case lists:last(QName) == name(Con) of
                true  -> ArgsT;
-               false -> [?refined(Arg, [?bool(false)]) || Arg <- ConArgs]
+               false -> [?refined(Arg, [?bool(CAnn, false)]) || Arg <- ConArgs]
            end
           }
           || {constr_t, CAnn, Con, ConArgs} <- Constrs
         ],
-    {{dep_variant_t, Ann, Type, [{is_tag, Ann, nu(), QCon, ArgsT}],
+    {{dep_variant_t, Ann, Type, [{is_tag, Ann, nu(Ann), QCon, ArgsT}],
       apply_subst(TypeSubst, DepConstrs)},
      S1
     };
@@ -1246,24 +1238,24 @@ constr_expr(Env, {app, Ann, F = ?typed_p(_, {fun_t, _, NamedT, _, _}), Args0}, _
     {ArgsT, S2} = constr_expr_list(Env, Args, S1),
     ArgSubst = [{X, Expr} || {{dep_arg_t, _, X, _}, Expr} <- lists:zip(ArgsFT, Args)],
     { apply_subst(ArgSubst, RetT)
-    , [{subtype, [{context, {app, Ann, F, N}}|aeso_syntax:get_ann(ArgT)],
+    , [{subtype, [{context, {app, Ann, F, N}}|ann_of(ArgT)],
         Env, ArgT, ArgFT}
        || {{dep_arg_t, _, _, ArgFT}, ArgT, N} <- lists:zip3(ArgsFT, ArgsT, lists:seq(1, length(ArgsT)))
       ] ++ S2
     };
-constr_expr(Env, {'if', _, Cond, Then, Else}, T, S0) ->
+constr_expr(Env, {'if', Ann, Cond, Then, Else}, T, S0) ->
     ExprT = fresh_liquid(Env, "if", T),
     {_, S1} = constr_expr(Env, Cond, S0),
     EnvThen = assert(Cond, Env),
-    EnvElse = assert(?op('!', Cond), Env),
+    EnvElse = assert(?op(Ann, '!', Cond), Env),
     {ThenT, S2} = constr_expr(EnvThen, Then, S1),
     {ElseT, S3} = constr_expr(EnvElse,Else, S2),
     { ExprT
     , [ {well_formed, Env, ExprT}
-      , {reachable, aeso_syntax:get_ann(Then), EnvThen}
-      , {reachable, aeso_syntax:get_ann(Else), EnvElse}
-      , {subtype, [{context, then}|aeso_syntax:get_ann(Then)], EnvThen, ThenT, ExprT}
-      , {subtype, [{context, else}|aeso_syntax:get_ann(Else)], EnvElse, ElseT, ExprT}
+      , {reachable, ann_of(Then), EnvThen}
+      , {reachable, ann_of(Else), EnvElse}
+      , {subtype, [{context, then}|ann_of(Then)], EnvThen, ThenT, ExprT}
+      , {subtype, [{context, else}|ann_of(Else)], EnvElse, ElseT, ExprT}
       | S3
       ]
     };
@@ -1285,8 +1277,8 @@ constr_expr(Env, {lam, _, Args, Body}, {fun_t, TAnn, _, _, RetT}, S0) ->
     EnvBody = bind_args(DepArgsT, Env),
     {BodyT, S1} = constr_expr(EnvBody, Body, S0),
     {ExprT,
-     [ {well_formed, Env, {dep_fun_t, ann(), DepArgsT, DepRetT}}
-     , {subtype, aeso_syntax:get_ann(Body), EnvBody, BodyT, DepRetT}
+     [ {well_formed, Env, {dep_fun_t, TAnn, DepArgsT, DepRetT}}
+     , {subtype, ann_of(Body), EnvBody, BodyT, DepRetT}
      | S1
      ]
     };
@@ -1311,7 +1303,7 @@ constr_expr(Env, {list, Ann, Elems}, {app_t, TAnn, _, [ElemT]}, S0) ->
         [ {subtype, Ann, Env, DepElemTI, DepElemT}
          || DepElemTI <- DepElemsT
         ] ++ S1,
-    {{dep_list_t, TAnn, DepElemT, [?op(length(), '==', ?int(length(Elems)))]},
+    {{dep_list_t, TAnn, DepElemT, [?op(Ann, length_var(Ann), '==', ?int(Ann, length(Elems)))]},
      [ {well_formed, Env, DepElemT}
      | S2
      ]
@@ -1361,7 +1353,7 @@ constr_expr(Env, [Expr|Rest], T, S0) ->
     {RestT, S2} = constr_expr(Env, Rest, T, S1),
     {ExprT,
      [ {well_formed, Env, ExprT}
-     , {subtype, aeso_syntax:get_ann(Expr), Env, RestT, ExprT}
+     , {subtype, ann_of(Expr), Env, RestT, ExprT}
      | S2
      ]
     };
@@ -1373,7 +1365,7 @@ constr_expr(_, A, B, _) ->
 constr_cases(_Env, _Switched, _SwitchedT, _ExprT, Alts, S) ->
     constr_cases(_Env, _Switched, _SwitchedT, _ExprT, Alts, 0, S).
 constr_cases(Env, Switched, _SwitchedT, _ExprT, [], _N, S) ->
-    [{unreachable, aeso_syntax:get_ann(Switched), Env}|S];
+    [{unreachable, ann_of(Switched), Env}|S];
 constr_cases(Env0, Switched, SwitchedT, ExprT,
              [{'case', Ann, Pat, Case}|Rest], N, S0) ->
     {EnvCase, EnvCont} = match_to_pattern(Env0, Pat, Switched, SwitchedT),
@@ -1394,13 +1386,13 @@ match_to_pattern(Env0, Pat, Expr, Type) ->
     EnvMatch = assert(Pred, Env1),
     EnvNoMatch =
         case Pred of
-            [] -> assert(?bool(false), Env0);
+            [] -> assert(?bool(ann_of(Pat), false), Env0);
             [H|T] ->
                 PredExpr = lists:foldl(
-                             fun(E, Acc) -> ?op(E, '&&', Acc)
+                             fun(E, Acc) -> ?op(ann_of(E), E, '&&', Acc)
                              end, H, T
                             ),
-                assert(?op('!',  PredExpr), Env0)
+                assert(?op(ann_of(Pat), '!',  PredExpr), Env0)
         end,
     {EnvMatch, EnvNoMatch}.
 match_to_pattern(Env, {typed, _, Pat, _}, Expr, Type, Pred) ->
@@ -1411,14 +1403,14 @@ match_to_pattern(Env, Id = {id, _, _}, _Expr, Type, Pred) ->
     {bind_var(Id, Type, Env), Pred};
 match_to_pattern(Env, _Pat, {id, _, "_"}, _Type, Pred) ->
     {Env, Pred}; % Useful in lists
-match_to_pattern(Env, I = {int, _, _}, Expr, _Type, Pred) ->
-    {Env, [?op(Expr, '==', I)|Pred]};
+match_to_pattern(Env, I = {int, Ann, _}, Expr, _Type, Pred) ->
+    {Env, [?op(Ann, Expr, '==', I)|Pred]};
 match_to_pattern(Env, {tuple, _, Pats}, Expr, {tuple_t, _, Types}, Pred) ->
     N = length(Pats),
     lists:foldl(
       fun({{Pat, PatT}, I}, {Env0, Pred0}) ->
-              Ann = aeso_syntax:get_ann(Pat),
-              Proj = {proj, Ann, Expr, ?tuple_proj_id(N, I)},
+              Ann = ann_of(Pat),
+              Proj = {proj, Ann, Expr, ?tuple_proj_id(Ann, N, I)},
               match_to_pattern(Env0, Pat, Proj, PatT, Pred0)
       end,
       {Env, Pred}, lists:zip(lists:zip(Pats, Types), lists:seq(1, N))
@@ -1433,8 +1425,8 @@ match_to_pattern(Env, {record, _, Fields}, Expr, {dep_record_t, _, Type, FieldsT
     lists:foldl(
       fun({field, _, [{proj, _, Field}], Pat}, {Env0, Pred0}) ->
               PatT = proplists:get_value(name(Field), FieldTypes),
-              Ann = aeso_syntax:get_ann(Pat),
-              Proj = {proj, Ann, Expr, qid(qname(Qid) ++ [name(Field)])},
+              Ann = ann_of(Pat),
+              Proj = {proj, Ann, Expr, qid(ann_of(Field), qname(Qid) ++ [name(Field)])},
               match_to_pattern(Env0, Pat, Proj, PatT, Pred0)
       end,
       {Env, Pred}, Fields
@@ -1458,25 +1450,25 @@ match_to_pattern(Env, {app, Ann, ?typed_p(QCon = {qcon, _, QName}), Args},
     Pred1 = [{is_tag, Ann, Expr, QCon, Types}|Pred0],
     lists:foldl(
       fun({{Arg, ArgT}, I}, {Env0, Pred}) ->
-              ArgAnn = aeso_syntax:get_ann(Arg),
-              Proj = {proj, ArgAnn, Expr, ?adt_proj_id(QCon, I)},
+              ArgAnn = ann_of(Arg),
+              Proj = {proj, ArgAnn, Expr, ?adt_proj_id(Ann, QCon, I)},
               match_to_pattern(Env0, Arg, Proj, ArgT, Pred)
       end,
       {Env, Pred1}, lists:zip(lists:zip(Args, Types), lists:seq(1, N))
      );
-match_to_pattern(Env, {list, _, Pats}, Expr, {dep_list_t, _, ElemT, _}, Pred) ->
+match_to_pattern(Env, {list, Ann, Pats}, Expr, {dep_list_t, _, ElemT, _}, Pred) ->
     N = length(Pats),
     lists:foldl(
       fun(Pat, {Env0, Pred0}) ->
-              match_to_pattern(Env0, Pat, {id, ann(), "_"}, ElemT, Pred0)
+              match_to_pattern(Env0, Pat, {id, ann_of(Pat), "_"}, ElemT, Pred0)
       end,
-      {Env, [?op(Expr, '==', ?int(N)) | Pred]}, Pats
+      {Env, [?op(Ann, Expr, '==', ?int(Ann, N)) | Pred]}, Pats
      );
-match_to_pattern(Env0, {app, _, {'::', _}, [H,T]}, Expr, {dep_list_t, TAnn, ElemT, _}, Pred0) ->
-    Pred1 = [?op(Expr, '>', ?int(0))|Pred0],
-    {Env1, Pred2} = match_to_pattern(Env0, H, {id, ann(), "_"}, ElemT, Pred1),
-    match_to_pattern(Env1, T, {id, ann(), "_"},
-                     {dep_list_t, TAnn, ElemT, [?op(length(), '==', ?op(Expr, '-', ?int(1)))]},
+match_to_pattern(Env0, {app, Ann, {'::', OpAnn}, [H,T]}, Expr, {dep_list_t, TAnn, ElemT, _}, Pred0) ->
+    Pred1 = [?op(OpAnn, Expr, '>', ?int(OpAnn, 0))|Pred0],
+    {Env1, Pred2} = match_to_pattern(Env0, H, {id, Ann, "_"}, ElemT, Pred1),
+    match_to_pattern(Env1, T, {id, Ann, "_"},
+                     {dep_list_t, TAnn, ElemT, [?op(OpAnn, length_var(OpAnn), '==', ?op(OpAnn, Expr, '-', ?int(OpAnn, 1)))]},
                      Pred2).
 
 %% -- Substitution -------------------------------------------------------------
@@ -1524,15 +1516,15 @@ apply_subst(Subs, Q) when is_list(Subs) ->
 
 cmp_qualifiers(SelfId, Thing) ->
     %% [].
-    [ ?op(SelfId, '=<', Thing)
-    , ?op(SelfId, '>=', Thing)
-    , ?op(SelfId, '>', Thing)
-    , ?op(SelfId, '<', Thing)
+    [ ?op(ann_of(SelfId), SelfId, '=<', Thing)
+    , ?op(ann_of(SelfId), SelfId, '>=', Thing)
+    , ?op(ann_of(SelfId), SelfId, '>', Thing)
+    , ?op(ann_of(SelfId), SelfId, '<', Thing)
     ].
 
 eq_qualifiers(SelfId, Thing) ->
-    [ ?op(SelfId, '==', Thing)
-    , ?op(SelfId, '!=', Thing)
+    [ ?op(ann_of(SelfId), SelfId, '==', Thing)
+    , ?op(ann_of(SelfId), SelfId, '!=', Thing)
     ].
 
 int_qualifiers(SelfId, Thing) ->
@@ -1540,26 +1532,27 @@ int_qualifiers(SelfId, Thing) ->
 
 plus_int_qualifiers(_, {int, _, 0}, _Thing) -> [];
 plus_int_qualifiers(SelfId, Int, Thing) ->
-    int_qualifiers(SelfId, ?op(Thing, '+', Int)) ++ int_qualifiers(SelfId, ?op(Thing, '-', Int)).
+    int_qualifiers(SelfId, ?op(ann_of(SelfId), Thing, '+', Int)) ++
+    int_qualifiers(SelfId, ?op(ann_of(SelfId), Thing, '-', Int)).
 
 var_int_qualifiers(SelfId, Var) ->
-    int_qualifiers(SelfId, Var) ++ plus_int_qualifiers(SelfId, ?int(1), Var).
+    int_qualifiers(SelfId, Var) ++ plus_int_qualifiers(SelfId, ?int(ann_of(SelfId), 1), Var).
 
 inst_pred_variant_tag(SelfId, Qid, Constrs) ->
-    [ {is_tag, ann(), SelfId, qcon(lists:droplast(qname(Qid)) ++ [name(Con)]), Args}
+    [ {is_tag, ann_of(SelfId), SelfId, qcon(ann_of(Con), lists:droplast(qname(Qid)) ++ [name(Con)]), Args}
       || {constr_t, _, Con, Args} <- Constrs
     ] ++
-    [ ?op('!', {is_tag, ann(), SelfId, qcon(lists:droplast(qname(Qid)) ++ [name(Con)]), Args})
+    [ ?op(ann_of(SelfId), '!', {is_tag, ann_of(SelfId), SelfId, qcon(ann_of(Con), lists:droplast(qname(Qid)) ++ [name(Con)]), Args})
       || {constr_t, _, Con, Args} <- Constrs
     ].
 
 inst_pred_int(Env, SelfId) ->
     lists:concat(
       [ [Q || CoolInt <- Env#env.cool_ints,
-              Q <- int_qualifiers(SelfId, ?int(CoolInt))
+              Q <- int_qualifiers(SelfId, ?int(ann_of(SelfId), CoolInt))
         ]
-      , [ Q || {Var, {refined_t, _, _, ?int_tp, _}} <- maps:to_list(Env#env.var_env),
-               Q <- var_int_qualifiers(SelfId, {id, ann(), Var})
+      , [ Q || {Var, {refined_t, Ann, _, ?int_tp, _}} <- maps:to_list(Env#env.var_env),
+               Q <- var_int_qualifiers(SelfId, {id, Ann, Var})
         ]
       ]
      ).
@@ -1567,19 +1560,19 @@ inst_pred_int(Env, SelfId) ->
 inst_pred_bool(Env, SelfId) ->
     lists:concat(
       [ [Q || CoolBool <- [true, false],
-              Q <- eq_qualifiers(SelfId, ?bool(CoolBool))
+              Q <- eq_qualifiers(SelfId, ?bool(ann_of(SelfId), CoolBool))
         ]
-      , [ Q || {Var, {refined_t, _, _, ?bool_tp, _}} <- maps:to_list(Env#env.var_env),
-               Q <- eq_qualifiers(SelfId, {id, ann(), Var})
+      , [ Q || {Var, {refined_t, Ann, _, ?bool_tp, _}} <- maps:to_list(Env#env.var_env),
+               Q <- eq_qualifiers(SelfId, {id, Ann, Var})
         ]
       ]
      ).
 
 inst_pred_tvar(Env, SelfId, TVar) ->
-    [ Q || {Var, {refined_t, _, _, {tvar, _, TVar1}, _}} <- maps:to_list(Env#env.var_env),
+    [ Q || {Var, {refined_t, Ann, _, {tvar, _, TVar1}, _}} <- maps:to_list(Env#env.var_env),
            TVar == TVar1,
-           Q <- eq_qualifiers(SelfId, {id, ann(), Var})
-    ] ++ [?bool(false)].
+           Q <- eq_qualifiers(SelfId, {id, Ann, Var})
+    ] ++ [?bool(ann_of(SelfId), false)].
 
 inst_pred(Env, SelfId, {refined_t, _, _, BaseT, _}) ->
     inst_pred(Env, SelfId, BaseT);
@@ -1591,15 +1584,15 @@ inst_pred(Env, SelfId, BaseT) ->
             inst_pred_bool(Env, SelfId);
         {qid, _, _} ->
             case lookup_type(Env, BaseT) of
-                {_, {[], {variant_t, Constrs}}} ->
+                {_, _, {[], {variant_t, Constrs}}} ->
                     inst_pred_variant_tag(SelfId, BaseT, Constrs);
                 X -> error({todo, {inst_pred, X}})
             end;
-        {app_t, _, {id, _, "list"}, _} ->
-            inst_pred_int(Env, length());
+        {app_t, Ann, {id, _, "list"}, _} ->
+            inst_pred_int(Env, length_var(Ann));
         {app_t, _, Qid = {qid, _, _}, Args} ->
             case lookup_type(Env, Qid) of
-                {_, {AppArgs, {variant_t, Constrs}}} ->
+                {_, _, {AppArgs, {variant_t, Constrs}}} ->
                     inst_pred_variant_tag(
                       SelfId,
                       Qid,
@@ -1665,52 +1658,52 @@ type_binds_pred(Assg, Access, TB) ->
         Q <- case Type of
                  {refined_t, _, Id, _, P} ->
                      apply_subst(Id, Access(Var), pred_of(Assg, P));
-                 {tuple_t, _, Fields} ->
+                 {tuple_t, Ann, Fields} ->
                      N = length(Fields),
                      type_binds_pred(
                        Assg,
-                       fun(X) -> {proj, ann(), Access(Var), X} end,
+                       fun(X) -> {proj, Ann, Access(Var), X} end,
                        lists:zip(
-                         [?tuple_proj_id(N, I) || I <- lists:seq(1, N)],
+                         [?tuple_proj_id(Ann, N, I) || I <- lists:seq(1, N)],
                          Fields
                         )
                       );
-                 {dep_record_t, _, RT, Fields} ->
+                 {dep_record_t, Ann, RT, Fields} ->
                      QName = case RT of
                                  {qid, _, Q} -> Q;
                                  {app_t, _, {qid, _, Q}, _} -> Q
                              end,
                      type_binds_pred(
                        Assg,
-                       fun(X) -> {proj, ann(), Access(Var), X} end,
-                       [{qid(QName ++ [name(Field)]), T}
-                        || {dep_field_t, _, Field, T} <- Fields]
+                       fun(X) -> {proj, Ann, Access(Var), X} end,
+                       [{qid(FAnn, QName ++ [name(Field)]), T}
+                        || {dep_field_t, FAnn, Field, T} <- Fields]
                       );
-                 {dep_variant_t, _, VT, Tag, Constrs} ->
+                 {dep_variant_t, Ann, VT, Tag, Constrs} ->
                      QName = case VT of
                                  {qid, _, Q} -> Q;
                                  {app_t, _, {qid, _, Q}, _} -> Q;
                                  {id, _, Q} -> [Q];
                                  {app_t, _, {id, _, Q}, _} -> [Q]
                              end,
-                     TagPred = apply_subst(nu(), Access(Var), pred_of(Assg, Tag)),
+                     TagPred = apply_subst(nu(Ann), Access(Var), pred_of(Assg, Tag)),
                      ConPred =
                          lists:flatten(
                            [ type_binds_pred(
                                Assg,
-                               fun(X) -> {proj, ann(), Access(Var), X} end,
+                               fun(X) -> {proj, CAnn, Access(Var), X} end,
                                lists:zip(
-                                 [?adt_proj_id(qid(lists:droplast(QName) ++ [name(Con)]), I)
+                                 [?adt_proj_id(CAnn, qid(CAnn, lists:droplast(QName) ++ [name(Con)]), I)
                                   || I <- lists:seq(1, length(Args))],
                                  Args
                               )
                               )
-                             || {dep_constr_t, _, Con, Args} <- Constrs
+                             || {dep_constr_t, CAnn, Con, Args} <- Constrs
                            ]),
                      TagPred ++ ConPred;
-                 {dep_list_t, _, ElemT, LenPred} ->
+                 {dep_list_t, Ann, ElemT, LenPred} ->
                      type_binds_pred(Assg, Access, [ElemT]) ++
-                         apply_subst(length(), Access(Var), pred_of(Assg, LenPred));
+                         apply_subst(length_var(Ann), Access(Var), pred_of(Assg, LenPred));
                  _ -> []
              end
     ].
@@ -1784,8 +1777,8 @@ split_constr1(C = {subtype, Ann, Env0, SubT, SupT}) ->
         } ->
             split_constr(
               [ {subtype, Ann, Env0,
-                 ?refined(length(), ?int_t, LenQualSub),
-                 ?refined(length(), ?int_t, LenQualSup)}
+                 ?refined(length_var(Ann), ?int_t(Ann), LenQualSub),
+                 ?refined(length_var(Ann), ?int_t(Ann), LenQualSup)}
               , {subtype, Ann, Env0, DepElemSub, DepElemSup}
               ]
              );
@@ -1813,8 +1806,8 @@ split_constr1(C = {well_formed, Env0, T}) ->
                 ]
               ]
              );
-        {dep_list_t, _, DepElem, LenQual} ->
-            [ {well_formed, Env0, ?refined(length(), ?int_t, LenQual)}
+        {dep_list_t, Ann, DepElem, LenQual} ->
+            [ {well_formed, Env0, ?refined(length_var(Ann), ?int_t(Ann), LenQual)}
             , {well_formed, Env0, DepElem}
             ];
         _ -> [C]
@@ -1899,8 +1892,8 @@ valid_in({subtype, Ann, Env, Sub, Sup}, Assg)
   when element(1, Sub) =:= id;
        element(1, Sub) =:= tvar ->
     valid_in({subtype, Ann, Env, ?refined(Sub), Sup}, Assg);
-valid_in(C = {subtype, _, _, _, _}, _) -> %% In typechecker we trust
-    %% ?DBG("SKIPPING SUBTYPE: ~s", [aeso_pretty:pp(constr, C)]),
+valid_in(_C = {subtype, _, _, _, _}, _) -> %% In typechecker we trust
+    %% ?DBG("SKIPPING SUBTYPE: ~s", [aeso_pretty:pp(constr, _C)]),
     true;
 valid_in(_, _) ->
     true.
@@ -1931,12 +1924,12 @@ weaken({well_formed, _Env, {refined_t, _, _, _, _}}, Assg) ->
     Assg.
 
 check_reachable(Assg, [{reachable, Ann, Env}|Rest]) ->
-    case impl_holds(Assg, Env, [], [?bool(false)]) of
+    case impl_holds(Assg, Env, [], [?bool(Ann, false)]) of
         true -> throw({valid_unreachable, {Ann, Env}});
         false -> check_reachable(Assg, Rest)
     end;
 check_reachable(Assg, [{unreachable, Ann, Env}|Rest]) ->
-    case impl_holds(Assg, Env, [], [?bool(false)]) of
+    case impl_holds(Assg, Env, [], [?bool(Ann, false)]) of
         true -> check_reachable(Assg, Rest);
         false -> throw({invalid_reachable, {Ann, Env}})
     end;
@@ -1959,7 +1952,7 @@ declare_tuples([N|Rest]) ->
                ]},
         {list, [{app, "$tuple" ++ integer_to_list(N),
                  [{app, "$mk_tuple" ++ integer_to_list(N),
-                   [{app, name(?tuple_proj_id(N, I)), [{var, "T" ++ integer_to_list(I)}]}
+                   [{app, name(?tuple_proj_id(ann(), N, I)), [{var, "T" ++ integer_to_list(I)}]}
                     || I <- Seq
                    ]
                   }
@@ -1976,7 +1969,7 @@ declare_datatypes([]) ->
     ok;
 declare_datatypes([{Name, {Args, TDef}}|Rest]) ->
     TName = string:join(qname(Name), "."),
-    TypeSubst = [{Arg, fresh_id("t")} || Arg <- Args],
+    TypeSubst = [{Arg, fresh_id(ann(), "t")} || Arg <- Args],
     SMTArgs = [T || {_, T} <- TypeSubst],
     case TDef of
         {alias_t, _} -> ok;
@@ -2006,7 +1999,7 @@ declare_datatypes([{Name, {Args, TDef}}|Rest]) ->
                                 QualCon = lists:droplast(qname(Name)) ++ [name(Con)],
                                 ConName = string:join(QualCon, "."),
                                 {app, ConName,
-                                 [{app, name(?adt_proj_id(qid(QualCon), I)),
+                                 [{app, name(?adt_proj_id(ann(), qid(ann(), QualCon), I)),
                                    [type_to_smt(apply_subst(TypeSubst, T))]}
                                   || {T, I} <-
                                          lists:zip(
@@ -2057,7 +2050,7 @@ impl_holds(Assg, Env, Assump, Concl) ->
               [ aeso_smt:assert(expr_to_smt(Expr))
                 || Expr <- Assump
               ],
-              aeso_smt:assert(expr_to_smt(?op('!', ConclExpr))),
+              aeso_smt:assert(expr_to_smt(?op(ann(), '!', ConclExpr))),
               case aeso_smt:check_sat() of
                   {error, Err} -> throw({smt_error, Err});
                   Res ->
@@ -2383,7 +2376,7 @@ a_normalize_to_simpl(Expr, Type, Decls0) ->
     {Expr1, Decls1} = a_normalize(Expr, Type, Decls0),
     Var = fresh_id("anorm_" ++ atom_to_list(element(1, Expr)), Type),
     {Var,
-     [{letval, ann(), Var, Expr1}|Decls1]
+     [{letval, ann_of(Expr), Var, Expr1}|Decls1]
     }.
 
 a_normalize_to_simpl_list([], Acc, Decls) ->
@@ -2398,28 +2391,29 @@ a_normalize_to_simpl_list([Expr|Rest], Acc, Decls0) ->
 
 %% -- State purification ------------------------------------------------------
 
-balance_t() ->
-    ?int_t.
+balance_t(Ann) ->
+    ?int_t(Ann).
 
-init_state_var() ->
-    {id, ann(), "$init_state"}.
-init_state_var(Type) ->
-    ?typed({id, ann(), "$init_state"}, Type).
+init_state_var(Ann) ->
+    {id, Ann, "$init_state"}.
+init_state_var(Ann, Type) ->
+    ?typed({id, Ann, "$init_state"}, Type).
 
-init_balance_var() ->
-    ?typed({id, ann(), "$init_balance"}, ?d_nonneg_int).
+init_balance_var(Ann) ->
+    ?typed({id, Ann, "$init_balance"}, ?d_nonneg_int(Ann)).
 
 -record (purifier_st,
          { state :: expr()
-         , balance = init_balance_var() :: expr()
+         , balance :: expr()
          }).
 -type purifier_st() :: #purifier_st{}.
 
--spec init_purifier_st(env() | lutype()) -> purifier_st().
-init_purifier_st(Env = #env{}) ->
-    init_purifier_st(state_t(Env));
+-spec init_purifier_st(ann(), env()) -> purifier_st().
+init_purifier_st(Ann, Env) ->
+    init_purifier_st(state_t(Ann, Env)).
+-spec init_purifier_st(lutype()) -> purifier_st().
 init_purifier_st(StateType) ->
-    #purifier_st{state = init_state_var(StateType)}.
+    #purifier_st{state = init_state_var(StateType), balance = init_balance_var(ann_of(StateType))}.
 
 get_state_t(#purifier_st{state = ?typed_p(_, StateT)}) ->
     StateT.
@@ -2440,19 +2434,19 @@ wrap_impure(pure, E, _) ->
 
 wrap_state(E = ?typed_p(_, T), ST) ->
     ?typed(
-       {tuple, aeso_syntax:get_ann(E),
+       {tuple, ann_of(E),
         [E, ST#purifier_st.state, ST#purifier_st.balance]
        }, wrap_state_t(T, ST)).
 
 wrap_state_t(T, ST) ->
-    {tuple_t, aeso_syntax:get_ann(T),
-     [T, get_state_t(ST), balance_t()]
+    {tuple_t, ann_of(T),
+     [T, get_state_t(ST), balance_t(ann_of(T))]
     }.
 
 unwrap_state(Pat, ST) ->
     STVar = fresh_id("$state", get_state_t(ST)),
-    BLVar = fresh_id("$balance", balance_t()),
-    Pat1 = {tuple, ann(), [Pat, STVar, BLVar]},
+    BLVar = fresh_id("$balance", balance_t(ann_of(Pat))),
+    Pat1 = {tuple, ann_of(Pat), [Pat, STVar, BLVar]},
     {Pat1, #purifier_st{state = STVar, balance = BLVar}}.
 
 pure_plus(pure, pure) ->
@@ -2502,8 +2496,8 @@ purify_expr(?typed_p(E, T), T1, ST) ->
 purify_expr({qid, _, [_, "state"]}, T, ST) ->
     ?typed_p(STVar) = ST#purifier_st.state,
     {pure, ?typed(STVar, T)};
-purify_expr({qid, _, ["Contract", "balance"]}, _, ST) ->
-    {pure, ?typed(ST#purifier_st.balance, ?d_nonneg_int)};
+purify_expr({qid, Ann, ["Contract", "balance"]}, _, ST) ->
+    {pure, ?typed(ST#purifier_st.balance, ?d_nonneg_int(Ann))};
 purify_expr({app, _, ?typed_p({qid, QAnn, [_, "put"]}), [State]}, T, ST) ->
     {pure, ?typed_p(State1)} = purify_expr(State, ST),
     {impure, wrap_state(
@@ -2568,7 +2562,7 @@ purify_block(PurePrev, [{letval, Ann, Pat, Expr}|Rest], Type, ST) ->
             {Pat1, ST1} = unwrap_state(Pat, ST),
             {_, Rest1} = purify_block(PureNext, Rest, Type, ST1),
             {impure,
-             [ {letval, ann(), Pat1, Expr1}
+             [ {letval, Ann, Pat1, Expr1}
              | Rest1
              ]}
     end;
@@ -2580,10 +2574,10 @@ purify_block(PurePrev, [Stmt|Rest], Type, ST) ->
             {Pure, Rest1} = purify_block(PureNext, Rest, Type, ST),
             {Pure, [Stmt1|Rest1]};
         impure ->
-            {Pat, ST1} = unwrap_state({id, ann(), "_"}, ST),
+            {Pat, ST1} = unwrap_state({id, ann_of(Stmt), "_"}, ST),
             {_, Rest1} = purify_block(PureNext, Rest, Type, ST1),
             {impure,
-            [ {letval, ann(), Pat, Stmt1}
+            [ {letval, ann_of(Stmt), Pat, Stmt1}
             | Rest1
             ]}
     end.
