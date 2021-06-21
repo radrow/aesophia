@@ -451,10 +451,11 @@ under_constr_env(Env, X) ->
 
 constr({well_formed, Env, T}) ->
     under_constr_env(Env, type(T));
-constr({subtype, _, Env, T1, T2}) ->
+constr({subtype, Ann, Env, T1, T2}) ->
     under_constr_env(
       Env,
-      beside([ type(T1)
+      beside([ text(io_lib:format("~p\t", [Ann]))
+             , type(T1)
              , text(" <: ")
              , type(T2)
              ]));

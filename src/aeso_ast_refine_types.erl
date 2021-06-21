@@ -865,13 +865,6 @@ switch_variance(forced_covariant) ->
 switch_variance(forced_contravariant) ->
     forced_contravariant.
 
--define(IS_LIQUID(T),
-        (element(1, T) =/= refined_t orelse
-         element(1, T) =/= dep_list_t orelse
-         element(1, T) =/= dep_variant_t orelse
-         element(1, T) =/= dep_record_t orelse
-         element(1, T) =/= dep_fun_t)
-       ).
 base_type({refined_t, _, _, T, _}) ->
     T;
 base_type({dep_list_t, Ann, ElemT, _}) ->
@@ -974,6 +967,7 @@ constr_letfun(Env0, {letfun, Ann, Id, Args, RetT, Body}, S0) ->
     ?DBG("INITIAL:\n~s",  [aeso_pretty:pp(expr, strip_typed(Body))]),
     Body1 = a_normalize(Body),
     ?DBG("A-NORM:\n~s",   [aeso_pretty:pp(expr, strip_typed(Body1))]),
+    ?DBG("A-NORM:\n~p",   [Body1]),
     PurifierST = init_purifier_st(ann_of(RetT), Env3),
     Body2 =
         case proplists:get_value(stateful, Ann, false) of
@@ -987,6 +981,7 @@ constr_letfun(Env0, {letfun, Ann, Id, Args, RetT, Body}, S0) ->
     ?DBG("PURIFIED:\n~p", [Body2]),
     {BodyT, S1} = constr_expr(Env3, Body2, S0),
     InnerFunT = {dep_fun_t, Ann, ArgsT, BodyT},
+    ?DBG("CHUJ of ~p\n ~p", [Body2, [{A, B} || {subtype, _, _, A, B} <- S1]]),
     S3 = [ {subtype, Ann, Env3, BodyT, GlobRetT}
          , {well_formed, Env0, GlobFunT}
          , {well_formed, Env0, InnerFunT}
@@ -1018,14 +1013,20 @@ constr_expr_list(Env, [H|T], Acc, S0) ->
     {H1, S1} = constr_expr(Env, H, S0),
     constr_expr_list(Env, T, [H1|Acc], S1).
 
-constr_expr(Env, ?typed_p(Expr, Type), S0) when ?IS_LIQUID(Type) ->
+constr_expr(Env, ?typed_p(Expr, Type), S0) ->
     Base = base_type(Type),
-    {ExprT, S1} = constr_expr(Env, Expr, Base, S0),
-    {ExprT,
-     [ {subtype, ann_of(Type), Env, ExprT, Type}
-     | S1
-     ]
-    };
+    case Base == Type of
+        true -> constr_expr(Env, Expr, Type, S0);
+        false ->
+            DType = fresh_liquid(Env, "typed", Type),
+            {ExprT, S1} = constr_expr(Env, Expr, Base, S0),
+            {ExprT,
+             [ {subtype, ann_of(Type), Env, ExprT, DType}
+             , {well_formed, Env, DType}
+             | S1
+             ]
+            }
+    end;
 constr_expr(Env, ?typed_p(Expr, T), S) ->
     constr_expr(Env, Expr, T, S);
 constr_expr(_, X, _) ->
@@ -1552,7 +1553,7 @@ inst_pred_int(Env, SelfId) ->
       [ [Q || CoolInt <- Env#env.cool_ints,
               Q <- int_qualifiers(SelfId, ?int(ann_of(SelfId), CoolInt))
         ]
-      , [ Q || {Var, {refined_t, Ann, _, ?int_tp, _}} <- maps:to_list(Env#env.var_env),
+      , [ Q || {Var, {_, {refined_t, Ann, _, ?int_tp, _}}} <- maps:to_list(Env#env.var_env),
                Q <- var_int_qualifiers(SelfId, {id, Ann, Var})
         ]
       ]
@@ -1563,14 +1564,14 @@ inst_pred_bool(Env, SelfId) ->
       [ [Q || CoolBool <- [true, false],
               Q <- eq_qualifiers(SelfId, ?bool(ann_of(SelfId), CoolBool))
         ]
-      , [ Q || {Var, {refined_t, Ann, _, ?bool_tp, _}} <- maps:to_list(Env#env.var_env),
+      , [ Q || {Var, {_, {refined_t, Ann, _, ?bool_tp, _}}} <- maps:to_list(Env#env.var_env),
                Q <- eq_qualifiers(SelfId, {id, Ann, Var})
         ]
       ]
      ).
 
 inst_pred_tvar(Env, SelfId, TVar) ->
-    [ Q || {Var, {refined_t, Ann, _, {tvar, _, TVar1}, _}} <- maps:to_list(Env#env.var_env),
+    [ Q || {Var, {_, {refined_t, Ann, _, {tvar, _, TVar1}, _}}} <- maps:to_list(Env#env.var_env),
            TVar == TVar1,
            Q <- eq_qualifiers(SelfId, {id, Ann, Var})
     ] ++ [?bool(ann_of(SelfId), false)].
@@ -1860,7 +1861,7 @@ valid_in({subtype, Ann, Env,
     SupPred = pred_of(Assg, SupP),
     AssumpPred = SubPred,
     ConclPred  = apply_subst(SupId, SubId, SupPred),
-    ?DBG("~s <: ~s\nASSUMP: ~s\nCONCL: ~s", [name(SubId), name(SupId), aeso_pretty:pp(predicate, AssumpPred), aeso_pretty:pp(predicate, ConclPred)]),
+    %% ?DBG("~s <: ~s\nASSUMP: ~s\nCONCL: ~s", [name(SubId), name(SupId), aeso_pretty:pp(predicate, AssumpPred), aeso_pretty:pp(predicate, ConclPred)]),
     Env1 = ensure_var(SubId, Base, Env),
     case impl_holds(Assg, Env1, AssumpPred, ConclPred) of
         true ->
@@ -1868,7 +1869,7 @@ valid_in({subtype, Ann, Env,
         false ->
             ?DBG("**** CONTRADICTION"),
             SimpAssump = simplify_pred(Assg, Env1, pred_of(Assg, Env1) ++ AssumpPred),
-            throw({contradict, {Ann, SimpAssump, ConclPred}})
+            throw({contradict, {Ann, strip_typed(SimpAssump), strip_typed(ConclPred)}})
     end;
 valid_in({subtype, _, Env,
           {refined_t, _, SubId,    _, SubPredVar},
@@ -1917,9 +1918,12 @@ weaken({subtype, _, Env,
     NewLtinfo = Ltinfo#ltinfo{
                  predicate = Filtered
                 },
-    %% ?DBG("WEAKENED FROM\n~s\nTO\n~s", [aeso_pretty:pp(predicate, Ltinfo#ltinfo.predicate),
-    %%                                    aeso_pretty:pp(predicate, Filtered)
-    %%                                   ]),
+    ?DBG("WEAKENED FROM\n~p\nTO\n~p", [Ltinfo#ltinfo.predicate,
+                                       Filtered
+                                      ]),
+    ?DBG("WEAKENED FROM\n~s\nTO\n~s", [aeso_pretty:pp(predicate, Ltinfo#ltinfo.predicate),
+                                       aeso_pretty:pp(predicate, Filtered)
+                                      ]),
     Assg#{Var => NewLtinfo};
 weaken({well_formed, _Env, {refined_t, _, _, _, _}}, Assg) ->
     Assg.
@@ -2507,27 +2511,22 @@ purify_expr({app, _, ?typed_p({qid, QAnn, [_, "put"]}), [State]}, T, ST) ->
     {impure, wrap_state(
                ?typed({tuple, QAnn, []}, T),
                ST#purifier_st{state = ?typed(State1, get_state_t(ST))})};
-purify_expr({app, Ann, Fun, Args}, T, ST) ->
-    %% Assuming a-normal form
-    case aeso_syntax:get_ann(stateful, Fun, false) of
-        false ->
-            {pure,
-             ?typed(
-                {app, Ann, element(2, purify_expr(Fun, ST)),
-                 [element(2, purify_expr(A, ST)) || A <- Args]},
-                T
-               )
-            };
-        true ->
-            {impure,
-             ?typed(
-                {app, Ann, element(2, purify_expr(Fun, ST)),
-                 [ ST#purifier_st.state, ST#purifier_st.balance
-                 | [element(2, purify_expr(A, ST)) || A <- Args]]},
-                T
-               )
-            }
-    end;
+purify_expr({app, Ann, Fun = ?typed_p({Op, _}), Args}, T, ST) when is_atom(Op) ->
+    {pure, Fun1} = purify_expr(Fun, ST),
+    {pure, Args1} = purify_many(Args, ST),
+    {pure, ?typed({app, Ann, Fun1, Args1}, T)};
+purify_expr({app, Ann, Fun, Args}, _, ST) ->
+    {pure, ?typed_p(Fun1, {fun_t, FAnn, [], ArgsT, RetT})} = purify_expr(Fun, ST),
+    ArgsT1 = [get_state_t(ST), balance_t(FAnn)|ArgsT],
+    {Pure, RetT1} =
+        case aeso_syntax:get_ann(stateful, FAnn, false) of
+            false -> {pure, RetT};
+            true  -> {impure, wrap_state_t(RetT, ST)}
+        end,
+    FunT1 = {fun_t, FAnn, [], ArgsT1, RetT1},
+    Args1 = [ ST#purifier_st.state, ST#purifier_st.balance
+            | [drop_purity(purify_expr(A, ST)) || A <- Args]],
+    {Pure, ?typed({app, Ann, ?typed(Fun1, FunT1), Args1}, RetT1)};
 purify_expr({'if', Ann, Cond, Then, Else}, T, ST) ->
     {pure, Cond1} = purify_expr(Cond, ST),
     {Pure, {Then1, Else1}} = purify_many(Then, Else, ST),
@@ -2545,41 +2544,41 @@ purify_expr({switch, Ann, Switch, Cases}, T, ST) ->
        T, ST)
       };
 purify_expr({block, Ann, Stmts}, T, ST) ->
-    {Pure, Expr} = purify_block(pure, Stmts, T, ST),
-    {Pure, purify_typed(Pure, {block, Ann, Expr}, T, ST)};
+    {Pure, Stmts1} = purify_block(pure, Stmts, ST),
+    {Pure, purify_typed(Pure, {block, Ann, Stmts1}, T, ST)};
 purify_expr(E, T, _) ->
     {pure, ?typed(E, T)}.
 
-purify_block(PurePrev, [Expr], Type, ST) ->
-    {PureExpr, Expr1} = purify_expr(Expr, Type, ST),
+purify_block(PurePrev, [Expr], ST) ->
+    {PureExpr, Expr1} = purify_expr(Expr, ST),
     Pure = pure_plus(PurePrev, PureExpr),
     PureToWrap = pure_prod(switch_pure(PureExpr), PurePrev),
     {Pure, [wrap_impure(PureToWrap, Expr1, ST)]};
-purify_block(PurePrev, [{letval, Ann, Pat, Expr}|Rest], Type, ST) ->
+purify_block(PurePrev, [{letval, Ann, Pat, Expr}|Rest], ST) ->
     {PureExpr, Expr1} = purify_expr(Expr, ST),
     PureNext = pure_plus(PurePrev, PureExpr),
     case PureExpr of
         pure ->
-            {Pure, Rest1} = purify_block(PureNext, Rest, Type, ST),
+            {Pure, Rest1} = purify_block(PureNext, Rest, ST),
             {Pure, [{letval, Ann, Pat, Expr1}|Rest1]};
         impure ->
             {Pat1, ST1} = unwrap_state(Pat, ST),
-            {_, Rest1} = purify_block(PureNext, Rest, Type, ST1),
+            {_, Rest1} = purify_block(PureNext, Rest, ST1),
             {impure,
              [ {letval, Ann, Pat1, Expr1}
              | Rest1
              ]}
     end;
-purify_block(PurePrev, [Stmt|Rest], Type, ST) ->
+purify_block(PurePrev, [Stmt|Rest], ST) ->
     {PureStmt, Stmt1} = purify_expr(Stmt, ST),
     PureNext = pure_plus(PurePrev, PureStmt),
     case PureStmt of
         pure ->
-            {Pure, Rest1} = purify_block(PureNext, Rest, Type, ST),
+            {Pure, Rest1} = purify_block(PureNext, Rest, ST),
             {Pure, [Stmt1|Rest1]};
         impure ->
             {Pat, ST1} = unwrap_state({id, ann_of(Stmt), "_"}, ST),
-            {_, Rest1} = purify_block(PureNext, Rest, Type, ST1),
+            {_, Rest1} = purify_block(PureNext, Rest, ST1),
             {impure,
             [ {letval, ann_of(Stmt), Pat, Stmt1}
             | Rest1
