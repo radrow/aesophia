@@ -881,7 +881,8 @@ check_type(Env, Type = {fun_t, Ann, NamedArgs, Args, Ret}, Arity) ->
     ensure_base_type(Type, Arity),
     NamedArgs1 = [ check_named_arg(Env, NamedArg) || NamedArg <- NamedArgs ],
     Args1      = [ check_type(Env, Arg, 0) || Arg <- Args ],
-    NamedTArgs = [{Var, T} || {refined_t, _, Var, T, _} <- Args1],
+    NamedTArgs = [{Var, T} || {refined_t, _, Var, T, _} <- Args1]
+        ++ [{Var, {id, [], "int"}} || {dep_list_t, _, Var, _, _} <- Args1],
     Env1       = bind_vars(NamedTArgs, Env),
     Ret1       = check_type(Env1, Ret, 0),
     {fun_t, Ann, NamedArgs1, Args1, Ret1};
