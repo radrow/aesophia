@@ -236,8 +236,8 @@ type400() ->
            dep_variant_t(get_ann(_1), _2, _4)
           ),
      %% Dep list
-     ?RULE(tok('{'), id("list"), parens(type()), tok('|'), comma_sep(expr()), tok('}'),
-           dep_list_t(get_ann(_1), _3, _5)
+     ?RULE(tok('{'), id(), tok(':'), id("list"), parens(type()), tok('|'), comma_sep(expr()), tok('}'),
+           dep_list_t(get_ann(_1), _2, _5, _7)
           ),
      ?RULE(type500(), _1)
     ]).
@@ -587,8 +587,8 @@ dep_record_t(Ann, Base, Fields) ->
 dep_variant_t(Ann, Base, {variant_t, Constrs}) ->
     {dep_variant_t, Ann, Base, undefined, Constrs}.
 
-dep_list_t(Ann, ElemT, LenPred) ->
-    {dep_list_t, Ann, ElemT, LenPred}.
+dep_list_t(Ann, Id, ElemT, LenPred) ->
+    {dep_list_t, Ann, Id, ElemT, LenPred}.
 
 tuple_t(_Ann, [Type]) -> Type;  %% Not a tuple
 tuple_t(Ann, Types)   -> {tuple_t, Ann, Types}.

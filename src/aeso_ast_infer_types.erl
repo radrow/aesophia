@@ -897,6 +897,7 @@ check_type(Env, T = {refined_t, Ann, Id, Base, Pred}, Arity) ->
     Pred1 = [check_expr(Env2, Q, {id, aeso_syntax:get_ann(Q), "bool"}) || Q <- Pred],
     {refined_t, Ann, Id, Base1, Pred1};
 check_type(Env, T = {dep_record_t, Ann, Base, Fields}, Arity) ->
+    ensure_base_type(T, Arity),
     [type_error({illegal_liquid, T}) || not Env#env.allow_liquid],
     Base1 = check_type(Env, Base, Arity),
     Id = case Base1 of
@@ -931,6 +932,7 @@ check_type(Env, T = {dep_record_t, Ann, Base, Fields}, Arity) ->
       ]),
     {dep_record_t, Ann, QId, Fields1};
 check_type(Env, T = {dep_variant_t, Ann, Base, undefined, Constrs}, Arity) ->
+    ensure_base_type(T, Arity),
     [type_error({illegal_liquid, T}) || not Env#env.allow_liquid],
     Base1 = check_type(Env, Base, Arity),
     Id = case Base1 of
@@ -980,13 +982,14 @@ check_type(Env, T = {dep_variant_t, Ann, Base, undefined, Constrs}, Arity) ->
                 ]
         end,
     {dep_variant_t, Ann, Base1, TagPred, Constrs1};
-check_type(Env, T = {dep_list_t, Ann, ElemT, LenPred}, Arity) ->
+check_type(Env, T = {dep_list_t, Ann, Id, ElemT, LenPred}, Arity) ->
+    ensure_base_type(T, Arity),
     [type_error({illegal_liquid, T}) || not Env#env.allow_liquid],
     ElemT1 = check_type(Env, ElemT),
     Env1 = Env#env{allow_liquid = false},
-    Env2 = bind_var({id, [], "length"}, {id, [], "int"}, Env1),
+    Env2 = bind_var(Id, {id, [], "int"}, Env1),
     LenPred1 = [check_expr(Env2, Q, {id, [], "bool"}) || Q <- LenPred],
-    {dep_list_t, Ann, ElemT1, LenPred1};
+    {dep_list_t, Ann, Id, ElemT1, LenPred1};
 check_type(_Env, {args_t, Ann, Ts}, _) ->
     type_error({new_tuple_syntax, Ann, Ts}),
     {tuple_t, Ann, Ts}.
@@ -2268,9 +2271,9 @@ unify1(Env, A, {dep_variant_t, _, B, _, _}, When) ->
     unify1(Env, A, B, When);
 unify1(Env, {dep_variant_t, _, A, _}, B, When) ->
     unify1(Env, A, B, When);
-unify1(Env, A, {dep_list_t, Ann, B, _}, When) ->
+unify1(Env, A, {dep_list_t, Ann, _, B, _}, When) ->
     unify1(Env, A, {app_t, Ann, {id, Ann, "list"}, [B]}, When);
-unify1(Env, {dep_list_t, Ann, A, _}, B, When) ->
+unify1(Env, {dep_list_t, Ann, _, A, _}, B, When) ->
     unify1(Env, {app_t, Ann, {id, Ann, "list"}, [A]}, B, When);
 unify1(Env, {named_t, _, _, A}, B, When) ->
     unify1(Env, A, B, When);
@@ -2330,7 +2333,7 @@ occurs_check1(R, {dep_record_t, _, _, T}) ->
     occurs_check1(R, T);
 occurs_check1(R, {dep_variant_t, _, _, _, T}) ->
     occurs_check1(R, T);
-occurs_check1(R, {dep_list_t, _, T, _}) ->
+occurs_check1(R, {dep_list_t, _, _, T, _}) ->
     occurs_check1(R, T);
 occurs_check1(_, []) -> false.
 

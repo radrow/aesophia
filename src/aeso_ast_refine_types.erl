@@ -154,9 +154,6 @@ ann_of(E) ->
 nu(Ann) -> {id, Ann, "$self"}.
 -define(nu_p, {id, _, "$self"}).
 
-length_user(Ann) -> {id, Ann, "length"}.
-length_var(Ann) -> {id, Ann, "$length"}.
-
 state_t(Ann, #env{namespace = NS, tc_env = TCEnv}) ->
     Qid = {qid, Ann, NS ++ ["state"]},
     aeso_ast_infer_types:unfold_types_in_type(TCEnv, Qid, []).
@@ -371,8 +368,8 @@ local_type_binds(Assg, Env) ->
                    apply_subst(Id, Qid, Type);
                {dep_variant_t, Ann, _, _, _} ->
                    apply_subst(nu(Ann), Qid, Type);
-               {dep_list_t, Ann, _, _} ->
-                   apply_subst(length_var(Ann), Qid, Type);
+               {dep_list_t, _, Id, _, _} ->
+                   apply_subst(Id, Qid, Type);
                _ -> Type
            end
           }
@@ -478,6 +475,36 @@ init_env(TCEnv) ->
         { fun_env = MkDefs(
                    [{"to_int", DFun1(Arg("bytes", Bytes(any)), ?d_nonneg_int(Ann))}]) },
 
+    %% ListScope = #scope
+    %%     { fun_env = MkDefs(
+    %%                   [
+
+    %%                   ]) },
+
+    %% ListInternalScope = #scope
+    %%     { fun_env = MkDefs(
+    %%                   [{"is_empty"}
+
+    %%                   ]) },
+
+    %% OptionScope = #scope
+    %%     { fun_env = MkDefs(
+    %%                   [
+
+    %%                   ]) },
+
+    %% PairScope = #scope
+    %%     { fun_env = MkDefs(
+    %%                 [
+
+    %%                 ]) },
+
+    %% TripleScope = #scope
+    %%     { fun_env = MkDefs(
+    %%                   [
+
+    %%                   ]) },
+
     TopScope = #scope
         { fun_env  = MkDefs(
                     [])
@@ -496,12 +523,12 @@ init_env(TCEnv) ->
 
     #env{ scopes =
             #{ []           => TopScope
-             %% , ["Chain"]    => ChainScope
-             %% , ["Contract"] => ContractScope
-             %% , ["Call"]     => CallScope
-             %% , ["String"]   => StringScope
-             %% , ["Bits"]     => BitsScope
-             %% , ["Bytes"]    => BytesScope
+             , ["Chain"]    => ChainScope
+             , ["Contract"] => ContractScope
+             , ["Call"]     => CallScope
+             , ["String"]   => StringScope
+             , ["Bits"]     => BitsScope
+             , ["Bytes"]    => BytesScope
              }
         , tc_env = TCEnv
         }.
@@ -644,7 +671,7 @@ has_assumptions(covariant, {refined_t, _, _, _, [_|_]}) ->
     true;
 has_assumptions(covariant, {dep_variant_t, _, _, [_|_], _}) ->
     true;
-has_assumptions(covariant, {dep_list_t, _, _, [_|_]}) ->
+has_assumptions(covariant, {dep_list_t, _, _, _, [_|_]}) ->
     true;
 has_assumptions(Variance, {dep_fun_t, _, Args, RetT}) ->
     has_assumptions(switch_variance(Variance), Args)
@@ -666,7 +693,7 @@ has_assumptions(Variance, {dep_record_t, _, _, Fields}) ->
     has_assumptions(Variance, Fields);
 has_assumptions(Variance, {dep_variant_t, _, _, _, Constrs}) ->
     has_assumptions(Variance, Constrs);
-has_assumptions(Variance, {dep_list_t, _, ElemT, _}) ->
+has_assumptions(Variance, {dep_list_t, _, _, ElemT, _}) ->
     has_assumptions(Variance, ElemT);
 has_assumptions(Variance, [H|T]) ->
     has_assumptions(Variance, H) orelse has_assumptions(Variance, T);
@@ -747,9 +774,8 @@ fresh_liquid(Env, Variance, Hint, {dep_variant_t, Ann, Type, TagPred, Constrs}) 
        || {constr_t, CAnn, Con, Vals} <- Constrs
      ]
     };
-fresh_liquid(Env, Variance, Hint, {dep_list_t, Ann, ElemT, LenPred}) ->
-    {dep_list_t, Ann, fresh_liquid(Env, Variance, Hint, ElemT),
-     apply_subst(length_user(Ann), length_var(Ann), LenPred)};
+fresh_liquid(Env, Variance, _Hint, {dep_list_t, Ann, Id, ElemT, LenPred}) ->
+    {dep_list_t, Ann, Id, fresh_liquid(Env, Variance, name(Id), ElemT), LenPred};
 fresh_liquid(_Env, Variance, Hint, Type = {id, Ann, Name}) ->
     {refined_t, Ann,
      fresh_id(Ann,
@@ -775,9 +801,11 @@ fresh_liquid(Env, Variance, Hint, {app_t, Ann, Id = {id, _, "map"}, [K, V]}) ->
      ]};
 fresh_liquid(Env, Variance, Hint, {app_t, Ann, {id, _, "list"}, [Elem]})
   when Variance =:= contravariant; Variance =:= forced_contravariant ->
-    {dep_list_t, Ann, fresh_liquid(Env, Variance, Hint, Elem), [?op(Ann, length_var(Ann), '>=', ?int(Ann, 0))]};
+    Id = fresh_id(Ann, Hint),
+    {dep_list_t, Ann, Id, fresh_liquid(Env, Variance, Hint, Elem), [?op(Ann, Id, '>=', ?int(Ann, 0))]};
 fresh_liquid(Env, Variance, Hint, {app_t, Ann, {id, _, "list"}, [Elem]}) ->
-    {dep_list_t, Ann, fresh_liquid(Env, Variance, Hint, Elem),
+    Id = fresh_id(Ann, Hint),
+    {dep_list_t, Ann, Id, fresh_liquid(Env, Variance, Hint, Elem),
      fresh_template(Variance, Hint)};
 fresh_liquid(Env, Variance, Hint, {app_t, Ann, {id, IAnn, Name}, Args}) ->
     fresh_liquid(Env, Variance, Hint, {app_t, Ann, {qid, IAnn, [Name]}, Args});
@@ -867,7 +895,7 @@ switch_variance(forced_contravariant) ->
 
 base_type({refined_t, _, _, T, _}) ->
     T;
-base_type({dep_list_t, Ann, ElemT, _}) ->
+base_type({dep_list_t, Ann, _, ElemT, _}) ->
     {app_t, Ann, {id, Ann, "list"}, [ElemT]};
 base_type({dep_record_t, _, T, _}) ->
     T;
@@ -1153,10 +1181,11 @@ constr_expr(_Env, Expr = {'-', Ann}, T, S) ->
     };
 constr_expr(Env, {app, Ann, ?typed_p({'::', OpAnn}), [OpL, OpR]}, {app_t, _, {id, _, "list"}, [ElemT]}, S0) ->
     {DepElemLT, S1} = constr_expr(Env, OpL, S0),
-    {{dep_list_t, _, DepElemRT, _}, S2} = constr_expr(Env, OpR, S1),
+    {{dep_list_t, _, _, DepElemRT, _}, S2} = constr_expr(Env, OpR, S1),
     DepElemT = fresh_liquid(Env, "elem_cat", ElemT),
-    LenPred = [?op(Ann, length_var(OpAnn), '==', ?op(OpAnn, OpR, '+', ?int(OpAnn, 1)))],
-    {{dep_list_t, Ann, DepElemT, LenPred},
+    Id = fresh_id(Ann, "cons"),
+    LenPred = [?op(Ann, Id, '==', ?op(OpAnn, OpR, '+', ?int(OpAnn, 1)))],
+    {{dep_list_t, Ann, Id, DepElemT, LenPred},
      [ {well_formed, Env, DepElemT}
      , {subtype, Ann, Env, DepElemLT, DepElemT}
      , {subtype, Ann, Env, DepElemRT, DepElemT}
@@ -1164,11 +1193,12 @@ constr_expr(Env, {app, Ann, ?typed_p({'::', OpAnn}), [OpL, OpR]}, {app_t, _, {id
      ]
     };
 constr_expr(Env, {app, Ann, ?typed_p({'++', OpAnn}), [OpL, OpR]}, {app_t, _, {id, _, "list"}, [ElemT]}, S0) ->
-    {{dep_list_t, _, DepElemLT, _}, S1} = constr_expr(Env, OpL, S0),
-    {{dep_list_t, _, DepElemRT, _}, S2} = constr_expr(Env, OpR, S1),
+    {{dep_list_t, _, _, DepElemLT, _}, S1} = constr_expr(Env, OpL, S0),
+    {{dep_list_t, _, _, DepElemRT, _}, S2} = constr_expr(Env, OpR, S1),
     DepElemT = fresh_liquid(Env, "elem_cat", ElemT),
-    LenPred = [?op(OpAnn, length_var(OpAnn), '==', ?op(OpAnn, OpL, '+', OpR))],
-    {{dep_list_t, Ann, DepElemT, LenPred},
+    Id = fresh_id(Ann, "cat"),
+    LenPred = [?op(OpAnn, Id, '==', ?op(OpAnn, OpL, '+', OpR))],
+    {{dep_list_t, Ann, Id, DepElemT, LenPred},
      [ {well_formed, Env, DepElemT}
      , {subtype, Ann, Env, DepElemLT, DepElemT}
      , {subtype, Ann, Env, DepElemRT, DepElemT}
@@ -1305,7 +1335,8 @@ constr_expr(Env, {list, Ann, Elems}, {app_t, TAnn, _, [ElemT]}, S0) ->
         [ {subtype, Ann, Env, DepElemTI, DepElemT}
          || DepElemTI <- DepElemsT
         ] ++ S1,
-    {{dep_list_t, TAnn, DepElemT, [?op(Ann, length_var(Ann), '==', ?int(Ann, length(Elems)))]},
+    Id = fresh_id(Ann, "list"),
+    {{dep_list_t, TAnn, Id, DepElemT, [?op(Ann, Id, '==', ?int(Ann, length(Elems)))]},
      [ {well_formed, Env, DepElemT}
      | S2
      ]
@@ -1458,7 +1489,7 @@ match_to_pattern(Env, {app, Ann, ?typed_p(QCon = {qcon, _, QName}), Args},
       end,
       {Env, Pred1}, lists:zip(lists:zip(Args, Types), lists:seq(1, N))
      );
-match_to_pattern(Env, {list, Ann, Pats}, Expr, {dep_list_t, _, ElemT, _}, Pred) ->
+match_to_pattern(Env, {list, Ann, Pats}, Expr, {dep_list_t, _, _, ElemT, _}, Pred) ->
     N = length(Pats),
     lists:foldl(
       fun(Pat, {Env0, Pred0}) ->
@@ -1466,11 +1497,12 @@ match_to_pattern(Env, {list, Ann, Pats}, Expr, {dep_list_t, _, ElemT, _}, Pred) 
       end,
       {Env, [?op(Ann, Expr, '==', ?int(Ann, N)) | Pred]}, Pats
      );
-match_to_pattern(Env0, {app, Ann, {'::', OpAnn}, [H,T]}, Expr, {dep_list_t, TAnn, ElemT, _}, Pred0) ->
+match_to_pattern(Env0, {app, Ann, {'::', OpAnn}, [H,T]}, Expr, {dep_list_t, TAnn, _, ElemT, _}, Pred0) ->
     Pred1 = [?op(OpAnn, Expr, '>', ?int(OpAnn, 0))|Pred0],
     {Env1, Pred2} = match_to_pattern(Env0, H, {id, Ann, "_"}, ElemT, Pred1),
+    Id = fresh_id(Ann, "cons"),
     match_to_pattern(Env1, T, {id, Ann, "_"},
-                     {dep_list_t, TAnn, ElemT, [?op(OpAnn, length_var(OpAnn), '==', ?op(OpAnn, Expr, '-', ?int(OpAnn, 1)))]},
+                     {dep_list_t, TAnn, Id, ElemT, [?op(OpAnn, Id, '==', ?op(OpAnn, Expr, '-', ?int(OpAnn, 1)))]},
                      Pred2).
 
 %% -- Substitution -------------------------------------------------------------
@@ -1590,8 +1622,6 @@ inst_pred(Env, SelfId, BaseT) ->
                     inst_pred_variant_tag(SelfId, BaseT, Constrs);
                 X -> error({todo, {inst_pred, X}})
             end;
-        {app_t, Ann, {id, _, "list"}, _} ->
-            inst_pred_int(Env, length_var(Ann));
         {app_t, _, Qid = {qid, _, _}, Args} ->
             case lookup_type(Env, Qid) of
                 {_, _, {AppArgs, {variant_t, Constrs}}} ->
@@ -1703,9 +1733,9 @@ type_binds_pred(Assg, Access, TB) ->
                              || {dep_constr_t, CAnn, Con, Args} <- Constrs
                            ]),
                      TagPred ++ ConPred;
-                 {dep_list_t, Ann, ElemT, LenPred} ->
+                 {dep_list_t, _Ann, Id, ElemT, LenPred} ->
                      type_binds_pred(Assg, Access, [ElemT]) ++
-                         apply_subst(length_var(Ann), Access(Var), pred_of(Assg, LenPred));
+                         apply_subst(Id, Access(Var), pred_of(Assg, LenPred));
                  _ -> []
              end
     ].
@@ -1774,13 +1804,13 @@ split_constr1(C = {subtype, Ann, Env0, SubT, SupT}) ->
                 ]
               ]
              );
-        { {dep_list_t, _, DepElemSub, LenQualSub}
-        , {dep_list_t, _, DepElemSup, LenQualSup}
+        { {dep_list_t, _, IdSub, DepElemSub, LenQualSub}
+        , {dep_list_t, _, IdSup, DepElemSup, LenQualSup}
         } ->
             split_constr(
               [ {subtype, Ann, Env0,
-                 refined(length_var(Ann), ?int_t(Ann), LenQualSub),
-                 refined(length_var(Ann), ?int_t(Ann), LenQualSup)}
+                 refined(IdSub, ?int_t(Ann), LenQualSub),
+                 refined(IdSup, ?int_t(Ann), LenQualSup)}
               , {subtype, Ann, Env0, DepElemSub, DepElemSup}
               ]
              );
@@ -1808,8 +1838,8 @@ split_constr1(C = {well_formed, Env0, T}) ->
                 ]
               ]
              );
-        {dep_list_t, Ann, DepElem, LenQual} ->
-            [ {well_formed, Env0, refined(length_var(Ann), ?int_t(Ann), LenQual)}
+        {dep_list_t, Ann, Id, DepElem, LenQual} ->
+            [ {well_formed, Env0, refined(Id, ?int_t(Ann), LenQual)}
             , {well_formed, Env0, DepElem}
             ];
         _ -> [C]
@@ -2096,7 +2126,7 @@ type_to_smt({dep_record_t, _, T, _}) ->
     type_to_smt(T);
 type_to_smt({dep_variant_t, _, T, _, _}) ->
     type_to_smt(T);
-type_to_smt({dep_list_t, _, _, _}) ->
+type_to_smt({dep_list_t, _, _, _, _}) ->
     {var, "Int"};  % Lists are yet lengths
 type_to_smt({app_t, _, {id, _, "list"}, _}) ->
     {var, "Int"}; % Lists are yet lengths
