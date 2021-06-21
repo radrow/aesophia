@@ -388,20 +388,31 @@ dep_type({dep_variant_t, _, Type, Pred, Constrs}) ->
           ])
       , text("}")
       ]);
-dep_type({dep_list_t, _, Elem, []}) ->
+dep_type({dep_list_t, _, Id, Elem, []}) ->
     beside(
-      [ text("list(")
-      , type(Elem)
-      , text(")")
+      [ text("{")
+      , hsep(
+          [ name(Id)
+          , text(":")
+          , type({app_t, [], {id, [], "list"}, [Elem]})
+          , text("}")
+          ])
+      , text("}")
       ]);
-dep_type({dep_list_t, _, Elem, LenPred}) ->
-    hsep(
-     [ text("{list(")
-     , type(Elem)
-     , text(") | ")
-     , predicate(LenPred)
-     , text("}")
-     ]);
+dep_type({dep_list_t, _, Id, Elem, LenPred}) ->
+    beside(
+      [ text("{")
+      , hsep(
+          [ name(Id)
+          , text(":")
+          , type({app_t, [], {id, [], "list"}, [Elem]})
+          , text("|")
+          , predicate(LenPred)
+          , text("}")
+          ])
+      , text("}")
+      ]
+     );
 dep_type(T = {tvar, _, _}) ->
     name(T).
 

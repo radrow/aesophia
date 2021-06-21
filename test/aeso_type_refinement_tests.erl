@@ -12,14 +12,12 @@
 -include_lib("eunit/include/eunit.hrl").
 
 setup() ->
-    io:format("STARGIN... "),
     erlang:system_flag(backtrace_depth, 100),
     aeso_smt:start_z3(),
     aeso_ast_refine_types:init_refiner(),
     ok.
 
 unsetup(_) ->
-    io:format("STUPP"),
     aeso_smt:stop_z3(),
     ok.
 
