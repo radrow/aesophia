@@ -185,6 +185,8 @@ field_type() ->
     ?LAZY_P(choice(
     [ ?RULE(tok('{'), id(), tok(':'), typeRefinable(), tok('|'), comma_sep1(expr()), tok('}'),
             {field_t, get_ann(_2), _2, {refined_t, get_ann(_4), _2, _4, _6}})
+    ,  ?RULE(tok('{'), id(), tok(':'), id("list"), parens(type()), tok('|'), comma_sep1(expr()), tok('}'),
+             {field_t, get_ann(_2), _2, {dep_list_t, get_ann(_4), _2, _5, _7}})
     , ?RULE(id(), tok(':'), type(), {field_t, get_ann(_1), _1, _3})
     ])).
 
@@ -249,7 +251,10 @@ type400() ->
           ),
      %% Dep list
      ?RULE(tok('{'), id(), tok(':'), id("list"), parens(type()), tok('|'), comma_sep(expr()), tok('}'),
-           dep_list_t(get_ann(_1), _2, _5, _7)
+           dep_list_t(get_ann(_1), _2, _5, _7)),
+     %% Dep list without pred
+     ?RULE(tok('{'), id(), tok(':'), id("list"), parens(type()), tok('}'),
+           dep_list_t(get_ann(_1), _2, _5, [])
           ),
      ?RULE(type500(), _1)
     ]).

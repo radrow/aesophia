@@ -460,19 +460,19 @@ under_constr_env(Env, X) ->
           ]
      ).
 
-constr({well_formed, Env, T}) ->
+constr({well_formed, _, Env, T}) ->
     under_constr_env(Env, type(T));
-constr({subtype, Ann, Env, T1, T2}) ->
+constr({subtype, Ref, _, Env, T1, T2}) ->
     under_constr_env(
       Env,
-      beside([ text(io_lib:format("~p\t", [Ann]))
+      beside([ text(io_lib:format("~p\t", [Ref]))
              , type(T1)
              , text(" <: ")
              , type(T2)
              ]));
-constr({unreachable, _, Env}) ->
+constr({unreachable, _, _, Env}) ->
     under_constr_env(Env, text("false"));
-constr({reachable, _, Env}) ->
+constr({reachable, _, _, Env}) ->
     above(text("SAT"), constr_env(Env)).
 
 
