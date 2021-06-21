@@ -1918,12 +1918,9 @@ weaken({subtype, _, Env,
     NewLtinfo = Ltinfo#ltinfo{
                  predicate = Filtered
                 },
-    ?DBG("WEAKENED FROM\n~p\nTO\n~p", [Ltinfo#ltinfo.predicate,
-                                       Filtered
-                                      ]),
-    ?DBG("WEAKENED FROM\n~s\nTO\n~s", [aeso_pretty:pp(predicate, Ltinfo#ltinfo.predicate),
-                                       aeso_pretty:pp(predicate, Filtered)
-                                      ]),
+    %% ?DBG("WEAKENED FROM\n~s\nTO\n~s", [aeso_pretty:pp(predicate, Ltinfo#ltinfo.predicate),
+    %%                                    aeso_pretty:pp(predicate, Filtered)
+    %%                                   ]),
     Assg#{Var => NewLtinfo};
 weaken({well_formed, _Env, {refined_t, _, _, _, _}}, Assg) ->
     Assg.
