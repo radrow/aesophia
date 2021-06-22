@@ -2,6 +2,7 @@
 -compile([export_all, nowarn_export_all]).
 
 -include_lib("eunit/include/eunit.hrl").
+-include("aeso_ast_refine_types_stdlib.hrl").
 -define(DBG_TEXT_COLOR, "\e[1;33m").
 -define(DBG_EXPR_COLOR, "\e[0;1m\e[1m").
 -define(DBG_STR_COLOR, "\e[1;32m").
@@ -483,11 +484,13 @@ init_env(TCEnv) ->
         { fun_env = MkDefs(
                    [{"to_int", DFun1(Arg("bytes", Bytes(any)), ?d_nonneg_int(Ann))}]) },
 
-    ListScope = #scope
-        { fun_env = MkDefs(
-                      [
-
-                      ]) },
+    %% ListScope = #scope
+    %%     { fun_env = MkDefs(
+    %%                   [ {"is_empty",
+    %%                      DFun1(Arg("l", ?d_list(A)), ?d_bool(?op(Ann, {id, Ann, "l"}, '==', ?int(Ann, 0))))}
+    %%                   , {"firsrt",
+    %%                      DFun1(Arg("l", ?d_list(A)), ?d_bool(?op(Ann, {id, Ann, "l"}, '==', ?int(Ann, 0))))}
+    %%                   ]) },
 
     ListInternalScope = #scope
         { fun_env = MkDefs(
@@ -1176,6 +1179,7 @@ constr_expr(Env, {tuple, Ann, Elems}, _, S0) ->
      S1
     };
 
+?STDLIB_CONSTRS
 constr_expr(Env, {record, Ann, FieldVals}, T, S0) ->
     {Fields, Vals} =
         lists:unzip([{Field, Val} || {field, _, [{proj, _, Field}], Val} <- FieldVals]),
