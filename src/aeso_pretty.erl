@@ -319,6 +319,8 @@ dep_type({dep_fun_t, _, Args, Ret}) ->
                    case DT of
                        {refined_t, _, Id, _, _} when Id == ArgId ->
                            dep_type(DT);
+                       {dep_list_t, _, Id, _, _} when Id == ArgId ->
+                           dep_type(DT);
                        _ ->
                            beside(
                              [ text("{")
@@ -395,7 +397,6 @@ dep_type({dep_list_t, _, Id, Elem, []}) ->
           [ name(Id)
           , text(":")
           , type({app_t, [], {id, [], "list"}, [Elem]})
-          , text("}")
           ])
       , text("}")
       ]);

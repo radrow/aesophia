@@ -120,12 +120,15 @@ refined(T) -> refined(T, []).
                }).
 -type scope() :: #scope{}.
 
+-type namespace_type() :: namespace | contract_main | contract_child | contract_interface.
+
 -record(env,
         { scopes           = #{[] => #scope{}} :: #{qname() => scope()}
         , var_env          = #{}               :: var_env()
         , path_pred        = []                :: predicate()
         , cool_ints        = []                :: [integer()]
         , namespace        = []                :: qname()
+        , namespaces       = #{}               :: #{qname() => namespace_type()}
         , tc_env
         }).
 -type env() :: #env{}.
@@ -214,6 +217,13 @@ pop_scope(Env) ->
 get_scope(#env{ scopes = Scopes }, Name) ->
     maps:get(Name, Scopes, false).
 
+-spec namespace_type(env(), qname()) -> namespace_type() | no_return().
+namespace_type(NS, #env{namespaces = NSs}) ->
+    maps:get(NS, NSs).
+-spec namespace_type(env()) -> namespace_type() | toplevel.
+namespace_type(#env{namespace = NS, namespaces = NSs}) ->
+    maps:get(NS, NSs, toplevel).
+
 -spec on_current_scope(env(), fun((scope()) -> scope())) -> env().
 on_current_scope(Env = #env{ namespace = NS, scopes = Scopes }, Fun) ->
     Scope = maps:get(NS, Scopes),
@@ -287,6 +297,11 @@ bind_type({id, Ann, Name}, Args, Def, Env) ->
     on_current_scope(Env, fun(Scope = #scope{ type_env = Types }) ->
                                   Scope#scope{ type_env = [{Name, {Ann, {Args, Def}}}|Types] }
                           end).
+
+bind_namespace({con, Ann, Q}, NS, Env) ->
+    bind_namespace({qcon, Ann, [Q]}, NS, Env);
+bind_namespace({qcon, _, QName}, NS, Env = #env{namespaces = NSs}) ->
+    Env#env{namespaces = NSs#{QName => NS}}.
 
 -spec assert(expr() | predicate(), env()) -> env().
 assert(L, Env = #env{path_pred = GP}) when is_list(L) ->
@@ -611,12 +626,16 @@ find_tuple_sizes(T, Acc) when is_tuple(T) ->
 find_tuple_sizes(_, Acc) ->
     Acc.
 
+-define(IS_STDLIB(NS), (NS == "List" orelse NS == "ListInternal" orelse NS == "Option")).
+
 -spec bind_ast_funs(aeso_ast_infer_types:env(), ast(), env()) -> env().
 bind_ast_funs(TCEnv, AST, Env) ->
     lists:foldr(
-      fun({HEAD, _, Con, Defs}, Env0)
+      fun({namespace, _, {con, _, CName}, _}, Env0)
+            when ?IS_STDLIB(CName) ->
+              Env0;
+         ({HEAD, _, Con, Defs}, Env0)
             when HEAD =:= namespace;
-                 HEAD =:= contract;
                  HEAD =:= contract_main;
                  HEAD =:= contract_child;
                  HEAD =:= contract_interface ->
@@ -644,10 +663,14 @@ bind_ast_funs(TCEnv, AST, Env) ->
                              RetT1 = apply_subst(ArgsSubst, RetT),
                              DepRetT = fresh_liquid(Env1, "rete", RetT1),
                              DepArgsT1 =
-                                 [ element(1, fresh_liquid_arg(Env1, init_state_var(FAnn, state_t(FAnn, Env1))))
-                                 , element(1, fresh_liquid_arg(Env1, init_balance_var(FAnn)))
-                                 | fresh_wildcards(DepArgsT)
-                                 ],
+                                 case HEAD of
+                                     namespace -> fresh_wildcards(DepArgsT);
+                                     _ ->
+                                         [ element(1, fresh_liquid_arg(Env1, init_state_var(FAnn, state_t(FAnn, Env1))))
+                                         , element(1, fresh_liquid_arg(Env1, init_balance_var(FAnn)))
+                                         | fresh_wildcards(DepArgsT)
+                                         ]
+                                 end,
                              DepRetT1 =
                                  case Stateful of
                                      false -> DepRetT;
@@ -979,17 +1002,18 @@ refine_ast(TCEnv, AST) ->
     Env0 = init_env(TCEnv),
     Env1 = with_cool_ints_from(TCEnv, with_cool_ints_from(AST, Env0)),
     ?DBG("COOL INTS: ~p", [Env1#env.cool_ints]),
-    Env2 = register_typedefs(AST, Env1),
+    Env2 = register_namespaces(AST, Env1),
+    Env3 = register_typedefs(AST, Env2),
     try
-        Env3 = bind_ast_funs(TCEnv, AST, Env2),
-        {AST1, CS0} = constr_ast(Env3, AST),
+        Env4 = bind_ast_funs(TCEnv, AST, Env3),
+        {AST1, CS0} = constr_ast(Env4, AST),
         [?DBG("C:\n~s", [aeso_pretty:pp(constr, strip_typed(C))]) || C <- CS0, element(1, C) == subtype],
         CS1 = split_constr(CS0),
         case aeso_smt:scoped(
           fun() ->
                   declare_tuples(find_tuple_sizes(AST)),
-                  declare_datatypes(type_defs(Env3)),
-                  solve(Env3, CS1)
+                  declare_datatypes(type_defs(Env4)),
+                  solve(Env4, CS1)
           end) of
             Assg ->
                 AST2 = apply_assg(Assg, AST1),
@@ -1011,7 +1035,10 @@ refine_ast(TCEnv, AST) ->
 -spec constr_ast(env(), ast()) -> {ast(), [constr()]}.
 constr_ast(Env, AST) ->
     lists:foldr(
-      fun(Def, {Decls, S00}) ->
+      fun ({namespace, _, {con, _, NS}, _}, ST)
+            when ?IS_STDLIB(NS) ->
+              ST;
+          (Def, {Decls, S00}) ->
               {Decl, S01} = constr_con(Env, Def, S00),
               {[Decl|Decls], S01}
       end,
@@ -1020,7 +1047,9 @@ constr_ast(Env, AST) ->
 
 -spec constr_con(env(), decl(), [constr()]) -> {decl(), [constr()]}.
 constr_con(Env0, {Tag, Ann, Con, Defs}, S0)
-  when Tag =:= contract;
+  when Tag =:= contract_main;
+       Tag =:= contract_child;
+       Tag =:= contract_interface;
        Tag =:= namespace ->
     Env1 = push_scope(Con, Env0),
     {Defs1, S1} =
@@ -1036,10 +1065,13 @@ constr_con(Env0, {Tag, Ann, Con, Defs}, S0)
 
 -spec constr_letfun(env(), letfun(), [constr()]) -> {fundecl(), [constr()]}.
 constr_letfun(Env0, {letfun, Ann, Id, Args, RetT, Body}, S0) ->
+    ?DBG("ENTER FUN ~p", [Id]),
     {_, _, GlobFunT = {dep_fun_t, _, GlobArgsT, GlobRetT}} = type_of(Env0, Id),
     Args0 = fresh_wildcards(Args),
-    Args1 =
-        [init_state_var(Ann, state_t(Ann, Env0)), init_balance_var(Ann) | Args0],
+    Args1 = case namespace_type(Env0) of
+                namespace -> Args0;
+                _ -> [init_state_var(Ann, state_t(Ann, Env0)), init_balance_var(Ann) | Args0]
+            end,
     {ArgsT, _ArgsSubst} = fresh_liquid_args(Env0, Args1),
     Env1 = bind_args(ArgsT, Env0),
     Env2 = ensure_args(GlobArgsT, Env1),
@@ -1059,12 +1091,16 @@ constr_letfun(Env0, {letfun, Ann, Id, Args, RetT, Body}, S0) ->
     ?DBG("A-NORM:\n~s",   [aeso_pretty:pp(expr, strip_typed(Body1))]),
     PurifierST = init_purifier_st(ann_of(RetT), Env3),
     Body2 =
-        case proplists:get_value(stateful, Ann, false) of
-            false -> drop_purity(purify_expr(Body1, PurifierST));
-            true  -> case purify_expr(Body1, PurifierST) of
-                         {impure, B} -> B;
-                         {pure, B} -> wrap_state(B, PurifierST)
-                     end
+        case namespace_type(Env0) of
+            namespace -> Body1;
+            _ ->
+                case proplists:get_value(stateful, Ann, false) of
+                    false -> drop_purity(purify_expr(Body1, PurifierST));
+                    true  -> case purify_expr(Body1, PurifierST) of
+                                 {impure, B} -> B;
+                                 {pure, B} -> wrap_state(B, PurifierST)
+                             end
+                end
         end,
     ?DBG("PURIFIED:\n~s", [aeso_pretty:pp(expr, strip_typed(Body2))]),
     {BodyT, S1} = constr_expr(Env3, Body2, S0),
@@ -1077,8 +1113,19 @@ constr_letfun(Env0, {letfun, Ann, Id, Args, RetT, Body}, S0) ->
 
     {{fun_decl, Ann, Id, GlobFunT}, S3}.
 
+register_namespaces([{Tag, _, Con, _}|Rest], Env)
+  when Tag =:= contract_main;
+       Tag =:= contract_child;
+       Tag =:= contract_interface;
+       Tag =:= namespace ->
+    register_namespaces(Rest, bind_namespace(Con, Tag, Env));
+register_namespaces([], Env) ->
+    Env.
+
 register_typedefs([{Tag, _, Con, Defs}|Rest], Env0)
-  when Tag =:= contract;
+  when Tag =:= contract_main;
+       Tag =:= contract_child;
+       Tag =:= contract_interface;
        Tag =:= namespace ->
     Env1 = push_scope(Con, Env0),
     Env2 = register_typedefs(Defs, Env1),
@@ -1495,6 +1542,10 @@ match_to_pattern(Env, _Pat, {id, _, "_"}, _Type, Pred) ->
     {Env, Pred}; % Useful in lists
 match_to_pattern(Env, I = {int, Ann, _}, Expr, _Type, Pred) ->
     {Env, [?op(Ann, Expr, '==', I)|Pred]};
+match_to_pattern(Env, {bool, _, true}, Expr, _Type, Pred) ->
+    {Env, [Expr|Pred]};
+match_to_pattern(Env, {bool, Ann, false}, Expr, _Type, Pred) ->
+    {Env, [?op(Ann, '!', Expr)|Pred]};
 match_to_pattern(Env, {tuple, _, Pats}, Expr, {tuple_t, _, Types}, Pred) ->
     N = length(Pats),
     lists:foldl(
@@ -1651,11 +1702,11 @@ inst_pred_int(Env, SelfId) ->
       [ [Q || CoolInt <- Env#env.cool_ints,
               Q <- int_qualifiers(SelfId, ?int(ann_of(SelfId), CoolInt))
         ]
-      , [ Q || {Var, {_, {refined_t, Ann, _, ?int_tp, _}}} <- maps:to_list(Env#env.var_env),
-               Q <- var_int_qualifiers(SelfId, {id, Ann, Var})
+      , [ Q || {Var, {VAnn, {refined_t, _, _, ?int_tp, _}}} <- maps:to_list(Env#env.var_env),
+               Q <- var_int_qualifiers(SelfId, {id, VAnn, Var})
         ]
-      , [ Q || {Var, {_, {dep_list_t, Ann, _, _, _}}} <- maps:to_list(Env#env.var_env),
-               Q <- var_int_qualifiers(SelfId, {id, Ann, Var})
+      , [ Q || {Var, {VAnn, {dep_list_t, _, _, _, _}}} <- maps:to_list(Env#env.var_env),
+               Q <- var_int_qualifiers(SelfId, {id, VAnn, Var})
         ]
       ]
      ).
@@ -1667,6 +1718,16 @@ inst_pred_bool(Env, SelfId) ->
         ]
       , [ Q || {Var, {_, {refined_t, Ann, _, ?bool_tp, _}}} <- maps:to_list(Env#env.var_env),
                Q <- eq_qualifiers(SelfId, {id, Ann, Var})
+        ]
+      , [ BQ
+         || {Var, {VAnn, T}} <- maps:to_list(Env#env.var_env),
+            Q <- case T of
+                     {refined_t, _, _, ?int_tp, _} -> inst_pred_int(Env, {id, VAnn, Var});
+                     {dep_list_t, _, _, _, _} -> inst_pred_int(Env, {id, VAnn, Var});
+                     {refined_t, _, _, {tvar, _, TVar}, _} -> inst_pred_tvar(Env, {id, VAnn, Var}, TVar);
+                     _ -> [] %% TODO Variants and records. Beware O(n^2)
+                 end,
+            BQ <- [?op(ann_of(T), SelfId, '==', Q), ?op(ann_of(T), SelfId, '!=', Q)]
         ]
       ]
      ).
@@ -2025,9 +2086,9 @@ weaken({subtype, _, _, Env,
     NewLtinfo = Ltinfo#ltinfo{
                  predicate = Filtered
                 },
-    %% ?DBG("WEAKENED FROM\n~s\nTO\n~s", [aeso_pretty:pp(predicate, Ltinfo#ltinfo.predicate),
-    %%                                    aeso_pretty:pp(predicate, Filtered)
-    %%                                   ]),
+    ?DBG("WEAKENED FROM\n~s\nTO\n~s", [aeso_pretty:pp(predicate, Ltinfo#ltinfo.predicate),
+                                       aeso_pretty:pp(predicate, Filtered)
+                                      ]),
     Assg#{Var => NewLtinfo};
 weaken({well_formed, _, _Env, {refined_t, _, _, _, _}}, Assg) ->
     Assg.
@@ -2349,6 +2410,7 @@ sort_preds_by_meaningfulness(Preds0) ->
     lists:sort(Cmp, Preds2) ++ TagPreds.
 
 %% this is absolutely heuristic
+%% simplify_pred(_, _, Pred) -> Pred;
 simplify_pred(Assg, Env, Pred) ->
     %% ?DBG("*** SIMPLIFY PRED"),
     case impl_holds(Assg, Env, Pred, [{bool, ann(), false}]) of
@@ -2625,6 +2687,10 @@ purify_expr({app, Ann, Fun = ?typed_p({Op, _}), Args}, T, ST) when is_atom(Op) -
     {pure, Fun1} = purify_expr(Fun, ST),
     {pure, Args1} = purify_many(Args, ST),
     {pure, ?typed({app, Ann, Fun1, Args1}, T)};
+purify_expr({app, Ann, Fun = ?typed_p({qid, _, _}), Args}, T, ST) ->
+    %% This must be a namespace which doesn't interact with the state
+    Args1 = [drop_purity(purify_expr(A, ST)) || A <- Args],
+    {pure, ?typed({app, Ann, Fun, Args1}, T)};
 purify_expr({app, Ann, Fun, Args}, _, ST) ->
     {pure, ?typed_p(Fun1, {fun_t, FAnn, [], ArgsT, RetT})} = purify_expr(Fun, ST),
     ArgsT1 = [get_state_t(ST), balance_t(FAnn)|ArgsT],
