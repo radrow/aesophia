@@ -4,6 +4,14 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], ArgsT
     Body;
     ).
 
+-define(UNSOME(Pat, Constrs), [Pat] =
+                   [ ArgT
+                     || C <- Constrs,
+                        ArgT <- case C of
+                                    {dep_constr_t, CAnn, Con = {con, _, "Some"}, [CT]} -> [CT];
+                                    _ -> []
+                                end
+                   ]).
 
 -define(
    STDLIB_CONSTRS,
@@ -25,14 +33,51 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], ArgsT
            begin
                {{dep_list_t, _, _, ElemT, _}, S1} = constr_expr(Env, L, S0),
                ExprT = {dep_variant_t, _, Id, _, _, Constrs} = fresh_liquid(Env, "first", RetT),
-               [RetConT] =
-                   [ ArgT
-                     || C <- Constrs,
-                        ArgT <- case C of
-                                    {dep_constr_t, CAnn, Con = {con, _, "Some"}, [CT]} -> [CT];
-                                    _ -> []
-                                end
-                   ],
+               ?UNSOME(RetConT, Constrs),
+               EnvEmpty = assert(?op(Ann, L, '==', ?int(Ann, 0)), Env),
+               EnvCons = assert(?op(Ann, L, '>', ?int(Ann, 0)), Env),
+               { ExprT
+               , [ {well_formed, constr_id(), Env, ExprT}
+                 , {subtype, constr_id(), Ann, EnvEmpty,
+                    {dep_variant_t, Ann, Id, RetT, [{is_tag, Ann, Id, {qcon, Ann, ["None"]}, []}], Constrs},
+                    ExprT}
+                 , {subtype, constr_id(), Ann, EnvCons,
+                    {dep_variant_t, Ann, Id, RetT, [{is_tag, Ann, Id, {qcon, Ann, ["Some"]}, [RetConT]}], Constrs},
+                    ExprT}
+                 , {subtype, constr_id(), Ann, EnvCons, ElemT, RetConT}
+                 | S1
+                 ]
+               }
+           end
+           )
+    ?CONSTR("List", "tail", [L],
+           begin
+               {{dep_list_t, _, _, ElemT, _}, S1} = constr_expr(Env, L, S0),
+               ExprT = {dep_variant_t, _, Id, _, _, Constrs} = fresh_liquid(Env, "tail", RetT),
+               ?UNSOME(RetConT, Constrs),
+               EnvEmpty = assert(?op(Ann, L, '==', ?int(Ann, 0)), Env),
+               EnvCons = assert(?op(Ann, L, '>', ?int(Ann, 0)), Env),
+               LId = fresh_id(Ann, "tail_l"),
+               { ExprT
+               , [ {well_formed, constr_id(), Env, ExprT}
+                 , {subtype, constr_id(), Ann, EnvEmpty,
+                    {dep_variant_t, Ann, Id, RetT, [{is_tag, Ann, Id, {qcon, Ann, ["None"]}, []}], Constrs},
+                    ExprT}
+                 , {subtype, constr_id(), Ann, EnvCons,
+                    {dep_variant_t, Ann, Id, RetT, [{is_tag, Ann, Id, {qcon, Ann, ["Some"]}, [RetConT]}], Constrs},
+                    ExprT}
+                 , {subtype, constr_id(), Ann, EnvCons,
+                   {dep_list_t, Ann, LId, ElemT, [?op(Ann, LId, '==', ?op(Ann, L, '-', ?int(Ann, 1)))]}, RetConT}
+                 | S1
+                 ]
+               }
+           end
+           )
+    ?CONSTR("List", "last", [L],
+           begin
+               {{dep_list_t, _, _, ElemT, _}, S1} = constr_expr(Env, L, S0),
+               ExprT = {dep_variant_t, _, Id, _, _, Constrs} = fresh_liquid(Env, "last", RetT),
+               ?UNSOME(RetConT, Constrs),
                EnvEmpty = assert(?op(Ann, L, '==', ?int(Ann, 0)), Env),
                EnvCons = assert(?op(Ann, L, '>', ?int(Ann, 0)), Env),
                { ExprT
