@@ -94,12 +94,12 @@
     :: {refined_t, ann(), id(), type(), Qual}
      | {dep_fun_t, ann(), [dep_arg_t(Qual)], dep_type(Qual)}
      | {dep_record_t, ann(), type(), [dep_field_t(Qual)]}
-     | {dep_variant_t, ann(), type(), Qual | undefined, [dep_constr_t(Qual)]}
+     | {dep_variant_t, ann(), id(), type(), Qual | undefined, [dep_constr_t(Qual)]}
      | {dep_list_t, ann(), id(), dep_type(Qual), Qual}
      | tvar().
 -type liquid_type() :: dep_type(predicate()).
 
--type dep_constr_t(Qual) :: {dep_constr_t, ann(), con(), dep_type(Qual)}.
+-type dep_constr_t(Qual) :: {dep_constr_t, ann(), con(), [dep_type(Qual)]}.
 
 -type dep_arg_t(Qual) :: {dep_arg_t, ann(), id(), dep_type(Qual)}.
 

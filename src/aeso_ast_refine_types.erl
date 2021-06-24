@@ -390,8 +390,8 @@ local_type_binds(Assg, Env) ->
            case Type of
                {refined_t, _, Id, _, _} ->
                    apply_subst(Id, Qid, Type);
-               {dep_variant_t, Ann, _, _, _} ->
-                   apply_subst(nu(Ann), Qid, Type);
+               {dep_variant_t, _, Id, _, _, _} ->
+                   apply_subst(Id, Qid, Type);
                {dep_list_t, _, Id, _, _} ->
                    apply_subst(Id, Qid, Type);
                _ -> Type
@@ -710,7 +710,7 @@ has_assumptions(T) ->
     has_assumptions(covariant, T).
 has_assumptions(covariant, {refined_t, _, _, _, [_|_]}) ->
     true;
-has_assumptions(covariant, {dep_variant_t, _, _, [_|_], _}) ->
+has_assumptions(covariant, {dep_variant_t, _, _, _, [_|_], _}) ->
     true;
 has_assumptions(covariant, {dep_list_t, _, _, _, [_|_]}) ->
     true;
@@ -732,7 +732,7 @@ has_assumptions(Variance, {tuple_t, _, Args}) ->
     has_assumptions(Variance, Args);
 has_assumptions(Variance, {dep_record_t, _, _, Fields}) ->
     has_assumptions(Variance, Fields);
-has_assumptions(Variance, {dep_variant_t, _, _, _, Constrs}) ->
+has_assumptions(Variance, {dep_variant_t, _, _, _, _, Constrs}) ->
     has_assumptions(Variance, Constrs);
 has_assumptions(Variance, {dep_list_t, _, _, ElemT, _}) ->
     has_assumptions(Variance, ElemT);
@@ -811,8 +811,8 @@ fresh_liquid(Env, Variance, _, {dep_record_t, Ann, Rec, Fields}) ->
        || {field_t, _, Field, FType} <- Fields
      ]
     };
-fresh_liquid(Env, Variance, Hint, {dep_variant_t, Ann, Type, TagPred, Constrs}) ->
-    {dep_variant_t, Ann, Type, TagPred,
+fresh_liquid(Env, Variance, Hint, {dep_variant_t, Ann, Id, Type, TagPred, Constrs}) ->
+    {dep_variant_t, Ann, Id, Type, TagPred,
      [ {dep_constr_t, CAnn, Con,
         fresh_liquid(Env, Variance, Hint ++ "_" ++ name(Con), Vals)}
        || {constr_t, CAnn, Con, Vals} <- Constrs
@@ -876,13 +876,14 @@ fresh_liquid(Env, Variance, Hint,
                      ]
                     };
                 {variant_t, Constrs} ->
+                    Id = fresh_id(Ann, Hint),
                     DepConstrs =
                         [ {dep_constr_t, CAnn, Con,
                            fresh_liquid(Env, Variance, Hint ++ "_" ++ name(Con),
                                         apply_subst(Subst, Vals))}
                           || {constr_t, CAnn, Con, Vals} <- Constrs
                         ],
-                    {dep_variant_t, Ann, Type,
+                    {dep_variant_t, Ann, Id, Type,
                      fresh_template(Variance, Hint ++ "_tag"), DepConstrs}
             end
     end;
@@ -967,10 +968,10 @@ switch_variance(forced_contravariant) ->
 base_type({refined_t, _, _, T, _}) ->
     T;
 base_type({dep_list_t, Ann, _, ElemT, _}) ->
-    {app_t, Ann, {id, Ann, "list"}, [ElemT]};
+    {app_t, Ann, {id, Ann, "list"}, [base_type(ElemT)]};
 base_type({dep_record_t, _, T, _}) ->
     T;
-base_type({dep_variant_t, _, T, _, _}) ->
+base_type({dep_variant_t, _, _, T, _, _}) ->
     T;
 base_type({dep_fun_t, Ann, Args, Ret}) ->
     {fun_t, Ann, [],
@@ -1357,7 +1358,8 @@ constr_expr(Env, {app, Ann, ?typed_p(QCon = {qcon, _, QName}), Args}, Type, S0) 
           }
           || {constr_t, CAnn, Con, ConArgs} <- Constrs
         ],
-    {{dep_variant_t, Ann, Type, [{is_tag, Ann, nu(Ann), QCon, ArgsT}],
+    Id = fresh_id(Ann, lists:last(QName)),
+    {{dep_variant_t, Ann, Id, Type, [{is_tag, Ann, Id, QCon, ArgsT}],
       apply_subst(TypeSubst, DepConstrs)},
      S1
     };
@@ -1575,13 +1577,13 @@ match_to_pattern(Env, {record, _, Fields}, Expr, {dep_record_t, _, Type, FieldsT
 match_to_pattern(Env, {con, Ann, CName}, Expr, DepT, Pred0) ->
     match_to_pattern(Env, {qcon, Ann, [CName]}, Expr, DepT, Pred0);
 match_to_pattern(Env, QCon = {qcon, Ann, _},
-                 Expr, DepT = {dep_variant_t, _, Type, _, _}, Pred0) ->
+                 Expr, DepT = {dep_variant_t, _, _, Type, _, _}, Pred0) ->
     %% This is for sure a nullary constructor
     match_to_pattern(Env, {app, Ann, ?typed(QCon, Type), []}, Expr, DepT, Pred0);
 match_to_pattern(Env, {app, Ann, ?typed_p({con, Ann, CName}, T), Args}, Expr, DepT, Pred0) ->
     match_to_pattern(Env, {app, Ann, ?typed({qcon, Ann, [CName]}, T), Args}, Expr, DepT, Pred0);
 match_to_pattern(Env, {app, Ann, ?typed_p(QCon = {qcon, _, QName}), Args},
-                 Expr, {dep_variant_t, _, _Type, _Tag, Constrs}, Pred0) ->
+                 Expr, {dep_variant_t, _, _, _Type, _Tag, Constrs}, Pred0) ->
     N = length(Args),
     [Types] =
         [ ConArgs
@@ -1651,7 +1653,6 @@ apply_subst(X, Expr, {dep_fun_t, Ann, Args, RetT}) ->
          _ -> apply_subst(X, Expr, RetT)
      end
     };
-apply_subst(_X, _Expr, []) -> [];
 apply_subst(X, Expr, [H|T]) -> [apply_subst(X, Expr, H)|apply_subst(X, Expr, T)];
 apply_subst(X, Expr, T) when is_tuple(T) ->
     list_to_tuple(apply_subst(X, Expr, tuple_to_list(T)));
@@ -1740,6 +1741,10 @@ inst_pred_tvar(Env, SelfId, TVar) ->
 
 inst_pred(Env, SelfId, {dep_list_t, Ann, _, _, _}) ->
     inst_pred(Env, SelfId, ?int_t(Ann));
+inst_pred(Env, SelfId, {dep_record_t, _, BaseT, _}) ->
+    inst_pred(Env, SelfId, BaseT);
+inst_pred(Env, SelfId, {dep_variant_t, _, _, BaseT, _, _}) ->
+    inst_pred(Env, SelfId, BaseT);
 inst_pred(Env, SelfId, {refined_t, _, _, BaseT, _}) ->
     inst_pred(Env, SelfId, BaseT);
 inst_pred(Env, SelfId, BaseT) ->
@@ -1773,6 +1778,7 @@ init_assg(Cs) ->
     lists:foldl(
       fun({well_formed, _, Env, {refined_t, _, Id, BaseT, {template, _, LV}}}, Acc) ->
               AllQs = inst_pred(Env, Id, BaseT),
+              ?DBG("SET ~s OF ~p TO\n~s", [name(Id), LV, aeso_pretty:pp(predicate, AllQs)]),
               Acc#{LV => #ltinfo{id = Id, base = BaseT, env = Env, predicate = AllQs}};
          (_, Acc) -> Acc
       end, #{}, Cs).
@@ -1843,14 +1849,15 @@ type_binds_pred(Assg, Access, TB) ->
                        [{qid(FAnn, QName ++ [name(Field)]), T}
                         || {dep_field_t, FAnn, Field, T} <- Fields]
                       );
-                 {dep_variant_t, Ann, VT, Tag, Constrs} ->
+                 {dep_variant_t, _, Id, VT, Tag, Constrs} ->
                      QName = case VT of
                                  {qid, _, Q} -> Q;
                                  {app_t, _, {qid, _, Q}, _} -> Q;
                                  {id, _, Q} -> [Q];
                                  {app_t, _, {id, _, Q}, _} -> [Q]
                              end,
-                     TagPred = apply_subst(nu(Ann), Access(Var), pred_of(Assg, Tag)),
+                     TagPred = apply_subst(Id, Access(Var), pred_of(Assg, Tag)),
+                     ?DBG("BIND OF VARIANT\n~p\nPRED: ~s\nSPRED: ~s", [VT, aeso_pretty:pp(predicate, pred_of(Assg, Tag)), aeso_pretty:pp(predicate, TagPred)]),
                      ConPred =
                          lists:flatten(
                            [ type_binds_pred(
@@ -1866,7 +1873,7 @@ type_binds_pred(Assg, Access, TB) ->
                            ]),
                      TagPred ++ ConPred;
                  {dep_list_t, Ann, Id, ElemT, LenPred} ->
-                     [?op(Ann, Id, '>=', ?int(Ann, 0))] ++
+                     [?op(Ann, Access(Var), '>=', ?int(Ann, 0))] ++
                      type_binds_pred(Assg, Access, [ElemT]) ++
                      apply_subst(Id, Access(Var), pred_of(Assg, LenPred));
                  _ -> []
@@ -1924,17 +1931,21 @@ split_constr1(C = {subtype, Ref, Ann, Env0, SubT, SupT}) ->
                || {{dep_field_t, _, _, FTSub}, {dep_field_t, _, _, FTSup}} <- lists:zip(FieldsSub1, FieldsSup1)
               ]
              );
-        { {dep_variant_t, _, TypeSub, TagSub, ConstrsSub}
-        , {dep_variant_t, _, TypeSup, TagSup, ConstrsSup}
+        { {dep_variant_t, _, IdSub, TypeSub, TagSub, ConstrsSub}
+        , {dep_variant_t, _, IdSup, TypeSup, TagSup, ConstrsSup}
         } ->
+            ?DBG("SPLIT VARIANT\n~s\n<:\n~s", [aeso_pretty:pp(predicate, TagSub), aeso_pretty:pp(predicate, TagSup)]),
+            ?DBG("CONSTRS:\n~p\n----\n~p", [ConstrsSub, ConstrsSup]),
+            ConstrsSplit =
+                [ {subtype, Ref, Ann, Env0, ArgSub, ArgSup}
+                  || { {dep_constr_t, _, _, ArgsSub}
+                     , {dep_constr_t, _, _, ArgsSup}
+                     } <- lists:zip(ConstrsSub, ConstrsSup),
+                     {ArgSub, ArgSup} <- lists:zip(ArgsSub, ArgsSup)
+                ],
             split_constr(
-              [ {subtype, Ref, Ann, Env0, refined(TypeSub, TagSub), refined(TypeSup, TagSup)}
-              | [ {subtype, Ref, Ann, Env0, ArgSub, ArgSup}
-                 || { {dep_constr_t, _, _, ArgsSub}
-                    , {dep_constr_t, _, _, ArgsSup}
-                    } <- lists:zip(ConstrsSub, ConstrsSup),
-                    {ArgSub, ArgSup} <- lists:zip(ArgsSub, ArgsSup)
-                ]
+              [ {subtype, Ref, Ann, Env0, refined(IdSub, TypeSub, TagSub), refined(IdSup, TypeSup, TagSup)}
+              | ConstrsSplit
               ]
              );
         { {dep_list_t, _, IdSub, DepElemSub, LenQualSub}
@@ -1962,13 +1973,15 @@ split_constr1(C = {well_formed, Ref, Env0, T}) ->
             split_constr([{well_formed, Ref, Env0, Tt} || Tt <- Ts]);
         {dep_record_t, _, _, Fields} ->
             split_constr([{well_formed, Ref, Env0, TF} || {dep_field_t, _, _, TF} <- Fields]);
-        {dep_variant_t, _, Type, Tag, Constrs} ->
-            split_constr(
-              [ {well_formed, Ref, Env0, refined(Type, Tag)}
-              | [ {well_formed, Ref, Env0, Arg}
+        {dep_variant_t, _, Id, Type, Tag, Constrs} ->
+            ConstrsSplit =
+                [ {well_formed, Ref, Env0, Arg}
                   || {dep_constr_t, _, _, Args} <- Constrs,
                      Arg <- Args
-                ]
+                ],
+            split_constr(
+              [ {well_formed, Ref, Env0, refined(Id, Type, Tag)}
+              | ConstrsSplit
               ]
              );
         {dep_list_t, Ann, Id, DepElem, LenQual} ->
@@ -2035,31 +2048,36 @@ valid_in({subtype, Ref, Ann, Env,
             SimpAssump = simplify_pred(Assg, Env1, pred_of(Assg, Env1) ++ AssumpPred),
             throw({contradict, {Ann, strip_typed(SimpAssump), strip_typed(ConclPred)}})
     end;
-valid_in({subtype, _, _, Env,
+valid_in({subtype, R, _, Env,
           {refined_t, _, SubId,    _, SubPredVar},
           {refined_t, _, SupId, Base, SupPredVar}
          }, Assg)
   when element(1, SupPredVar) =:= template ->
     Ltinfo = assg_of(Assg, SupPredVar),
     Id = Ltinfo#ltinfo.id,
+    DUPA = case SubPredVar of
+               {template, _, _} -> (assg_of(Assg, SubPredVar))#ltinfo.id;
+               _ -> SubId end,
+    [error({inconsistent, R, SubId, DUPA}) || name(DUPA) /= name(SubId)],
     SubPred = pred_of(Assg, SubPredVar),
     SupPred = pred_of(Assg, SupPredVar),
     AssumpPred = apply_subst(SubId, Id, SubPred),
     ConclPred  = apply_subst(SupId, Id, SupPred),
-    %% ?DBG("WOBBLY SUBTYPE ON (~s <: ~s) -> ~s\n~s\n<:\n~s",
-    %%      [name(SubId), name(SupId), name(Id),
-    %%       aeso_pretty:pp(predicate, SubPred),
-    %%       aeso_pretty:pp(predicate, SupPred)
-    %%      ]
-    %%     ),
+    ?DBG("WOBBLY SUBTYPE ON (~s <: ~s) -> ~s\n~s\n<:\n~s",
+         [name(SubId), name(SupId), name(Id),
+          aeso_pretty:pp(predicate, SubPred),
+          aeso_pretty:pp(predicate, SupPred)
+         ]
+        ),
     Env1 = bind_var(Id, Base, Env),
+    ?DBG("ASSUMP: ~s\nCONCL: ~s\nENV: ~s", [aeso_pretty:pp(predicate, AssumpPred), aeso_pretty:pp(predicate, ConclPred), aeso_pretty:pp(predicate, pred_of(Assg, Env1))]),
     impl_holds(Assg, Env1, AssumpPred, ConclPred);
 valid_in({subtype, Ref, Ann, Env, Sub, Sup}, Assg)
   when element(1, Sub) =:= id;
        element(1, Sub) =:= tvar ->
     valid_in({subtype, Ref, Ann, Env, refined(Sub), Sup}, Assg);
 valid_in(_C = {subtype, _, _, _, _, _}, _) -> %% In typechecker we trust
-    %% ?DBG("SKIPPING SUBTYPE: ~s", [aeso_pretty:pp(constr, _C)]),
+    ?DBG("SKIPPING SUBTYPE: ~s", [aeso_pretty:pp(constr, _C)]),
     true;
 valid_in(_, _) ->
     true.
@@ -2069,16 +2087,20 @@ weaken({subtype, _, _, Env,
         {refined_t, _, SubId,    _, SubPredVar},
         {refined_t, _, SupId, Base, SupPredVar = {template, _, Var}}
        }, Assg) ->
-    ?DBG("WEAKENING"),
     Ltinfo = assg_of(Assg, SupPredVar),
     Id = Ltinfo#ltinfo.id,
+    ?DBG("WEAKENING ~s <: ~s INTO ~s", [name(SubId), name(SupId), name(Id)]),
+    ?DBG("SubPredVar =\n~p", [SubPredVar]),
+    [?DBG("SubPredVar info =\n~p", [(assg_of(Assg, SubPredVar))#ltinfo.id]) || {template, _, _} <- [SubPredVar]],
+    ?DBG("SubPredVar PRED =\n~s", [aeso_pretty:pp(predicate, pred_of(Assg, SubPredVar))]),
     SubPred = pred_of(Assg, SubPredVar),
     AssumpPred = apply_subst(SubId, Id, SubPred),
     Env1 = bind_var(Id, Base, Env),
-    %% [ ?DBG("FILTERED\n~s|\n\nUNDER\n~s", [aeso_pretty:pp(expr, apply_subst(SupId, Id, Q)), aeso_pretty:pp(predicate, strip_typed(AssumpPred ++ pred_of(Assg, Env1)))])
-    %%   || Q <- pred_of(Assg, SupPredVar),
-    %%      not impl_holds(Assg, Env1, AssumpPred, apply_subst(SupId, Id, Q))
-    %% ],
+    ?DBG("PATH PRED ~s", [aeso_pretty:pp(predicate, Env1#env.path_pred)]),
+    [ ?DBG("REMOVED\n~s|\n\nUNDER\n~s", [aeso_pretty:pp(expr, apply_subst(SupId, Id, Q)), aeso_pretty:pp(predicate, strip_typed(AssumpPred ++ pred_of(Assg, Env1)))])
+      || Q <- pred_of(Assg, SupPredVar),
+         not impl_holds(Assg, Env1, AssumpPred, apply_subst(SupId, Id, Q))
+    ],
     Filtered =
         [ Q || Q <- pred_of(Assg, SupPredVar),
                impl_holds(Assg, Env1, AssumpPred, apply_subst(SupId, Id, Q))
@@ -2264,7 +2286,7 @@ type_to_smt(?tuple_tp(Types)) ->
     };
 type_to_smt({dep_record_t, _, T, _}) ->
     type_to_smt(T);
-type_to_smt({dep_variant_t, _, T, _, _}) ->
+type_to_smt({dep_variant_t, _, _, T, _, _}) ->
     type_to_smt(T);
 type_to_smt({dep_list_t, _, _, _, _}) ->
     {var, "Int"};  % Lists are yet lengths
@@ -2687,8 +2709,12 @@ purify_expr({app, Ann, Fun = ?typed_p({Op, _}), Args}, T, ST) when is_atom(Op) -
     {pure, Fun1} = purify_expr(Fun, ST),
     {pure, Args1} = purify_many(Args, ST),
     {pure, ?typed({app, Ann, Fun1, Args1}, T)};
-purify_expr({app, Ann, Fun = ?typed_p({qid, _, _}), Args}, T, ST) ->
-    %% This must be a namespace which doesn't interact with the state
+purify_expr({app, Ann, Fun = ?typed_p({qid, _, [NS, _]}), Args}, T, ST) when ?IS_STDLIB(NS) ->
+    %% This must be a builin namespace which doesn't interact with the state
+    Args1 = [drop_purity(purify_expr(A, ST)) || A <- Args],
+    {pure, ?typed({app, Ann, Fun, Args1}, T)};
+purify_expr({app, Ann, Fun = ?typed_p({HEAD, _, _}), Args}, T, ST) when HEAD == qcon; HEAD == con ->
+    %% Constructor
     Args1 = [drop_purity(purify_expr(A, ST)) || A <- Args],
     {pure, ?typed({app, Ann, Fun, Args1}, T)};
 purify_expr({app, Ann, Fun, Args}, _, ST) ->

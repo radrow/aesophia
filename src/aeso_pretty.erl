@@ -338,7 +338,7 @@ dep_type({dep_fun_t, _, Args, Ret}) ->
           )
       , type(Ret)
       );
-dep_type(T = {dep_record_t, _, Type, Fields}) ->
+dep_type({dep_record_t, _, Type, Fields}) ->
     beside(
       [ text("{")
       , hsep(
@@ -356,16 +356,22 @@ dep_type(T = {dep_record_t, _, Type, Fields}) ->
           ])
       , text("}")
       ]);
-dep_type({dep_variant_t, _, Type, Pred, Constrs}) ->
+dep_type({dep_variant_t, _, _, Type, Pred, Constrs}) ->
     PredList = if is_list(Pred) -> Pred;
                   true -> []
                end,
     IsTags =
-        [lists:last(Tag)
-         || {is_tag, _, _, {qcon, _, Tag}, _} <- PredList],
+        [ case HEAD of
+              con -> Tag;
+              qcon -> lists:last(Tag)
+          end
+         || {is_tag, _, _, {HEAD, _, Tag}, _} <- PredList],
     NotIsTags =
-        [lists:last(Tag)
-         || {app, _, {'!', _}, [{is_tag, _, _, {qcon, _, Tag}, _}]} <- PredList],
+        [ case HEAD of
+              con -> Tag;
+              qcon -> lists:last(Tag)
+          end
+         || {app, _, {'!', _}, [{is_tag, _, _, {HEAD, _, Tag}, _}]} <- PredList],
     Constrs1 =
         case IsTags of
             [] -> [ Con

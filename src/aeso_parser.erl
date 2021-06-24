@@ -602,7 +602,7 @@ dep_record_t(Ann, Base, Fields) ->
     {dep_record_t, Ann, Base, Fields}.
 
 dep_variant_t(Ann, Base, {variant_t, Constrs}) ->
-    {dep_variant_t, Ann, Base, undefined, Constrs}.
+    {dep_variant_t, Ann, aeso_ast_refine_types:nu(Ann), Base, undefined, Constrs}.
 
 dep_list_t(Ann, Id, ElemT, LenPred) ->
     {dep_list_t, Ann, Id, ElemT, LenPred}.
