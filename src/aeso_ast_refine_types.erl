@@ -2044,7 +2044,6 @@ valid_in({subtype, Ref, Ann, Env,
             true;
         false ->
             ?DBG("**** CONTRADICTION IN ~p", [Ref]),
-            error(contradict),
             SimpAssump = simplify_pred(Assg, Env1, pred_of(Assg, Env1) ++ AssumpPred),
             throw({contradict, {Ann, strip_typed(SimpAssump), strip_typed(ConclPred)}})
     end;
@@ -2077,7 +2076,7 @@ valid_in({subtype, Ref, Ann, Env, Sub, Sup}, Assg)
        element(1, Sub) =:= tvar ->
     valid_in({subtype, Ref, Ann, Env, refined(Sub), Sup}, Assg);
 valid_in(_C = {subtype, _, _, _, _, _}, _) -> %% In typechecker we trust
-    ?DBG("SKIPPING SUBTYPE: ~s", [aeso_pretty:pp(constr, _C)]),
+    %% ?DBG("SKIPPING SUBTYPE: ~s", [aeso_pretty:pp(constr, _C)]),
     true;
 valid_in(_, _) ->
     true.
@@ -2090,17 +2089,17 @@ weaken({subtype, _, _, Env,
     Ltinfo = assg_of(Assg, SupPredVar),
     Id = Ltinfo#ltinfo.id,
     ?DBG("WEAKENING ~s <: ~s INTO ~s", [name(SubId), name(SupId), name(Id)]),
-    ?DBG("SubPredVar =\n~p", [SubPredVar]),
-    [?DBG("SubPredVar info =\n~p", [(assg_of(Assg, SubPredVar))#ltinfo.id]) || {template, _, _} <- [SubPredVar]],
-    ?DBG("SubPredVar PRED =\n~s", [aeso_pretty:pp(predicate, pred_of(Assg, SubPredVar))]),
+    %% ?DBG("SubPredVar =\n~p", [SubPredVar]),
+    %% [?DBG("SubPredVar info =\n~p", [(assg_of(Assg, SubPredVar))#ltinfo.id]) || {template, _, _} <- [SubPredVar]],
+    %% ?DBG("SubPredVar PRED =\n~s", [aeso_pretty:pp(predicate, pred_of(Assg, SubPredVar))]),
     SubPred = pred_of(Assg, SubPredVar),
     AssumpPred = apply_subst(SubId, Id, SubPred),
     Env1 = bind_var(Id, Base, Env),
-    ?DBG("PATH PRED ~s", [aeso_pretty:pp(predicate, Env1#env.path_pred)]),
-    [ ?DBG("REMOVED\n~s|\n\nUNDER\n~s", [aeso_pretty:pp(expr, apply_subst(SupId, Id, Q)), aeso_pretty:pp(predicate, strip_typed(AssumpPred ++ pred_of(Assg, Env1)))])
-      || Q <- pred_of(Assg, SupPredVar),
-         not impl_holds(Assg, Env1, AssumpPred, apply_subst(SupId, Id, Q))
-    ],
+    %% ?DBG("PATH PRED ~s", [aeso_pretty:pp(predicate, Env1#env.path_pred)]),
+    %% [ ?DBG("REMOVED\n~s|\n\nUNDER\n~s", [aeso_pretty:pp(expr, apply_subst(SupId, Id, Q)), aeso_pretty:pp(predicate, strip_typed(AssumpPred ++ pred_of(Assg, Env1)))])
+    %%   || Q <- pred_of(Assg, SupPredVar),
+    %%      not impl_holds(Assg, Env1, AssumpPred, apply_subst(SupId, Id, Q))
+    %% ],
     Filtered =
         [ Q || Q <- pred_of(Assg, SupPredVar),
                impl_holds(Assg, Env1, AssumpPred, apply_subst(SupId, Id, Q))
@@ -2108,9 +2107,9 @@ weaken({subtype, _, _, Env,
     NewLtinfo = Ltinfo#ltinfo{
                  predicate = Filtered
                 },
-    ?DBG("WEAKENED FROM\n~s\nTO\n~s", [aeso_pretty:pp(predicate, Ltinfo#ltinfo.predicate),
-                                       aeso_pretty:pp(predicate, Filtered)
-                                      ]),
+    %% ?DBG("WEAKENED FROM\n~s\nTO\n~s", [aeso_pretty:pp(predicate, Ltinfo#ltinfo.predicate),
+    %%                                    aeso_pretty:pp(predicate, Filtered)
+    %%                                   ]),
     Assg#{Var => NewLtinfo};
 weaken({well_formed, _, _Env, {refined_t, _, _, _, _}}, Assg) ->
     Assg.
