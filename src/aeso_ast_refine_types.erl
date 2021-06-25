@@ -129,6 +129,7 @@ refined(T) -> refined(T, []).
         , cool_ints        = []                :: [integer()]
         , namespace        = []                :: qname()
         , namespaces       = #{}               :: #{qname() => namespace_type()}
+        , functions_not_purified = false       :: boolean()
         , tc_env
         }).
 -type env() :: #env{}.
@@ -903,10 +904,18 @@ fresh_liquid(Env, Variance, Hint, {fun_t, Ann, Named, Args, Ret}) ->
            || Arg <- Args
           ]
          ),
-    Args1 = ArgsN ++ ArgsU,
-    Subst = SubstN ++ SubstU,
+    {ArgsS, SubstS} =
+        case Env#env.functions_not_purified of
+            false -> {[], []};
+            true -> fresh_liquid_args(
+                      Env, switch_variance(Variance),
+                      [ fresh_id(Ann, "$init_state_sig", state_t(Ann, Env))
+                      , fresh_id(Ann, "$init_balance_sig", balance_t(Ann))])
+            end,
+    Args1 = ArgsS ++ ArgsN ++ ArgsU,
+    Subst = SubstS ++ SubstN ++ SubstU,
     Ret1 = apply_subst(Subst, Ret),
-    { dep_fun_t, Ann, Args1, fresh_liquid(Env, Variance, Hint, Ret1)};
+    {dep_fun_t, Ann, Args1, fresh_liquid(Env, Variance, Hint, Ret1)};
 fresh_liquid(Env, Variance, Hint, {tuple_t, Ann, Types}) ->
     {tuple_t, Ann, fresh_liquid(Env, Variance, Hint, Types)};
 fresh_liquid(_Env, _, _, []) -> [];
@@ -1064,7 +1073,7 @@ constr_con(Env0, {Tag, Ann, Con, Defs}, S0)
 
 -spec constr_letfun(env(), letfun(), [constr()]) -> {fundecl(), [constr()]}.
 constr_letfun(Env0, {letfun, Ann, Id, Args, RetT, Body}, S0) ->
-    ?DBG("ENTER FUN ~p", [Id]),
+    ?DBG("ENTER FUN ~s", [name(Id)]),
     {_, _, GlobFunT = {dep_fun_t, _, GlobArgsT, GlobRetT}} = type_of(Env0, Id),
     Args0 = fresh_wildcards(Args),
     Args1 = case namespace_type(Env0) of
@@ -1078,23 +1087,46 @@ constr_letfun(Env0, {letfun, Ann, Id, Args, RetT, Body}, S0) ->
         assert(
           [ ?op(Ann, Arg1, '==', Arg2)
            || {{dep_arg_t, _, Arg1, _}, {dep_arg_t, _, Arg2, {refined_t, _, _, _, _}}}
-                  <- lists:zip(ArgsT, GlobArgsT)
+                  <- lists:zip(ArgsT, GlobArgsT), name(Arg1) /= name(Arg2)
           ] ++
           [ ?op(Ann, Arg1, '==', Arg2)
             || {{dep_arg_t, _, Arg1, _}, {dep_arg_t, _, Arg2, {dep_list_t, _, _, _, _}}}
-                   <- lists:zip(ArgsT, GlobArgsT)
+                   <- lists:zip(ArgsT, GlobArgsT), name(Arg1) /= name(Arg2)
+          ] ++
+          [ ?op(Ann, Arg1, '==', Arg2)
+            || {{dep_arg_t, _, Arg1, _}, {dep_arg_t, _, Arg2, {dep_variant_t, _, _, _, _}}}
+                   <- lists:zip(ArgsT, GlobArgsT), name(Arg1) /= name(Arg2)
           ],
           Env2),
     ?DBG("INITIAL:\n~s",  [aeso_pretty:pp(expr, strip_typed(Body))]),
     Body1 = a_normalize(Body),
     ?DBG("A-NORM:\n~s",   [aeso_pretty:pp(expr, strip_typed(Body1))]),
+    %% ?DBG("A-NORM:\n~p",   [Body1]),
     PurifierST = init_purifier_st(ann_of(RetT), Env3),
     Body2 =
         case namespace_type(Env0) of
             namespace -> Body1;
             _ ->
                 case proplists:get_value(stateful, Ann, false) of
-                    false -> drop_purity(purify_expr(Body1, PurifierST));
+                    false -> case purify_expr(Body1, PurifierST) of
+                                 {pure, B} -> B;
+                                 {impure, BTyped = ?typed_p(_, BST = {tuple_t, _, [BType, SType, BalType]})} ->
+                                     a_normalize(?typed(
+                                        {switch, Ann, BTyped,
+                                         [ {'case', Ann,
+                                            ?typed(
+                                               {tuple, Ann, [ ?typed({id, Ann, "$pure"}, BType)
+                                                            , ?typed({id, Ann, "_"}, SType)
+                                                            , ?typed({id, Ann, "_"}, BalType)
+                                                            ]},
+                                               BST),
+                                            ?typed({id, Ann, "$pure"}, BType)
+                                           }
+                                         ]
+                                        },
+                                        BType
+                                       ))
+                                 end;
                     true  -> case purify_expr(Body1, PurifierST) of
                                  {impure, B} -> B;
                                  {pure, B} -> wrap_state(B, PurifierST)
@@ -1102,6 +1134,7 @@ constr_letfun(Env0, {letfun, Ann, Id, Args, RetT, Body}, S0) ->
                 end
         end,
     ?DBG("PURIFIED:\n~s", [aeso_pretty:pp(expr, strip_typed(Body2))]),
+    %% ?DBG("PURIFIED:\n~p", [Body2]),
     {BodyT, S1} = constr_expr(Env3, Body2, S0),
     InnerFunT = {dep_fun_t, Ann, ArgsT, BodyT},
     S3 = [ {subtype, constr_id(), Ann, Env3, BodyT, GlobRetT}
@@ -1198,10 +1231,20 @@ constr_expr(Env, Expr = {IdHead, Ann, Name}, T, S)
        true ->
             case type_of(Env, Expr) of
                 {_, _, DT} ->
-                    TExpr = fresh_liquid(Env, Name, BaseT),
-                    {TExpr
-                    , [ {subtype, constr_id(), Ann, Env, DT, TExpr}
-                      , {well_formed, constr_id(), Env, TExpr}
+                    DT1 =
+                        case {IdHead, DT} of
+                            %% Lambdas must be considered stateful
+                            {id, {dep_fun_t, Ann, TArgs, RetT}} ->
+                                {dep_fun_t, [{stateful, true}|Ann],
+                                 [ | TArgs],
+                                 RetT};
+                            _ -> BaseT
+                        end,
+                    ExprT = fresh_liquid(Env, Name, BaseT),
+                    ?DBG("DT IS ~p\n\nEXPRT IS ~p\n\n", [DT, ExprT]),
+                    {ExprT
+                    , [ {subtype, constr_id(), Ann, Env, DT, ExprT}
+                      , {well_formed, constr_id(), Env, ExprT}
                       | S
                       ]
                     };
@@ -1906,6 +1949,7 @@ split_constr1(C = {subtype, Ref, Ann, Env0, SubT, SupT}) ->
         { {dep_fun_t, _, ArgsSub, RetSub}
         , {dep_fun_t, _, ArgsSup, RetSup}
         } ->
+            ?DBG("IN REF ~p : ~p", [Ref, Ann]),
             Contra =
                 [ {subtype, Ref, Ann, Env0, ArgSupT, ArgSubT} %% contravariant!
                  || {{dep_arg_t, _, ArgSubT}, {dep_arg_t, _, ArgSupT}}
@@ -1915,6 +1959,7 @@ split_constr1(C = {subtype, Ref, Ann, Env0, SubT, SupT}) ->
             Subst =
                 [{Id1, Id2} || {{dep_arg_t, _, Id1, _}, {dep_arg_t, _, Id2, _}}
                                    <- lists:zip(ArgsSub, ArgsSup)],
+            ?DBG("DONE"),
             split_constr([{subtype, Ref, Ann, Env1, apply_subst(Subst, RetSub), RetSup}|Contra]);
         {{tuple_t, _, TSubs}, {tuple_t, _, TSups}} ->
             split_constr([{subtype, Ref, Ann, Env0, TSub, TSup} ||
@@ -2693,13 +2738,10 @@ purify_expr(?typed_p(E, T), T1, ST) ->
     {Pure, E1} = purify_expr(E, T, ST),
     {Pure, purify_typed(Pure, E1, T1, ST)};
 purify_expr(Id = {id, _, _}, {fun_t, TAnn, [], ArgsT, RetT}, ST) ->
+    %% This is a lambda so we treat it as stateful
     ArgsT1 = [get_state_t(ST), balance_t(TAnn)|ArgsT],
-    RetT1 =
-        case aeso_syntax:get_ann(stateful, TAnn, false) of
-            false -> RetT;
-            true  -> wrap_state_t(RetT, ST)
-        end,
-    {pure, ?typed(Id, {fun_t, TAnn, [], ArgsT1, RetT1})};
+    RetT1 = wrap_state_t(RetT, ST),
+    {pure, ?typed(Id, {fun_t, [{stateful, true}|TAnn], [], ArgsT1, RetT1})};
 purify_expr({qid, _, [_, "state"]}, T, ST) ->
     ?typed_p(STVar) = ST#purifier_st.state,
     {pure, ?typed(STVar, T)};
@@ -2714,6 +2756,12 @@ purify_expr({app, Ann, Fun = ?typed_p({Op, _}), Args}, T, ST) when is_atom(Op) -
     {pure, Fun1} = purify_expr(Fun, ST),
     {pure, Args1} = purify_many(Args, ST),
     {pure, ?typed({app, Ann, Fun1, Args1}, T)};
+purify_expr({app, Ann, Fun = ?typed_p({id, _, _}), Args}, T, ST) ->
+    %% This is a lambda so we treat it as stateful
+    {pure, Fun1} = purify_expr(Fun, ST),
+    Args1 = [ ST#purifier_st.state, ST#purifier_st.balance
+            | [drop_purity(purify_expr(A, ST)) || A <- Args]],
+    {impure, purify_typed(impure, {app, Ann, Fun1, Args1}, T, ST)};
 purify_expr({app, Ann, Fun = ?typed_p({qid, _, [NS, FunName]}), Args}, T, ST)
   when ?IS_STDLIB(NS) andalso not ?IS_STDLIB_STATEFUL(NS, FunName) ->
     %% This is a builin namespace which doesn't interact with the state
@@ -2738,32 +2786,32 @@ purify_expr({app, Ann, Fun, Args}, _, ST) ->
 purify_expr({'if', Ann, Cond, Then, Else}, T, ST) ->
     {pure, Cond1} = purify_expr(Cond, ST),
     {Pure, {Then1, Else1}} = purify_many(Then, Else, ST),
-    {Pure, purify_typed(Pure, {'if', Ann, Cond1, Then1, Else1}, T, ST)};
+    purify_typed(Pure, {'if', Ann, Cond1, Then1, Else1}, T, ST);
 purify_expr({switch, Ann, Switch, Cases}, T, ST) ->
     {pure, Switch1} = purify_expr(Switch, ST),
     Bodies = [Body || {'case', _, _, Body} <- Cases],
     {Pure, Bodies1} = purify_many(Bodies, ST),
-    {Pure,
-     purify_typed(
-       Pure,
-       {switch, Ann, Switch1,
-        [{'case', CAnn, Pat, Body}
-         || {Body, {'case', CAnn, Pat, _}} <- lists:zip(Bodies1, Cases)]},
-       T, ST)
-      };
+    purify_typed(
+      Pure,
+      {switch, Ann, Switch1,
+       [{'case', CAnn, Pat, Body}
+        || {Body, {'case', CAnn, Pat, _}} <- lists:zip(Bodies1, Cases)]},
+      T, ST);
 purify_expr({lam, Ann, Args, Body}, {fun_t, TAnn, [], TArgs, _}, ST) ->
     StateVarT = ?typed_p(StateVar, StateT) = fresh_id(Ann, "$lam_state", get_state_t(ST)),
     BalanceVarT = ?typed_p(BalanceVar, BalanceT) = fresh_id(Ann, "$lam_balance", balance_t(Ann)),
     Args1 = [{arg, Ann, StateVar, StateT}, {arg, Ann, BalanceVar, BalanceT} | Args],
     {_, Body1 = ?typed_p(_, BodyT)} = purify_expr(Body, #purifier_st{state = StateVarT, balance = BalanceVarT}),
-    {pure,
-     ?typed({lam, Ann, Args1, Body1}, {fun_t, TAnn, [], [get_state_t(ST), balance_t(Ann)|TArgs], BodyT})
-    };
+    purify_typed(
+      pure, {lam, Ann, Args1, Body1},
+      {fun_t, [{stateful, true}|TAnn], [], [get_state_t(ST), balance_t(Ann)|TArgs], BodyT},
+      ST
+     );
 purify_expr({block, Ann, Stmts}, T, ST) ->
     {Pure, Stmts1} = purify_block(pure, Stmts, ST),
-    {Pure, purify_typed(Pure, {block, Ann, Stmts1}, T, ST)};
-purify_expr(E, T, _) ->
-    {pure, ?typed(E, T)}.
+    purify_typed(Pure, {block, Ann, Stmts1}, T, ST);
+purify_expr(E, T, ST) ->
+    purify_typed(pure, E, T, ST).
 
 purify_block(PurePrev, [Expr], ST) ->
     {PureExpr, Expr1} = purify_expr(Expr, ST),
@@ -2800,6 +2848,31 @@ purify_block(PurePrev, [Stmt|Rest], ST) ->
             | Rest1
             ]}
     end.
+
+purify_type({fun_t, Ann, [], Args, Ret}, ST) ->
+    {fun_t, Ann, [],
+     [get_state_t(ST), balance_t(Ann) | [purify_type(Arg, ST) || Arg <- Args]],
+     wrap_state_t(purify_type(Ret, ST), ST)};
+purify_type({app_t, Ann, T, Args}, ST) ->
+    {app_t, Ann, T, [purify_type(Arg, ST) || Arg <- Args]};
+purify_type({tuple_t, Ann, Args}, ST) ->
+    {tuple_t, Ann, [purify_type(Arg, ST) || Arg <- Args]};
+purify_type({dep_fun_t, Ann, Args, Ret}, ST) ->
+    {dep_fun_t, Ann,
+     [ get_state_t(ST), balance_t(Ann)
+     | [{dep_arg_t, ArgAnn, Id, purify_type(Arg, ST)} || {dep_arg_t, ArgAnn, Id, Arg} <- Args]],
+     wrap_state_t(purify_type(Ret, ST), ST)};
+purify_type({dep_list_t, Ann, Id, ElemT, Qual}, ST) ->
+    {dep_list_t, Ann, Id, purify_type(ElemT, ST), Qual};
+purify_type({dep_record_t, Ann, Base, Fields}, ST) ->
+    {dep_record_t, Ann, Base,
+     [{dep_field_t, FAnn, Id, purify_type(FType, ST)} || {dep_field_t, FAnn, Id, FType} <- Fields]};
+purify_type({dep_variant_t, Ann, Id, Base, Constrs}, ST) ->
+    {dep_variant_t, Ann, Id, Base,
+     [{dep_constr_t, FAnn, Con, [purify_type(Arg, ST) || Arg <- Args]}
+     || {dep_constr_t, FAnn, Con, Args} <- Constrs]};
+purify_type(T, _) -> T.
+
 
 drop_purity({impure, E}) ->
     E;

@@ -6,7 +6,9 @@
         )).
 
 -define(IS_STDLIB_STATEFUL(NS, Fun),
-        ((NS == "List" andalso Fun == "map")
+        ((NS == "List" andalso Fun == "map") orelse
+         (NS == "List" andalso Fun == "flat_map") orelse
+         false
         )).
 
 
@@ -290,4 +292,41 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], ArgsT
           )
 
 
+   ?CONSTR("List", "flat_map", [State, Balance, F, L],
+           begin
+               {StateT, S1} = constr_expr(Env, State, S0),
+               {BalanceT, S2} = constr_expr(Env, Balance, S1),
+               {{dep_list_t, _, LId, ElemT, _}, S3} = constr_expr(Env, L, S2),
+               {{dep_fun_t, _,
+                 [ {dep_arg_t, _, StateId, StateArgT}
+                 , {dep_arg_t, _, BalanceId, BalanceArgT}
+                 , {dep_arg_t, _, ArgId, ArgT}
+                 ],
+                 ResT = {dep_list_t, _, _, ResElemT, _}
+                }, S4} = constr_expr(Env, F, S3),
+               ExprT = fresh_liquid(Env, "flat_map", RetT),
+               AbstractElem = fresh_id(Ann, "flat_map_list_elem"),
+               AbstractGen = fresh_id(Ann, "flat_map_gen"),
+               AppEnv = bind_vars(
+                          [ {AbstractElem, ElemT}
+                          , {AbstractGen, ResT}
+                          ], Env),
+               AppElemT = apply_subst(
+                            [ {StateId, State}
+                            , {BalanceId, Balance}
+                            , {ArgId, AbstractElem}
+                            ], ResElemT
+                           ),
+               { ExprT
+               , [ {well_formed, constr_id(), Env, ExprT}
+                 , {subtype, constr_id(), Ann, AppEnv,
+                    {dep_list_t, Ann, LId, AppElemT, [?op(Ann, LId, '=<', ?op(Ann, L, '*', AbstractGen))]},
+                    ExprT}
+                 , {subtype, constr_id(), Ann, Env, StateT, StateArgT}
+                 , {subtype, constr_id(), Ann, Env, BalanceT, BalanceArgT}
+                 | S4
+                 ]
+               }
+           end
+          )
   ).
