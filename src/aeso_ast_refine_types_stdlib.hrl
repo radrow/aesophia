@@ -1,4 +1,15 @@
 
+-define(IS_STDLIB(NS),
+        (NS == "List" orelse
+         NS == "ListInternal" orelse
+         NS == "Option"
+        )).
+
+-define(IS_STDLIB_STATEFUL(NS, Fun),
+        ((NS == "List" andalso Fun == "map")
+        )).
+
+
 -define(CONSTR(NS, Fun, Args, Body),
 constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], ArgsT, _}}, Args}, RetT, S0) ->
     Body;
@@ -55,6 +66,7 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], ArgsT
     ?CONSTR("List", "tail", [L],
            begin
                {{dep_list_t, _, _, ElemT, _}, S1} = constr_expr(Env, L, S0),
+               {_, S1} = constr_expr(Env, L, S0),
                ExprT = {dep_variant_t, _, Id, _, _, Constrs} = fresh_liquid(Env, "tail", RetT),
                ?UNSOME(RetConT, Constrs),
                EnvEmpty = assert(?op(Ann, L, '==', ?int(Ann, 0)), Env),
@@ -97,6 +109,10 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], ArgsT
                }
            end
            )
+
+   %% TODO contains – force false if no way to fulfill
+
+   %% TODO find – reduce type to fulfill the predicate
 
     ?CONSTR("List", "find_indices", [P, L], %% TODO: len == 0 if no way to fulfill
            begin
@@ -198,5 +214,80 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], ArgsT
                }
            end
           )
+
+   ?CONSTR("List", "from_to_step", [From, To, Step],
+           begin
+               {_, S1} = constr_expr(Env, From, S0),
+               {_, S2} = constr_expr(Env, To, S1),
+               {StepT, S3} = constr_expr(Env, Step, S2),
+               ExprT = fresh_liquid(Env, "from_to_step", RetT),
+               ElemT = refined(?int_t(Ann), [?op(Ann, From, '=<', nu(Ann)), ?op(Ann, nu(Ann), '=<', To)]),
+               EnvEmpty = assert(?op(Ann, To, '<', From), Env),
+               EnvSome = assert(?op(Ann, To, '>=', From), Env),
+               LId = fresh_id(Ann, "from_to_l_step"),
+               { ExprT
+               , [ {well_formed, constr_id(), Env, ExprT}
+                 , {subtype, constr_id(), Ann, EnvEmpty,
+                    {dep_list_t, Ann, LId, ElemT, [?op(Ann, LId, '==', ?int(Ann, 0))]},
+                    ExprT}
+                 , {subtype, constr_id(), Ann, EnvSome,
+                    {dep_list_t, Ann, LId, ElemT,
+                     [?op(Ann, LId, '==', ?op(Ann, ?op(Ann, ?op(Ann, To, '-', From), '/', Step), '+', ?int(Ann, 1)))]},
+                    ExprT}
+                 , {subtype, constr_id(), Ann, Env, StepT, refined(?int_t(Ann), [?op(Ann, nu(Ann), '>', ?int(Ann, 0))])}
+                 | S2
+                 ]
+               }
+           end
+          )
+
+   %% TODO insert_at – consider length and update ElemT
+
+   %% TODO insert_by – consider length and update ElemT. skip comparator
+
+   ?CONSTR("List", "reverse", [L],
+           begin
+               {LT, S1} = constr_expr(Env, L, S0),
+               ExprT = fresh_liquid(Env, "reverse", RetT),
+               { ExprT
+               , [ {well_formed, constr_id(), Env, ExprT}
+                 , {subtype, constr_id(), Ann, Env, LT, ExprT}
+                 | S1
+                 ]
+               }
+           end
+          )
+
+   ?CONSTR("List", "map", [State, Balance, F, L],
+           begin
+               {StateT, S1} = constr_expr(Env, State, S0),
+               {BalanceT, S2} = constr_expr(Env, Balance, S1),
+               {{dep_list_t, _, LId, ElemT, LenQual}, S3} = constr_expr(Env, L, S2),
+               {{dep_fun_t, _,
+                 [ {dep_arg_t, _, StateId, StateArgT}
+                 , {dep_arg_t, _, BalanceId, BalanceArgT}
+                 , {dep_arg_t, _, ArgId, ArgT}
+                 ], ResT}, S4} = constr_expr(Env, F, S3),
+               ExprT = fresh_liquid(Env, "map", RetT),
+               AbstractElem = fresh_id(Ann, "map_list_elem"),
+               AppEnv = bind_var(AbstractElem, ElemT, Env),
+               AppElemT = apply_subst(
+                            [ {StateId, State}
+                            , {BalanceId, Balance}
+                            , {ArgId, AbstractElem}
+                            ], ResT
+                           ),
+               { ExprT
+               , [ {well_formed, constr_id(), Env, ExprT}
+                 , {subtype, constr_id(), Ann, AppEnv,
+                   {dep_list_t, Ann, LId, AppElemT, LenQual}, ExprT}
+                 , {subtype, constr_id(), Ann, Env, StateT, StateArgT}
+                 , {subtype, constr_id(), Ann, Env, BalanceT, BalanceArgT}
+                 | S4
+                 ]
+               }
+           end
+          )
+
 
   ).

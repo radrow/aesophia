@@ -626,8 +626,6 @@ find_tuple_sizes(T, Acc) when is_tuple(T) ->
 find_tuple_sizes(_, Acc) ->
     Acc.
 
--define(IS_STDLIB(NS), (NS == "List" orelse NS == "ListInternal" orelse NS == "Option")).
-
 -spec bind_ast_funs(aeso_ast_infer_types:env(), ast(), env()) -> env().
 bind_ast_funs(TCEnv, AST, Env) ->
     lists:foldr(
@@ -2694,6 +2692,14 @@ purify_typed(impure, E, T, ST) ->
 purify_expr(?typed_p(E, T), T1, ST) ->
     {Pure, E1} = purify_expr(E, T, ST),
     {Pure, purify_typed(Pure, E1, T1, ST)};
+purify_expr(Id = {id, _, _}, {fun_t, TAnn, [], ArgsT, RetT}, ST) ->
+    ArgsT1 = [get_state_t(ST), balance_t(TAnn)|ArgsT],
+    RetT1 =
+        case aeso_syntax:get_ann(stateful, TAnn, false) of
+            false -> RetT;
+            true  -> wrap_state_t(RetT, ST)
+        end,
+    {pure, ?typed(Id, {fun_t, TAnn, [], ArgsT1, RetT1})};
 purify_expr({qid, _, [_, "state"]}, T, ST) ->
     ?typed_p(STVar) = ST#purifier_st.state,
     {pure, ?typed(STVar, T)};
@@ -2708,8 +2714,9 @@ purify_expr({app, Ann, Fun = ?typed_p({Op, _}), Args}, T, ST) when is_atom(Op) -
     {pure, Fun1} = purify_expr(Fun, ST),
     {pure, Args1} = purify_many(Args, ST),
     {pure, ?typed({app, Ann, Fun1, Args1}, T)};
-purify_expr({app, Ann, Fun = ?typed_p({qid, _, [NS, _]}), Args}, T, ST) when ?IS_STDLIB(NS) ->
-    %% This must be a builin namespace which doesn't interact with the state
+purify_expr({app, Ann, Fun = ?typed_p({qid, _, [NS, FunName]}), Args}, T, ST)
+  when ?IS_STDLIB(NS) andalso not ?IS_STDLIB_STATEFUL(NS, FunName) ->
+    %% This is a builin namespace which doesn't interact with the state
     Args1 = [drop_purity(purify_expr(A, ST)) || A <- Args],
     {pure, ?typed({app, Ann, Fun, Args1}, T)};
 purify_expr({app, Ann, Fun = ?typed_p({HEAD, _, _}), Args}, T, ST) when HEAD == qcon; HEAD == con ->
@@ -2744,6 +2751,14 @@ purify_expr({switch, Ann, Switch, Cases}, T, ST) ->
          || {Body, {'case', CAnn, Pat, _}} <- lists:zip(Bodies1, Cases)]},
        T, ST)
       };
+purify_expr({lam, Ann, Args, Body}, {fun_t, TAnn, [], TArgs, _}, ST) ->
+    StateVarT = ?typed_p(StateVar, StateT) = fresh_id(Ann, "$lam_state", get_state_t(ST)),
+    BalanceVarT = ?typed_p(BalanceVar, BalanceT) = fresh_id(Ann, "$lam_balance", balance_t(Ann)),
+    Args1 = [{arg, Ann, StateVar, StateT}, {arg, Ann, BalanceVar, BalanceT} | Args],
+    {_, Body1 = ?typed_p(_, BodyT)} = purify_expr(Body, #purifier_st{state = StateVarT, balance = BalanceVarT}),
+    {pure,
+     ?typed({lam, Ann, Args1, Body1}, {fun_t, TAnn, [], [get_state_t(ST), balance_t(Ann)|TArgs], BodyT})
+    };
 purify_expr({block, Ann, Stmts}, T, ST) ->
     {Pure, Stmts1} = purify_block(pure, Stmts, ST),
     {Pure, purify_typed(Pure, {block, Ann, Stmts1}, T, ST)};
