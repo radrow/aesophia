@@ -260,31 +260,35 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], ArgsT
            end
           )
 
-   ?CONSTR("List", "map", [State, Balance, F, L],
+   ?CONSTR("List", "map", [State = ?typed_p(_, StateT), Balance = ?typed_p(_, BalanceT), F, L],
            begin
-               {StateT, S1} = constr_expr(Env, State, S0),
-               {BalanceT, S2} = constr_expr(Env, Balance, S1),
+               {_, S1} = constr_expr(Env, State, S0),
+               {_, S2} = constr_expr(Env, Balance, S1),
+               NewStateT = fresh_liquid(Env, "map_state", StateT),
+               NewBalanceT = fresh_liquid(Env, "map_balance", BalanceT),
                {{dep_list_t, _, LId, ElemT, LenQual}, S3} = constr_expr(Env, L, S2),
                {{dep_fun_t, _,
                  [ {dep_arg_t, _, StateId, StateArgT}
                  , {dep_arg_t, _, BalanceId, BalanceArgT}
                  , {dep_arg_t, _, ArgId, ArgT}
-                 ], ResT}, S4} = constr_expr(Env, F, S3),
-               ExprT = fresh_liquid(Env, "map", RetT),
+                 ], {tuple_t, _, [ResT|_]}}, S4} = constr_expr(Env, F, S3),
+               {tuple_t, ExAnn, [ExprT|_]} = fresh_liquid(Env, "map", RetT),
+               STExprT = {tuple_t, ExAnn, [ExprT, NewStateT, NewBalanceT]},
                AbstractElem = fresh_id(Ann, "map_list_elem"),
                AppEnv = bind_var(AbstractElem, ElemT, Env),
-               AppElemT = apply_subst(
-                            [ {StateId, State}
-                            , {BalanceId, Balance}
-                            , {ArgId, AbstractElem}
-                            ], ResT
-                           ),
-               { ExprT
-               , [ {well_formed, constr_id(list_map), Env, ExprT}
-                 , {subtype, constr_id(list_map), Ann, AppEnv,
+               AppElemT =
+                   apply_subst(
+                     [ {StateId, State}
+                     , {BalanceId, Balance}
+                     , {ArgId, AbstractElem}
+                     ], ResT
+                    ),
+               { STExprT
+               , [ {well_formed, constr_id(list_map_wf), Env, STExprT}
+                 , {subtype, constr_id(list_map_len_preserve), Ann, AppEnv,
                    {dep_list_t, Ann, LId, AppElemT, LenQual}, ExprT}
-                 , {subtype, constr_id(list_map), Ann, Env, StateT, StateArgT}
-                 , {subtype, constr_id(list_map), Ann, Env, BalanceT, BalanceArgT}
+                 , {subtype, constr_id(list_map_state), Ann, Env, StateT, StateArgT}
+                 , {subtype, constr_id(list_map_balance), Ann, Env, BalanceT, BalanceArgT}
                  | S4
                  ]
                }
@@ -292,35 +296,38 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], ArgsT
           )
 
 
-   ?CONSTR("List", "flat_map", [State, Balance, F, L],
+   ?CONSTR("List", "flat_map", [State = ?typed_p(_, StateT), Balance = ?typed_p(_, BalanceT), F, L],
            begin
-               {StateT, S1} = constr_expr(Env, State, S0),
-               {BalanceT, S2} = constr_expr(Env, Balance, S1),
+               {_, S1} = constr_expr(Env, State, S0),
+               {_, S2} = constr_expr(Env, Balance, S1),
+               NewStateT = fresh_liquid(Env, "flat_map_state", StateT),
+               NewBalanceT = fresh_liquid(Env, "flat_map_balance", BalanceT),
                {{dep_list_t, _, LId, ElemT, _}, S3} = constr_expr(Env, L, S2),
-               {{dep_fun_t, _,
+               {QWE = {dep_fun_t, _,
                  [ {dep_arg_t, _, StateId, StateArgT}
                  , {dep_arg_t, _, BalanceId, BalanceArgT}
                  , {dep_arg_t, _, ArgId, ArgT}
                  ],
-                 ResT = {dep_list_t, _, _, ResElemT, _}
+                 {tuple_t, _, [ResT = {dep_list_t, _, _, ResElemT, _}|_]}
                 }, S4} = constr_expr(Env, F, S3),
-               ExprT = fresh_liquid(Env, "flat_map", RetT),
+               {tuple_t, ExAnn, [ExprT|_]} = fresh_liquid(Env, "flat_map", RetT),
+               STExprT = {tuple_t, ExAnn, [ExprT, NewStateT, NewBalanceT]},
                AbstractElem = fresh_id(Ann, "flat_map_list_elem"),
                AbstractGen = fresh_id(Ann, "flat_map_gen"),
+               ResSubst =
+                   [ {StateId, State}
+                   , {BalanceId, Balance}
+                   , {ArgId, AbstractElem}
+                   ],
                AppEnv = bind_vars(
                           [ {AbstractElem, ElemT}
-                          , {AbstractGen, ResT}
+                          , {AbstractGen, apply_subst(ResSubst, ResT)}
                           ], Env),
-               AppElemT = apply_subst(
-                            [ {StateId, State}
-                            , {BalanceId, Balance}
-                            , {ArgId, AbstractElem}
-                            ], ResElemT
-                           ),
-               { ExprT
-               , [ {well_formed, constr_id(list_flat_map), Env, ExprT}
+               AppElemT = apply_subst(ResSubst, ResElemT),
+               { STExprT
+               , [ {well_formed, constr_id(list_flat_map), Env, STExprT}
                  , {subtype, constr_id(list_flat_map), Ann, AppEnv,
-                    {dep_list_t, Ann, LId, AppElemT, [?op(Ann, LId, '=<', ?op(Ann, L, '*', AbstractGen))]},
+                    {dep_list_t, Ann, LId, AppElemT, [?op(Ann, LId, '>=', ?int(Ann, 0)), ?op(Ann, LId, '=<', ?op(Ann, L, '*', AbstractGen))]},
                     ExprT}
                  , {subtype, constr_id(list_flat_map), Ann, Env, StateT, StateArgT}
                  , {subtype, constr_id(list_flat_map), Ann, Env, BalanceT, BalanceArgT}

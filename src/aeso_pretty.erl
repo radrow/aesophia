@@ -415,7 +415,6 @@ dep_type({dep_list_t, _, Id, Elem, LenPred}) ->
           , type({app_t, [], {id, [], "list"}, [Elem]})
           , text("|")
           , predicate(LenPred)
-          , text("}")
           ])
       , text("}")
       ]
