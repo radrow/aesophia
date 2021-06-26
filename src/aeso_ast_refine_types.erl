@@ -129,7 +129,6 @@ refined(T) -> refined(T, []).
         , cool_ints        = []                :: [integer()]
         , namespace        = []                :: qname()
         , namespaces       = #{}               :: #{qname() => namespace_type()}
-        , functions_not_purified = false       :: boolean()
         , tc_env
         }).
 -type env() :: #env{}.
@@ -910,16 +909,8 @@ fresh_liquid(Env, Variance, Hint, {fun_t, Ann, Named, Args, Ret}) ->
            || Arg <- Args
           ]
          ),
-    {ArgsS, SubstS} =
-        case Env#env.functions_not_purified of
-            false -> {[], []};
-            true -> fresh_liquid_args(
-                      Env, switch_variance(Variance),
-                      [ fresh_id(Ann, "$init_state_sig", state_t(Ann, Env))
-                      , fresh_id(Ann, "$init_balance_sig", balance_t(Ann))])
-            end,
-    Args1 = ArgsS ++ ArgsN ++ ArgsU,
-    Subst = SubstS ++ SubstN ++ SubstU,
+    Args1 = ArgsN ++ ArgsU,
+    Subst = SubstN ++ SubstU,
     Ret1 = apply_subst(Subst, Ret),
     {dep_fun_t, Ann, Args1, fresh_liquid(Env, Variance, Hint, Ret1)};
 fresh_liquid(Env, Variance, Hint, {tuple_t, Ann, Types}) ->
@@ -1150,6 +1141,7 @@ constr_letfun(Env0, {letfun, Ann, Id, Args, RetT, Body}, S0) ->
     ?DBG("PURIFIED:\n~s", [aeso_pretty:pp(expr, strip_typed(Body2))]),
     %% ?DBG("PURIFIED:\n~p", [Body2]),
     {BodyT, S1} = constr_expr(Env3, Body2, S0),
+    ?DBG("BODYT ~p\n\nGRETT ~p", [BodyT, GlobRetT]),
     InnerFunT = {dep_fun_t, Ann, ArgsT, BodyT},
     S3 = [ {subtype, constr_id(letfun_top), Ann, Env3, BodyT, GlobRetT}
          , {well_formed, constr_id(letfun_glob), Env0, GlobFunT}
@@ -1469,6 +1461,7 @@ constr_expr(Env, {lam, _, Args, Body}, {fun_t, TAnn, [], _, RetT}, S0) ->
     ExprT = {dep_fun_t, TAnn, DepArgsT, DepRetT},
     EnvBody = bind_args(DepArgsT, Env),
     {BodyT, S1} = constr_expr(EnvBody, Body, S0),
+    ?DBG("LAM ~p -> ~p", [Args, Body]),
     {ExprT,
      [ {well_formed, constr_id(lam), Env, {dep_fun_t, TAnn, DepArgsT, DepRetT}}
      , {subtype, constr_id(lam), ann_of(Body), EnvBody, BodyT, DepRetT}
@@ -2816,9 +2809,12 @@ purify_expr({lam, Ann, Args, Body}, {fun_t, TAnn, [], TArgs, _}, ST) ->
     StateVarT = ?typed_p(StateVar, StateT) = fresh_id(Ann, "$lam_state", get_state_t(ST)),
     BalanceVarT = ?typed_p(BalanceVar, BalanceT) = fresh_id(Ann, "$lam_balance", balance_t(Ann)),
     Args1 = [{arg, Ann, StateVar, StateT}, {arg, Ann, BalanceVar, BalanceT} | Args],
-    {_, Body1 = ?typed_p(_, BodyT)} = purify_expr(Body, #purifier_st{state = StateVarT, balance = BalanceVarT}),
+    BodyST = ST#purifier_st{state = StateVarT, balance = BalanceVarT},
+    {BodyPure, ?typed_p(_, BodyT) = Body1} =
+        purify_expr(Body, BodyST),
+    Body2 = wrap_pure(BodyPure, Body1, BodyST),
     purify_typed(
-      pure, {lam, Ann, Args1, Body1},
+      pure, {lam, Ann, Args1, Body2},
       {fun_t, [{stateful, true}|TAnn], [], [get_state_t(ST), balance_t(Ann)|TArgs], BodyT},
       ST
      );
