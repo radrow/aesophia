@@ -33,8 +33,8 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], ArgsT
                {_, S1} = constr_expr(Env, L, S0),
                ExprT = fresh_liquid(Env, "is_empty", RetT),
                { ExprT
-               , [ {well_formed, constr_id(), Env, ExprT}
-                 , {subtype, constr_id(), Ann, Env,
+               , [ {well_formed, constr_id(list_is_empty), Env, ExprT}
+                 , {subtype, constr_id(is_empty), Ann, Env,
                     refined(?bool_t(Ann), [?op(Ann, nu(Ann), '==', ?op(Ann, L, '==', ?int(Ann, 0)))]),
                     ExprT}
                  | S1
@@ -51,14 +51,14 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], ArgsT
                EnvEmpty = assert(?op(Ann, L, '==', ?int(Ann, 0)), Env),
                EnvCons = assert(?op(Ann, L, '>', ?int(Ann, 0)), Env),
                { ExprT
-               , [ {well_formed, constr_id(), Env, ExprT}
-                 , {subtype, constr_id(), Ann, EnvEmpty,
+               , [ {well_formed, constr_id(list_first), Env, ExprT}
+                 , {subtype, constr_id(list_first), Ann, EnvEmpty,
                     {dep_variant_t, Ann, Id, RetT, [{is_tag, Ann, Id, {qcon, Ann, ["None"]}, []}], Constrs},
                     ExprT}
-                 , {subtype, constr_id(), Ann, EnvCons,
+                 , {subtype, constr_id(list_first), Ann, EnvCons,
                     {dep_variant_t, Ann, Id, RetT, [{is_tag, Ann, Id, {qcon, Ann, ["Some"]}, [RetConT]}], Constrs},
                     ExprT}
-                 , {subtype, constr_id(), Ann, EnvCons, ElemT, RetConT}
+                 , {subtype, constr_id(list_first), Ann, EnvCons, ElemT, RetConT}
                  | S1
                  ]
                }
@@ -75,14 +75,14 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], ArgsT
                EnvCons = assert(?op(Ann, L, '>', ?int(Ann, 0)), Env),
                LId = fresh_id(Ann, "tail_l"),
                { ExprT
-               , [ {well_formed, constr_id(), Env, ExprT}
-                 , {subtype, constr_id(), Ann, EnvEmpty,
+               , [ {well_formed, constr_id(list_tail), Env, ExprT}
+                 , {subtype, constr_id(list_tail), Ann, EnvEmpty,
                     {dep_variant_t, Ann, Id, RetT, [{is_tag, Ann, Id, {qcon, Ann, ["None"]}, []}], Constrs},
                     ExprT}
-                 , {subtype, constr_id(), Ann, EnvCons,
+                 , {subtype, constr_id(list_tail), Ann, EnvCons,
                     {dep_variant_t, Ann, Id, RetT, [{is_tag, Ann, Id, {qcon, Ann, ["Some"]}, [RetConT]}], Constrs},
                     ExprT}
-                 , {subtype, constr_id(), Ann, EnvCons,
+                 , {subtype, constr_id(list_tail), Ann, EnvCons,
                    {dep_list_t, Ann, LId, ElemT, [?op(Ann, LId, '==', ?op(Ann, L, '-', ?int(Ann, 1)))]}, RetConT}
                  | S1
                  ]
@@ -98,14 +98,14 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], ArgsT
                EnvEmpty = assert(?op(Ann, L, '==', ?int(Ann, 0)), Env),
                EnvCons = assert(?op(Ann, L, '>', ?int(Ann, 0)), Env),
                { ExprT
-               , [ {well_formed, constr_id(), Env, ExprT}
-                 , {subtype, constr_id(), Ann, EnvEmpty,
+               , [ {well_formed, constr_id(list_last), Env, ExprT}
+                 , {subtype, constr_id(list_last), Ann, EnvEmpty,
                     {dep_variant_t, Ann, Id, RetT, [{is_tag, Ann, Id, {qcon, Ann, ["None"]}, []}], Constrs},
                     ExprT}
-                 , {subtype, constr_id(), Ann, EnvCons,
+                 , {subtype, constr_id(list_last), Ann, EnvCons,
                     {dep_variant_t, Ann, Id, RetT, [{is_tag, Ann, Id, {qcon, Ann, ["Some"]}, [RetConT]}], Constrs},
                     ExprT}
-                 , {subtype, constr_id(), Ann, EnvCons, ElemT, RetConT}
+                 , {subtype, constr_id(list_last), Ann, EnvCons, ElemT, RetConT}
                  | S1
                  ]
                }
@@ -123,12 +123,12 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], ArgsT
                ExprT = {dep_list_t, _, _, ElemT, _} = fresh_liquid(Env, "find_indices", RetT),
                LId = fresh_id(Ann, "find_indices_l"),
                { ExprT
-               , [ {well_formed, constr_id(), Env, ExprT}
-                 , {subtype, constr_id(), Ann, Env,
+               , [ {well_formed, constr_id(list_find_indices), Env, ExprT}
+                 , {subtype, constr_id(list_find_indices), Ann, Env,
                     {dep_list_t, Ann, LId, ElemT, [?op(Ann, LId, '=<', L)]},
                     ExprT
                    }
-                 , {subtype, constr_id(), Ann, Env, ?d_nonneg_int(Ann), ElemT}
+                 , {subtype, constr_id(list_find_indices), Ann, Env, ?d_nonneg_int(Ann), ElemT}
                  | S2
                  ]
                }
@@ -144,15 +144,15 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], ArgsT
                EnvEmpty = assert(?op(Ann, L, '==', ?int(Ann, 0)), Env),
                EnvCons = assert(?op(Ann, L, '>', ?int(Ann, 0)), Env),
                { ExprT
-               , [ {well_formed, constr_id(), Env, ExprT}
-                 , {subtype, constr_id(), Ann, EnvEmpty,
+               , [ {well_formed, constr_id(list_nth), Env, ExprT}
+                 , {subtype, constr_id(list_nth), Ann, EnvEmpty,
                     {dep_variant_t, Ann, Id, RetT, [{is_tag, Ann, Id, {qcon, Ann, ["None"]}, []}], Constrs},
                     ExprT}
-                 , {subtype, constr_id(), Ann, EnvCons,
+                 , {subtype, constr_id(list_nth), Ann, EnvCons,
                     {dep_variant_t, Ann, Id, RetT, [{is_tag, Ann, Id, {qcon, Ann, ["Some"]}, [RetConT]}], Constrs},
                     ExprT}
-                 , {subtype, constr_id(), Ann, EnvCons, ElemT, RetConT}
-                 , {subtype, constr_id(), Ann, Env, IT, ?d_nonneg_int(Ann)}
+                 , {subtype, constr_id(list_nth), Ann, EnvCons, ElemT, RetConT}
+                 , {subtype, constr_id(list_nth), Ann, Env, IT, ?d_nonneg_int(Ann)}
                  | S2
                  ]
                }
@@ -166,12 +166,12 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], ArgsT
                ExprT = fresh_liquid(Env, "get", RetT),
                LId = fresh_id(Ann, "get_l"),
                { ExprT
-               , [ {well_formed, constr_id(), Env, ExprT}
-                 , {subtype, constr_id(), Ann, Env,
+               , [ {well_formed, constr_id(list_get), Env, ExprT}
+                 , {subtype, constr_id(list_get), Ann, Env,
                     IT,
                     {refined_t, Ann, LId, ?int_t(Ann), [?op(Ann, LId, '<', L)]}}
-                 , {subtype, constr_id(), Ann, Env, ElemT, ExprT}
-                 , {subtype, constr_id(), Ann, Env, IT, ?d_nonneg_int(Ann)}
+                 , {subtype, constr_id(list_get), Ann, Env, ElemT, ExprT}
+                 , {subtype, constr_id(list_get), Ann, Env, IT, ?d_nonneg_int(Ann)}
                  | S2
                  ]
                }
@@ -184,8 +184,8 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], ArgsT
                ExprT = fresh_liquid(Env, "length", RetT),
                LId = fresh_id(Ann, "length_l"),
                { ExprT
-               , [ {well_formed, constr_id(), Env, ExprT}
-                 , {subtype, constr_id(), Ann, Env,
+               , [ {well_formed, constr_id(list_length), Env, ExprT}
+                 , {subtype, constr_id(list_length), Ann, Env,
                    {refined_t, Ann, LId, ?int_t(Ann), [?op(Ann, LId, '==', L)]}
                    , ExprT}
                  | S1
@@ -204,11 +204,11 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], ArgsT
                EnvSome = assert(?op(Ann, To, '>=', From), Env),
                LId = fresh_id(Ann, "from_to_l"),
                { ExprT
-               , [ {well_formed, constr_id(), Env, ExprT}
-                 , {subtype, constr_id(), Ann, EnvEmpty,
+               , [ {well_formed, constr_id(list_from_to), Env, ExprT}
+                 , {subtype, constr_id(list_from_to), Ann, EnvEmpty,
                     {dep_list_t, Ann, LId, ElemT, [?op(Ann, LId, '==', ?int(Ann, 0))]},
                     ExprT}
-                 , {subtype, constr_id(), Ann, EnvSome,
+                 , {subtype, constr_id(list_from_to), Ann, EnvSome,
                     {dep_list_t, Ann, LId, ElemT, [?op(Ann, LId, '==', ?op(Ann, ?op(Ann, To, '-', From), '+', ?int(Ann, 1)))]},
                     ExprT}
                  | S2
@@ -228,15 +228,15 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], ArgsT
                EnvSome = assert(?op(Ann, To, '>=', From), Env),
                LId = fresh_id(Ann, "from_to_l_step"),
                { ExprT
-               , [ {well_formed, constr_id(), Env, ExprT}
-                 , {subtype, constr_id(), Ann, EnvEmpty,
+               , [ {well_formed, constr_id(list_from_to_step), Env, ExprT}
+                 , {subtype, constr_id(list_from_to_step), Ann, EnvEmpty,
                     {dep_list_t, Ann, LId, ElemT, [?op(Ann, LId, '==', ?int(Ann, 0))]},
                     ExprT}
-                 , {subtype, constr_id(), Ann, EnvSome,
+                 , {subtype, constr_id(list_from_to_step), Ann, EnvSome,
                     {dep_list_t, Ann, LId, ElemT,
                      [?op(Ann, LId, '==', ?op(Ann, ?op(Ann, ?op(Ann, To, '-', From), '/', Step), '+', ?int(Ann, 1)))]},
                     ExprT}
-                 , {subtype, constr_id(), Ann, Env, StepT, refined(?int_t(Ann), [?op(Ann, nu(Ann), '>', ?int(Ann, 0))])}
+                 , {subtype, constr_id(list_from_to_step), Ann, Env, StepT, refined(?int_t(Ann), [?op(Ann, nu(Ann), '>', ?int(Ann, 0))])}
                  | S2
                  ]
                }
@@ -252,8 +252,8 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], ArgsT
                {LT, S1} = constr_expr(Env, L, S0),
                ExprT = fresh_liquid(Env, "reverse", RetT),
                { ExprT
-               , [ {well_formed, constr_id(), Env, ExprT}
-                 , {subtype, constr_id(), Ann, Env, LT, ExprT}
+               , [ {well_formed, constr_id(list_reverse), Env, ExprT}
+                 , {subtype, constr_id(list_reverse), Ann, Env, LT, ExprT}
                  | S1
                  ]
                }
@@ -280,11 +280,11 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], ArgsT
                             ], ResT
                            ),
                { ExprT
-               , [ {well_formed, constr_id(), Env, ExprT}
-                 , {subtype, constr_id(), Ann, AppEnv,
+               , [ {well_formed, constr_id(list_map), Env, ExprT}
+                 , {subtype, constr_id(list_map), Ann, AppEnv,
                    {dep_list_t, Ann, LId, AppElemT, LenQual}, ExprT}
-                 , {subtype, constr_id(), Ann, Env, StateT, StateArgT}
-                 , {subtype, constr_id(), Ann, Env, BalanceT, BalanceArgT}
+                 , {subtype, constr_id(list_map), Ann, Env, StateT, StateArgT}
+                 , {subtype, constr_id(list_map), Ann, Env, BalanceT, BalanceArgT}
                  | S4
                  ]
                }
@@ -318,12 +318,12 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], ArgsT
                             ], ResElemT
                            ),
                { ExprT
-               , [ {well_formed, constr_id(), Env, ExprT}
-                 , {subtype, constr_id(), Ann, AppEnv,
+               , [ {well_formed, constr_id(list_flat_map), Env, ExprT}
+                 , {subtype, constr_id(list_flat_map), Ann, AppEnv,
                     {dep_list_t, Ann, LId, AppElemT, [?op(Ann, LId, '=<', ?op(Ann, L, '*', AbstractGen))]},
                     ExprT}
-                 , {subtype, constr_id(), Ann, Env, StateT, StateArgT}
-                 , {subtype, constr_id(), Ann, Env, BalanceT, BalanceArgT}
+                 , {subtype, constr_id(list_flat_map), Ann, Env, StateT, StateArgT}
+                 , {subtype, constr_id(list_flat_map), Ann, Env, BalanceT, BalanceArgT}
                  | S4
                  ]
                }

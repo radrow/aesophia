@@ -134,7 +134,7 @@ refined(T) -> refined(T, []).
         }).
 -type env() :: #env{}.
 
--type constr_id() :: reference().
+-type constr_id() :: {atom(), integer()}.
 
 %% Constraint
 -type constr() :: {subtype, constr_id(), ann(), env(), lutype(), lutype()}
@@ -758,13 +758,17 @@ strip_typed(X) -> X.
 
 %% -- Fresh stuff --------------------------------------------------------------
 
-constr_id() ->
-    make_ref().
+fresh_supply() ->
+    I = get(ltvar_supply),
+    put(ltvar_supply, I + 1),
+    I.
+
+constr_id(When) ->
+    {When, fresh_supply()}.
 
 -spec fresh_ltvar(name()) -> ltvar().
 fresh_ltvar(Name) ->
-    I = get(ltvar_supply),
-    put(ltvar_supply, I + 1),
+    I = fresh_supply(),
     {ltvar, lists:flatten(Name) ++ "_" ++ integer_to_list(I)}.
 
 -spec fresh_template(name()) -> lutype().
@@ -1147,9 +1151,9 @@ constr_letfun(Env0, {letfun, Ann, Id, Args, RetT, Body}, S0) ->
     %% ?DBG("PURIFIED:\n~p", [Body2]),
     {BodyT, S1} = constr_expr(Env3, Body2, S0),
     InnerFunT = {dep_fun_t, Ann, ArgsT, BodyT},
-    S3 = [ {subtype, constr_id(), Ann, Env3, BodyT, GlobRetT}
-         , {well_formed, constr_id(), Env0, GlobFunT}
-         , {well_formed, constr_id(), Env0, InnerFunT}
+    S3 = [ {subtype, constr_id(letfun_top), Ann, Env3, BodyT, GlobRetT}
+         , {well_formed, constr_id(letfun_glob), Env0, GlobFunT}
+         , {well_formed, constr_id(letfun_int), Env0, InnerFunT}
          | S1
          ],
 
@@ -1197,8 +1201,8 @@ constr_expr(Env, ?typed_p(Expr, Type), S0) ->
             DType = fresh_liquid(Env, "typed", Type),
             {ExprT, S1} = constr_expr(Env, Expr, Base, S0),
             {ExprT,
-             [ {subtype, constr_id(), ann_of(Type), Env, ExprT, DType}
-             , {well_formed, constr_id(), Env, DType}
+             [ {subtype, constr_id(typed), ann_of(Type), Env, ExprT, DType}
+             , {well_formed, constr_id(typed), Env, DType}
              | S1
              ]
             }
@@ -1218,8 +1222,8 @@ constr_expr(Env, {block, Ann, Stmts}, T, S) ->
     ExprT = fresh_liquid(Env, "block", T),
     {RestT, S1} = constr_expr(Env, Stmts, T, S),
     { ExprT,
-     [ {well_formed, constr_id(), Env, ExprT}
-     , {subtype, constr_id(), Ann, Env, RestT, ExprT}
+     [ {well_formed, constr_id(block), Env, ExprT}
+     , {subtype, constr_id(block), Ann, Env, RestT, ExprT}
      | S1
      ]
     };
@@ -1227,8 +1231,8 @@ constr_expr(Env, {typed, Ann, E, T1}, T2, S0) ->
     DT2 = fresh_liquid(Env, "t", T2),
     {DT1, S1} = constr_expr(Env, E, T1, S0),
     {DT2,
-     [ {well_formed, constr_id(), Env, DT2}
-     , {subtype, constr_id(), Ann, Env, DT1, DT2}
+     [ {well_formed, constr_id(typed), Env, DT2}
+     , {subtype, constr_id(typed), Ann, Env, DT1, DT2}
      | S1
      ]
     };
@@ -1253,15 +1257,15 @@ constr_expr(Env, Expr = {IdHead, Ann, Name}, T, S)
                     ExprT = fresh_liquid(Env, Name, BaseT),
                     ?DBG("DT IS ~p\n\nEXPRT IS ~p\n\n", [DT, ExprT]),
                     {ExprT
-                    , [ {subtype, constr_id(), Ann, Env, DT, ExprT}
-                      , {well_formed, constr_id(), Env, ExprT}
+                    , [ {subtype, constr_id(IdHead), Ann, Env, DT, ExprT}
+                      , {well_formed, constr_id(IdHead), Env, ExprT}
                       | S
                       ]
                     };
                 undefined ->
                     DT = fresh_liquid(Env, Name, T),
                     {DT,
-                     [ {well_formed, constr_id(), Env, DT}
+                     [ {well_formed, constr_id(IdHead), Env, DT}
                      | S
                      ]
                     }
@@ -1345,9 +1349,9 @@ constr_expr(Env, {app, Ann, ?typed_p({'::', OpAnn}), [OpL, OpR]}, {app_t, _, {id
     Id = fresh_id(Ann, "cons"),
     LenPred = [?op(Ann, Id, '==', ?op(OpAnn, OpR, '+', ?int(OpAnn, 1)))],
     {{dep_list_t, Ann, Id, DepElemT, LenPred},
-     [ {well_formed, constr_id(), Env, DepElemT}
-     , {subtype, constr_id(), Ann, Env, DepElemLT, DepElemT}
-     , {subtype, constr_id(), Ann, Env, DepElemRT, DepElemT}
+     [ {well_formed, constr_id(cons), Env, DepElemT}
+     , {subtype, constr_id(cons), Ann, Env, DepElemLT, DepElemT}
+     , {subtype, constr_id(cons), Ann, Env, DepElemRT, DepElemT}
      | S2
      ]
     };
@@ -1358,17 +1362,17 @@ constr_expr(Env, {app, Ann, ?typed_p({'++', OpAnn}), [OpL, OpR]}, {app_t, _, {id
     Id = fresh_id(Ann, "cat"),
     LenPred = [?op(OpAnn, Id, '==', ?op(OpAnn, OpL, '+', OpR))],
     {{dep_list_t, Ann, Id, DepElemT, LenPred},
-     [ {well_formed, constr_id(), Env, DepElemT}
-     , {subtype, constr_id(), Ann, Env, DepElemLT, DepElemT}
-     , {subtype, constr_id(), Ann, Env, DepElemRT, DepElemT}
+     [ {well_formed, constr_id(cat), Env, DepElemT}
+     , {subtype, constr_id(cat), Ann, Env, DepElemLT, DepElemT}
+     , {subtype, constr_id(cat), Ann, Env, DepElemRT, DepElemT}
      | S2
      ]
     };
 constr_expr(Env, {app, Ann, ?typed_p({id, _, "abort"}), _}, T, S0) ->
     ExprT = fresh_liquid(Env, "abort", T),
     {ExprT,
-     [ {unreachable, constr_id(), Ann, Env}
-     , {well_formed, constr_id(), Env, ExprT}
+     [ {unreachable, constr_id(abort), Ann, Env}
+     , {well_formed, constr_id(abort), Env, ExprT}
      |S0
      ]
     };
@@ -1430,7 +1434,7 @@ constr_expr(Env, {app, Ann, F = ?typed_p(_, {fun_t, _, NamedT, _, _}), Args0}, _
     {ArgsT, S2} = constr_expr_list(Env, Args, S1),
     ArgSubst = [{X, Expr} || {{dep_arg_t, _, X, _}, Expr} <- lists:zip(ArgsFT, Args)],
     { apply_subst(ArgSubst, RetT)
-    , [{subtype, constr_id(), [{context, {app, Ann, F, N}}|ann_of(ArgT)],
+    , [{subtype, constr_id(app), [{context, {app, Ann, F, N}}|ann_of(ArgT)],
         Env, ArgT, ArgFT}
        || {{dep_arg_t, _, _, ArgFT}, ArgT, N} <- lists:zip3(ArgsFT, ArgsT, lists:seq(1, length(ArgsT)))
       ] ++ S2
@@ -1443,11 +1447,11 @@ constr_expr(Env, {'if', Ann, Cond, Then, Else}, T, S0) ->
     {ThenT, S2} = constr_expr(EnvThen, Then, S1),
     {ElseT, S3} = constr_expr(EnvElse,Else, S2),
     { ExprT
-    , [ {well_formed, constr_id(), Env, ExprT}
-      , {reachable, constr_id(), ann_of(Then), EnvThen}
-      , {reachable, constr_id(), ann_of(Else), EnvElse}
-      , {subtype, constr_id(), [{context, then}|ann_of(Then)], EnvThen, ThenT, ExprT}
-      , {subtype, constr_id(), [{context, else}|ann_of(Else)], EnvElse, ElseT, ExprT}
+    , [ {well_formed, constr_id('if'), Env, ExprT}
+      , {reachable, constr_id(then), ann_of(Then), EnvThen}
+      , {reachable, constr_id(else), ann_of(Else), EnvElse}
+      , {subtype, constr_id(then), [{context, then}|ann_of(Then)], EnvThen, ThenT, ExprT}
+      , {subtype, constr_id(else), [{context, else}|ann_of(Else)], EnvElse, ElseT, ExprT}
       | S3
       ]
     };
@@ -1456,9 +1460,9 @@ constr_expr(Env, {switch, _, Switched, Alts}, T, S0) ->
     {SwitchedT, S1} = constr_expr(Env, Switched, S0),
     S2 = constr_cases(Env, Switched, SwitchedT, ExprT, Alts, S1),
     {ExprT
-    , [{well_formed, constr_id(), Env, ExprT}|S2]
+    , [{well_formed, constr_id(switch), Env, ExprT}|S2]
     };
-constr_expr(Env, {lam, _, Args, Body}, {fun_t, TAnn, _, _, RetT}, S0) ->
+constr_expr(Env, {lam, _, Args, Body}, {fun_t, TAnn, [], _, RetT}, S0) ->
     {DepArgsT, ArgSubst} = fresh_liquid_args(Env, Args),
     RetT1 = apply_subst(ArgSubst, RetT),
     DepRetT = fresh_liquid(Env, "lam", RetT1),
@@ -1466,8 +1470,8 @@ constr_expr(Env, {lam, _, Args, Body}, {fun_t, TAnn, _, _, RetT}, S0) ->
     EnvBody = bind_args(DepArgsT, Env),
     {BodyT, S1} = constr_expr(EnvBody, Body, S0),
     {ExprT,
-     [ {well_formed, constr_id(), Env, {dep_fun_t, TAnn, DepArgsT, DepRetT}}
-     , {subtype, constr_id(), ann_of(Body), EnvBody, BodyT, DepRetT}
+     [ {well_formed, constr_id(lam), Env, {dep_fun_t, TAnn, DepArgsT, DepRetT}}
+     , {subtype, constr_id(lam), ann_of(Body), EnvBody, BodyT, DepRetT}
      | S1
      ]
     };
@@ -1480,8 +1484,8 @@ constr_expr(Env, {proj, Ann, Rec, Field}, T, S0) ->
             name(Field) == name(RecFieldName)
         ],
     {ExprT,
-     [ {well_formed, constr_id(), Env, ExprT}
-     , {subtype, constr_id(), Ann, Env, FieldT, ExprT}
+     [ {well_formed, constr_id(proj), Env, ExprT}
+     , {subtype, constr_id(proj), Ann, Env, FieldT, ExprT}
      | S1
      ]
     };
@@ -1489,12 +1493,12 @@ constr_expr(Env, {list, Ann, Elems}, {app_t, TAnn, _, [ElemT]}, S0) ->
     DepElemT = fresh_liquid(Env, "list", ElemT),
     {DepElemsT, S1} = constr_expr_list(Env, Elems, S0),
     S2 =
-        [ {subtype, constr_id(), Ann, Env, DepElemTI, DepElemT}
+        [ {subtype, constr_id(list), Ann, Env, DepElemTI, DepElemT}
          || DepElemTI <- DepElemsT
         ] ++ S1,
     Id = fresh_id(Ann, "list"),
     {{dep_list_t, TAnn, Id, DepElemT, [?op(Ann, Id, '==', ?int(Ann, length(Elems)))]},
-     [ {well_formed, constr_id(), Env, DepElemT}
+     [ {well_formed, constr_id(list), Env, DepElemT}
      | S2
      ]
     };
@@ -1507,9 +1511,9 @@ constr_expr(Env0, [{letval, Ann, Pat, Val}|Rest], T, S0) ->
     {Env1, EnvFail} = match_to_pattern(Env0, Pat, Val, ValT),
     {RestT, S2} = constr_expr(Env1, Rest, T, S1),
     {ExprT,
-     [ {well_formed, constr_id(), Env0, ExprT}
-     , {subtype, constr_id(), Ann, Env1, RestT, ExprT}
-     , {unreachable, constr_id(), Ann, EnvFail}
+     [ {well_formed, constr_id(letval), Env0, ExprT}
+     , {subtype, constr_id(letval), Ann, Env1, RestT, ExprT}
+     , {unreachable, constr_id(letval), Ann, EnvFail}
      | S2
      ]
     };
@@ -1534,7 +1538,7 @@ constr_expr(Env,
             | Rest
             ], T, S0) ->
     Env1 = assert(Cond, Env),
-    constr_expr(Env1, Rest, T, [{reachable, constr_id(), Ann, Env1}|S0]);
+    constr_expr(Env1, Rest, T, [{reachable, constr_id(require), Ann, Env1}|S0]);
 constr_expr(_Env, {string, _, _}, T, S0) ->
     {refined(T), S0};
 constr_expr(Env, [Expr|Rest], T, S0) ->
@@ -1542,8 +1546,8 @@ constr_expr(Env, [Expr|Rest], T, S0) ->
     {_, S1} = constr_expr(Env, Expr, S0),
     {RestT, S2} = constr_expr(Env, Rest, T, S1),
     {ExprT,
-     [ {well_formed, constr_id(), Env, ExprT}
-     , {subtype, constr_id(), ann_of(Expr), Env, RestT, ExprT}
+     [ {well_formed, constr_id(sexp), Env, ExprT}
+     , {subtype, constr_id(sexp), ann_of(Expr), Env, RestT, ExprT}
      | S2
      ]
     };
@@ -1555,14 +1559,14 @@ constr_expr(_, A, B, _) ->
 constr_cases(_Env, _Switched, _SwitchedT, _ExprT, Alts, S) ->
     constr_cases(_Env, _Switched, _SwitchedT, _ExprT, Alts, 0, S).
 constr_cases(Env, Switched, _SwitchedT, _ExprT, [], _N, S) ->
-    [{unreachable, constr_id(), ann_of(Switched), Env}|S];
+    [{unreachable, constr_id(switch_trap), ann_of(Switched), Env}|S];
 constr_cases(Env0, Switched, SwitchedT, ExprT,
              [{'case', Ann, Pat, Case}|Rest], N, S0) ->
     {EnvCase, EnvCont} = match_to_pattern(Env0, Pat, Switched, SwitchedT),
     {CaseDT, S1} = constr_expr(EnvCase, Case, S0),
     constr_cases(EnvCont, Switched, SwitchedT, ExprT, Rest,
-                 [ {subtype, constr_id(), [{context, {switch, N}}|Ann], EnvCase, CaseDT, ExprT}
-                 , {reachable, constr_id(), Ann, EnvCase}
+                 [ {subtype, constr_id('case'), [{context, {switch, N}}|Ann], EnvCase, CaseDT, ExprT}
+                 , {reachable, constr_id('case'), Ann, EnvCase}
                  | S1
                  ]
                 ).
