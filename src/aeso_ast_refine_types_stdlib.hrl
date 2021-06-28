@@ -12,8 +12,12 @@
         )).
 
 
+-define(CONSTR(NS, Fun, Args, ArgsT, Body),
+        constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], ArgsT, _}}, Args}, RetT, S0) ->
+               Body;
+       ).
 -define(CONSTR(NS, Fun, Args, Body),
-constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], ArgsT, _}}, Args}, RetT, S0) ->
+constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], _, _}}, Args}, RetT, S0) ->
     Body;
     ).
 
@@ -260,8 +264,10 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], ArgsT
            end
           )
 
-   ?CONSTR("List", "map", [State = ?typed_p(_, StateT), Balance = ?typed_p(_, BalanceT), F, L],
+   ?CONSTR("List", "map", [State = ?typed_p(_, StateT), Balance = ?typed_p(_, BalanceT), F = ?typed_p(UF), L],
+           [_, _, {fun_t, _, _, [_, _, _], _}, _],
            begin
+               IsStateful = is_stateful(Env, UF),
                {_, S1} = constr_expr(Env, State, S0),
                {_, S2} = constr_expr(Env, Balance, S1),
                NewStateT = fresh_liquid(Env, "map_state", StateT),
@@ -271,7 +277,11 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], ArgsT
                  [ {dep_arg_t, _, StateId, StateArgT}
                  , {dep_arg_t, _, BalanceId, BalanceArgT}
                  , {dep_arg_t, _, ArgId, ArgT}
-                 ], {tuple_t, _, [ResT|_]}}, S4} = constr_expr(Env, F, S3),
+                 ], FunResT}, S4} = constr_expr(Env, F, S3),
+               case IsStateful of
+                   true  -> {tuple_t, _, [ResT|_]} = FunResT;
+                   false -> ResT = FunResT
+               end,
                {tuple_t, ExAnn, [ExprT|_]} = fresh_liquid(Env, "map", RetT),
                STExprT = {tuple_t, ExAnn, [ExprT, NewStateT, NewBalanceT]},
                AbstractElem = fresh_id(Ann, "map_list_elem"),
@@ -295,9 +305,10 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], ArgsT
            end
           )
 
-
-   ?CONSTR("List", "flat_map", [State = ?typed_p(_, StateT), Balance = ?typed_p(_, BalanceT), F, L],
+   ?CONSTR("List", "flat_map", [State = ?typed_p(_, StateT), Balance = ?typed_p(_, BalanceT), F = ?typed_p(UF), L],
+           [_, _, {fun_t, _, _, [_, _, _], _}, _],
            begin
+               IsStateful = is_stateful(Env, UF),
                {_, S1} = constr_expr(Env, State, S0),
                {_, S2} = constr_expr(Env, Balance, S1),
                NewStateT = fresh_liquid(Env, "flat_map_state", StateT),
@@ -307,9 +318,12 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], ArgsT
                  [ {dep_arg_t, _, StateId, StateArgT}
                  , {dep_arg_t, _, BalanceId, BalanceArgT}
                  , {dep_arg_t, _, ArgId, ArgT}
-                 ],
-                 {tuple_t, _, [ResT = {dep_list_t, _, _, ResElemT, _}|_]}
-                }, S4} = constr_expr(Env, F, S3),
+                 ], FunResT}, S4} = constr_expr(Env, F, S3),
+               case IsStateful of
+                   true  -> {tuple_t, _, [ResT|_]} = FunResT;
+                   false -> ResT = FunResT
+               end,
+               {dep_list_t, _, _, ResElemT, _} = ResT,
                {tuple_t, ExAnn, [ExprT|_]} = fresh_liquid(Env, "flat_map", RetT),
                STExprT = {tuple_t, ExAnn, [ExprT, NewStateT, NewBalanceT]},
                AbstractElem = fresh_id(Ann, "flat_map_list_elem"),

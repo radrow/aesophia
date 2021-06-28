@@ -129,6 +129,7 @@ refined(T) -> refined(T, []).
         , cool_ints        = []                :: [integer()]
         , namespace        = []                :: qname()
         , namespaces       = #{}               :: #{qname() => namespace_type()}
+        , stateful         = #{}               :: #{qname() => boolean()}
         , tc_env
         }).
 -type env() :: #env{}.
@@ -233,6 +234,12 @@ on_current_scope(Env = #env{ namespace = NS, scopes = Scopes }, Fun) ->
 on_scopes(Env = #env{ scopes = Scopes }, Fun) ->
     Env#env{ scopes = maps:map(fun(_, Scope) -> Fun(Scope) end, Scopes) }.
 
+-spec set_stateful(id(), env()) -> env().
+set_stateful(Id, Env) ->
+    Name = name(Id),
+    NS = Env#env.namespace,
+    Env#env{stateful = (Env#env.stateful)#{NS ++ [Name] => true}}.
+
 -spec bind_var(id(), lutype(), env()) -> env().
 bind_var(Id = {id, Ann, Name}, T, Env = #env{var_env = VarEnv}) ->
     case maps:get(Name, VarEnv, none) of
@@ -241,12 +248,20 @@ bind_var(Id = {id, Ann, Name}, T, Env = #env{var_env = VarEnv}) ->
             ?DBG("SHADOW OF\n~s\n : ~p IN\n~p", [Name, V, VarEnv]),
             throw({overwrite, Id})
     end,
-    Env#env{ var_env = VarEnv#{Name => {Ann, T}}}.
+    Ann1 = if element(1, T) =:= fun_t;
+              element(1, T) =:= dep_fun_t -> [{stateful, true}|Ann];
+              true -> Ann
+           end,
+    Env#env{ var_env = VarEnv#{Name => {Ann1, T}}}.
 
 -spec ensure_var(id(), lutype(), env()) -> env().
 ensure_var({id, Ann, Name}, T, Env = #env{var_env = VarEnv}) ->
+    Ann1 = if element(1, T) =:= fun_t;
+              element(1, T) =:= dep_fun_t -> [{stateful, true}|Ann];
+              true -> Ann
+           end,
     case maps:get(Name, VarEnv, none) of
-        none -> Env#env{ var_env = VarEnv#{Name => {Ann, T}}};
+        none -> Env#env{ var_env = VarEnv#{Name => {Ann1, T}}};
         _    -> Env
     end.
 
@@ -355,6 +370,14 @@ lookup_env1(#env{ scopes = Scopes }, Kind, QName) ->
             end
     end.
 
+-spec is_stateful(env(), type_id()) -> {qname(), ann(), lutype()}.
+is_stateful(Env, Id) ->
+    case lookup_env(Env, term, qname(Id)) of
+        false ->
+            false;
+        {_, Ann, _} -> aeso_syntax:get_ann(stateful, Ann, false)
+    end.
+
 -spec type_of(env(), type_id()) -> {qname(), ann(), lutype()}.
 type_of(Env, Id) ->
     case lookup_env(Env, term, qname(Id)) of
@@ -363,6 +386,10 @@ type_of(Env, Id) ->
             undefined;
         {QId, Ann, Ty} -> {set_qname(QId, Id), Ann, Ty}
     end.
+
+%% -spec is_stateful(env(), qid()) -> boolean().
+%% is_stateful(Env, {qid, _, QName}) ->
+%%     maps:get(QName, Env#env.stateful, false).
 
 -spec bind_assg(assignment(), env()) -> env().
 bind_assg(Assg, Env) ->
@@ -1009,16 +1036,17 @@ refine_ast(TCEnv, AST) ->
     ?DBG("COOL INTS: ~p", [Env1#env.cool_ints]),
     Env2 = register_namespaces(AST, Env1),
     Env3 = register_typedefs(AST, Env2),
+    Env4 = register_stateful(AST, Env3),
     try
-        Env4 = bind_ast_funs(TCEnv, AST, Env3),
-        {AST1, CS0} = constr_ast(Env4, AST),
+        Env5 = bind_ast_funs(TCEnv, AST, Env4),
+        {AST1, CS0} = constr_ast(Env5, AST),
         [?DBG("C:\n~s", [aeso_pretty:pp(constr, strip_typed(C))]) || C <- CS0, element(1, C) == subtype],
         CS1 = split_constr(CS0),
         case aeso_smt:scoped(
           fun() ->
                   declare_tuples(find_tuple_sizes(AST)),
-                  declare_datatypes(type_defs(Env4)),
-                  solve(Env4, CS1)
+                  declare_datatypes(type_defs(Env5)),
+                  solve(Env5, CS1)
           end) of
             Assg ->
                 AST2 = apply_assg(Assg, AST1),
@@ -1157,6 +1185,28 @@ register_typedefs([{type_def, _, Id, Args, TDef}|Rest], Env) ->
 register_typedefs([_|Rest], Env) ->
     register_typedefs(Rest, Env);
 register_typedefs([], Env) ->
+    Env.
+
+register_stateful([{Tag, _, Con, Defs}|Rest], Env0)
+  when Tag =:= contract_main;
+       Tag =:= contract_child;
+       Tag =:= contract_interface;
+       Tag =:= namespace ->
+    Env1 = push_scope(Con, Env0),
+    Env2 = register_stateful(Defs, Env1),
+    Env3 = pop_scope(Env2),
+    register_stateful(Rest, Env3);
+register_stateful([LF|Rest], Env)
+  when element(1, LF) =:= letfun;
+       element(1, LF) =:= fundecl ->
+    Env1 = case aeso_syntax:get_ann(stateful, LF, false) of
+               true  -> set_stateful(element(3, LF), Env);
+               false -> Env
+           end,
+    register_stateful(Rest, Env1);
+register_stateful([_|Rest], Env) ->
+    register_stateful(Rest, Env);
+register_stateful([], Env) ->
     Env.
 
 
