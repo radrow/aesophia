@@ -901,9 +901,6 @@ fresh_liquid(Env, Variance, Hint,
                 {alias_t, Type1} ->
                     fresh_liquid(Env, Variance, Hint, apply_subst(Subst, Type1));
                 {record_t, Fields} ->
-                    ?DBG("XD CHUJ ~p", [[ fresh_liquid_field(Env, Variance, Qid, Field, apply_subst(Subst, FType))
-                                          || {field_t, _, Field, FType} <- Fields
-                                        ]]),
                     {dep_record_t, Ann, Type,
                      [ fresh_liquid_field(Env, Variance, Qid, Field, apply_subst(Subst, FType))
                       || {field_t, _, Field, FType} <- Fields
@@ -1106,17 +1103,9 @@ constr_letfun(Env0, {letfun, Ann, Id, Args, RetT, Body}, S0) ->
     {_, _, GlobFunT = {dep_fun_t, _, GlobArgsT, GlobRetT}} = type_of(Env0, Id),
     Args0 = fresh_wildcards(Args),
     Args1 =
-        case namespace_type(Env0) of
-            namespace -> Args0;
-            _ ->
-                [ ?typed(Arg, purify_type(ArgT, PurifierST))
-                  || ?typed_p(Arg, ArgT) <- Args0
-                ]
-        end,
-    Args2 = case namespace_type(Env0) of
-                namespace -> Args1;
-                _ -> [init_state_var(Ann, state_t(Ann, Env0)), init_balance_var(Ann) | Args1]
-            end,
+        [?typed(Arg, purify_type(ArgT, PurifierST)) || ?typed_p(Arg, ArgT) <- Args0],
+    Args2 =
+        [init_state_var(Ann, state_t(Ann, Env0)), init_balance_var(Ann) | Args1],
     {ArgsT, _ArgsSubst} = fresh_liquid_args(Env0, Args2),
     Env1 = bind_args(ArgsT, Env0),
     Env2 = ensure_args(GlobArgsT, Env1),
@@ -1155,8 +1144,8 @@ constr_letfun(Env0, {letfun, Ann, Id, Args, RetT, Body}, S0) ->
     ?DBG("PURIFIED:\n~s", [aeso_pretty:pp(expr, strip_typed(Body3))]),
     ?DBG("PURIFIED:\n~p", [Body3]),
     {BodyT, S1} = constr_expr(Env3, Body3, S0),
-    ?DBG("BODYT ~p\n\nGRETT ~p", [BodyT, GlobRetT]),
     InnerFunT = {dep_fun_t, Ann, ArgsT, BodyT},
+    ?DBG("ARGS: ~p", [ArgsT]),
     S3 = [ {subtype, constr_id(letfun_top), Ann, Env3, BodyT, GlobRetT}
          , {well_formed, constr_id(letfun_glob), Env0, GlobFunT}
          , {well_formed, constr_id(letfun_int), Env0, InnerFunT}
@@ -1256,8 +1245,8 @@ constr_expr(Env, {block, Ann, Stmts}, T, S) ->
      ]
     };
 constr_expr(Env, {typed, Ann, E, T1}, T2, S0) ->
-    [ error({xd, T1, T2, E})
-     || element(1, T1) /= element(1, T2)
+    [ error({xd, T1, T2, E}) %% ?DBG
+     || element(1, base_type(T1)) /= element(1, base_type(T2))
     ],
     DT2 = fresh_liquid(Env, "t", T2),
     {DT1, S1} = constr_expr(Env, E, T1, S0),
@@ -1269,16 +1258,17 @@ constr_expr(Env, {typed, Ann, E, T1}, T2, S0) ->
     };
 constr_expr(Env, Expr = {IdHead, Ann, Name}, T, S)
   when IdHead =:= id; IdHead =:= qid ->
-    BaseT = base_type(T),
+    DT = fresh_liquid(Env, Name, T), %% This is to solve aliases etc
+    BaseT = base_type(DT),
     if element(1, BaseT) =:= id;
        element(1, BaseT) =:= tvar ->
             {refined(BaseT, [?op(Ann, nu(Ann), '==', Expr)]), S};
        true ->
             case type_of(Env, Expr) of
-                {_, _, DT} ->
+                {_, _, DT1} ->
                     ExprT = fresh_liquid(Env, Name, BaseT),
                     {ExprT
-                    , [ {subtype, constr_id(IdHead), Ann, Env, DT, ExprT}
+                    , [ {subtype, constr_id(IdHead), Ann, Env, DT1, ExprT}
                       , {well_formed, constr_id(IdHead), Env, ExprT}
                       | S
                       ]
@@ -2003,7 +1993,6 @@ split_constr1(C = {subtype, Ref, Ann, Env0, SubT, SupT}) ->
         { {dep_record_t, _, _, FieldsSub}
         , {dep_record_t, _, _, FieldsSup}
         } ->
-            ?DBG("XDDD ~p ~p\n\n~p", [Ref, FieldsSub, FieldsSup]),
             FieldsSub1 = lists:keysort(3, FieldsSub),
             FieldsSup1 = lists:keysort(3, FieldsSup),
             split_constr(
@@ -2037,7 +2026,6 @@ split_constr1(C = {subtype, Ref, Ann, Env0, SubT, SupT}) ->
               ]
              );
         _ ->
-            ?DBG("SKIP SUBTYPE ~p\n~s\n<:\n~s", [Ref, aeso_pretty:pp(type, SubT), aeso_pretty:pp(type, SupT)]),
             [C]
     end;
 split_constr1(C = {well_formed, Ref, Env0, T}) ->
@@ -2177,6 +2165,7 @@ weaken({subtype, _, _, Env,
     SubPred = pred_of(Assg, SubPredVar),
     AssumpPred = apply_subst(SubId, Id, SubPred),
     Env1 = bind_var(Id, Base, Env),
+    ?DBG("VARS\n~p", [Env1#env.var_env]),
     %% ?DBG("PATH PRED ~s", [aeso_pretty:pp(predicate, Env1#env.path_pred)]),
     %% [ ?DBG("REMOVED\n~s|\n\nUNDER\n~s", [aeso_pretty:pp(expr, apply_subst(SupId, Id, Q)), aeso_pretty:pp(predicate, strip_typed(AssumpPred ++ pred_of(Assg, Env1)))])
     %%   || Q <- pred_of(Assg, SupPredVar),
@@ -2189,9 +2178,9 @@ weaken({subtype, _, _, Env,
     NewLtinfo = Ltinfo#ltinfo{
                  predicate = Filtered
                 },
-    %% ?DBG("WEAKENED FROM\n~s\nTO\n~s", [aeso_pretty:pp(predicate, Ltinfo#ltinfo.predicate),
-    %%                                    aeso_pretty:pp(predicate, Filtered)
-    %%                                   ]),
+    ?DBG("WEAKENED FROM\n~s\nTO\n~s", [aeso_pretty:pp(predicate, Ltinfo#ltinfo.predicate),
+                                       aeso_pretty:pp(predicate, Filtered)
+                                      ]),
     Assg#{Var => NewLtinfo};
 weaken({well_formed, _, _Env, {refined_t, _, _, _, _}}, Assg) ->
     Assg.
@@ -2943,6 +2932,9 @@ purify_expr({record, Ann, Fields}, T, ST) ->
 purify_expr({tuple, Ann, Vals}, T, ST) ->
     Vals1 = [drop_purity(purify_expr(Val, ST)) || Val <- Vals],
     {pure, ?typed({tuple, Ann, Vals1}, T)};
+purify_expr({list, Ann, Vals}, T, ST) ->
+    Vals1 = [drop_purity(purify_expr(Val, ST)) || Val <- Vals],
+    {pure, ?typed({list, Ann, Vals1}, T)};
 purify_expr(E = {int, _, _}, T, _) ->
     {pure, ?typed(E, T)};
 purify_expr(E = {string, _, _}, T, _) ->
