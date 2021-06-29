@@ -665,51 +665,7 @@ bind_ast_funs(TCEnv, AST, Env) ->
                  HEAD =:= contract_child;
                  HEAD =:= contract_interface ->
               Env1 = push_scope(Con, Env0),
-              Env2 = bind_funs(
-                       [ begin
-                             Stateful = proplists:get_value(stateful, FAnn, false),
-                             PurifierST = init_purifier_st(FAnn, Env1),
-                             {_, {_, {type_sig, TSAnn, _, [], ArgsT, RetT}}} =
-                                 aeso_ast_infer_types:lookup_env(
-                                   TCEnv, term, FAnn, qname(Con) ++ qname(Id)),
-                             check_arg_assumptions(Id, FAnn, ArgsT),
-                             {DepArgsT, ArgsSubst} =
-                                 fresh_liquid_args(
-                                   Env1,
-                                   [ case purify_type(ArgT, PurifierST) of
-                                         {refined_t, ArgAnn, ArgId, _, _} ->
-                                             {dep_arg_t, ArgAnn, ArgId, ArgT};
-                                         {depl_list_t, ArgAnn, ArgId, _, _} ->
-                                             {dep_arg_t, ArgAnn, ArgId, ArgT};
-                                         _ -> {Arg, ArgT}
-                                     end
-                                     || {?typed_p(Arg), ArgT} <- lists:zip(Args, ArgsT)
-                                   ]
-                                  ),
-                             RetT1 = apply_subst(ArgsSubst, RetT),
-                             DepRetT = fresh_liquid(Env1, "rete", RetT1),
-                             DepArgsT1 =
-                                 case HEAD of
-                                     namespace -> fresh_wildcards(DepArgsT);
-                                     _ ->
-                                         [ element(1, fresh_liquid_arg(Env1, init_state_var(FAnn, state_t(FAnn, Env1))))
-                                         , element(1, fresh_liquid_arg(Env1, init_balance_var(FAnn)))
-                                         | fresh_wildcards(DepArgsT)
-                                         ]
-                                 end,
-                             DepRetT1 =
-                                 case Stateful of
-                                     false -> DepRetT;
-                                     true ->
-                                          fresh_liquid(Env1, "ret", wrap_state_t(DepRetT, init_purifier_st(ann_of(RetT), Env1)))
-                                 end,
-                             DepRetT2 = purify_type(DepRetT1, PurifierST),
-                             TypeDep = {dep_fun_t, TSAnn, DepArgsT1, DepRetT2},
-                             {Name, TypeDep}
-                         end
-                         || {letfun, FAnn, Id = {id, _, Name}, Args, _, _} <- Defs
-                       ],
-                       Env1),
+              Env2 = bind_funs(get_global_funs(Env1, Defs), Env1),
               Env3 = bind_funs(
                        [ {Name, fresh_liquid(Env2, Name, Type)}
                          || {fun_decl, _, {id, _, Name}, Type} <- Defs
@@ -719,6 +675,50 @@ bind_ast_funs(TCEnv, AST, Env) ->
               Env4
       end,
      Env, AST).
+
+get_global_funs(Env, Defs) ->
+    TCEnv = Env#env.tc_env,
+    NS    = Env#env.namespace,
+    [ begin
+          Stateful = proplists:get_value(stateful, FAnn, false),
+          PurifierST = init_purifier_st(FAnn, Env),
+          {_, {_, {type_sig, TSAnn, _, [], ArgsT, RetT}}} =
+              aeso_ast_infer_types:lookup_env(
+                TCEnv, term, FAnn, NS ++ qname(Id)),
+          check_arg_assumptions(Id, FAnn, ArgsT),
+          {DepArgsT, ArgsSubst} =
+              fresh_liquid_args(
+                Env,
+                [ case purify_type(ArgT, PurifierST) of
+                      {refined_t, ArgAnn, ArgId, _, _} ->
+                          {dep_arg_t, ArgAnn, ArgId, ArgT};
+                      {depl_list_t, ArgAnn, ArgId, _, _} ->
+                          {dep_arg_t, ArgAnn, ArgId, ArgT};
+                      {depl_variant_t, ArgAnn, ArgId, _, _, _} ->
+                          {dep_arg_t, ArgAnn, ArgId, ArgT};
+                      _ -> {Arg, ArgT}
+                  end
+                  || {?typed_p(Arg), ArgT} <- lists:zip(Args, ArgsT)
+                ]
+               ),
+          RetT1 = apply_subst(ArgsSubst, RetT),
+          DepArgsT1 =
+              [ element(1, fresh_liquid_arg(Env, init_state_var(FAnn, state_t(FAnn, Env))))
+              , element(1, fresh_liquid_arg(Env, init_balance_var(FAnn)))
+              | fresh_wildcards(DepArgsT)
+              ],
+          DepRetT1 =
+              case Stateful of
+                  false -> fresh_liquid(Env, "ret", RetT1);
+                  true ->
+                      fresh_liquid(Env, "ret", wrap_state_t(RetT1, init_purifier_st(ann_of(RetT), Env)))
+              end,
+          DepRetT2 = purify_type(DepRetT1, PurifierST),
+          TypeDep = {dep_fun_t, TSAnn, DepArgsT1, DepRetT2},
+          {Name, TypeDep}
+      end
+      || {letfun, FAnn, Id = {id, _, Name}, Args, _, _} <- Defs
+    ].
 
 check_arg_assumptions({id, _, Name}, Ann, Args) ->
     case proplists:get_value(entrypoint, Ann, false) of
@@ -839,14 +839,14 @@ fresh_liquid(Env, Variance, _, {dep_record_t, Ann, Rec, Fields}) ->
           end,
     {dep_record_t, Ann, Rec,
      [ fresh_liquid_field(Env, Variance, Qid, Field, FType)
-       || {field_t, _, Field, FType} <- Fields
+       || {_FIELD_HEAD, _, Field, FType} <- Fields
      ]
     };
 fresh_liquid(Env, Variance, Hint, {dep_variant_t, Ann, Id, Type, TagPred, Constrs}) ->
     {dep_variant_t, Ann, Id, Type, TagPred,
      [ {dep_constr_t, CAnn, Con,
         fresh_liquid(Env, Variance, Hint ++ "_" ++ name(Con), Vals)}
-       || {constr_t, CAnn, Con, Vals} <- Constrs
+       || {_CONSTR_HEAD, CAnn, Con, Vals} <- Constrs
      ]
     };
 fresh_liquid(Env, Variance, _Hint, {dep_list_t, Ann, Id, ElemT, LenPred}) when is_list(LenPred) ->
@@ -901,6 +901,9 @@ fresh_liquid(Env, Variance, Hint,
                 {alias_t, Type1} ->
                     fresh_liquid(Env, Variance, Hint, apply_subst(Subst, Type1));
                 {record_t, Fields} ->
+                    ?DBG("XD CHUJ ~p", [[ fresh_liquid_field(Env, Variance, Qid, Field, apply_subst(Subst, FType))
+                                          || {field_t, _, Field, FType} <- Fields
+                                        ]]),
                     {dep_record_t, Ann, Type,
                      [ fresh_liquid_field(Env, Variance, Qid, Field, apply_subst(Subst, FType))
                       || {field_t, _, Field, FType} <- Fields
@@ -983,7 +986,7 @@ fresh_liquid_args(Env, Variance, [Arg|Rest]) ->
     {[Arg1|Args], Sub ++ Subs}.
 
 fresh_liquid_field(Env, Variance, _, Id, Type) ->
-    {dep_arg_t, A, I, DT} = fresh_liquid_arg(Env, Variance, Id, Type),
+    {{dep_arg_t, A, I, DT}, _} = fresh_liquid_arg(Env, Variance, Id, Type),
     {dep_field_t, A, I, DT}.
 
 -spec switch_variance(variance()) -> variance().
@@ -1273,17 +1276,7 @@ constr_expr(Env, Expr = {IdHead, Ann, Name}, T, S)
        true ->
             case type_of(Env, Expr) of
                 {_, _, DT} ->
-                    DT1 =
-                        case {IdHead, DT} of
-                            %% Lambdas must be considered stateful
-                            %% {id, {dep_fun_t, Ann, TArgs, RetT}} ->
-                            %%     {dep_fun_t, [{stateful, true}|Ann],
-                            %%      [ | TArgs],
-                            %%      RetT};
-                            _ -> BaseT
-                        end,
                     ExprT = fresh_liquid(Env, Name, BaseT),
-                    ?DBG("DT IS ~p\n\nEXPRT IS ~p\n\n", [DT, ExprT]),
                     {ExprT
                     , [ {subtype, constr_id(IdHead), Ann, Env, DT, ExprT}
                       , {well_formed, constr_id(IdHead), Env, ExprT}
@@ -2010,6 +2003,7 @@ split_constr1(C = {subtype, Ref, Ann, Env0, SubT, SupT}) ->
         { {dep_record_t, _, _, FieldsSub}
         , {dep_record_t, _, _, FieldsSup}
         } ->
+            ?DBG("XDDD ~p ~p\n\n~p", [Ref, FieldsSub, FieldsSup]),
             FieldsSub1 = lists:keysort(3, FieldsSub),
             FieldsSup1 = lists:keysort(3, FieldsSup),
             split_constr(
@@ -2598,6 +2592,44 @@ a_normalize({record, Ann, FieldVals}, Type, Decls0) ->
             }, Type),
      Decls1
     };
+a_normalize({record, Ann, Expr, FieldVals}, Type, Decls0) ->
+    {Expr1, Decls1} = a_normalize_to_simpl(Expr, Decls0),
+    {FieldVals1, Decls2} =
+        lists:foldr(
+          fun({field_upd, FAnn, [Field = {proj, ProjAnn, ProjField}],
+               Lambda = ?typed_p(_, LambdaT = {fun_t, _, _, _, FieldT})}, {FVs, Decls1_0}) ->
+                  ModId = fresh_id(FAnn, "mod_field", LambdaT),
+                  Proj = ?typed({proj, ProjAnn, Expr1, ProjField}, FieldT),
+                  {[{field, FAnn, [Field], ?typed({app, FAnn, ModId, [Proj]}, FieldT)}|FVs],
+                   [ {letval, FAnn, ModId, a_normalize(Lambda)}
+                   | Decls1_0
+                   ]
+                  };
+             %% ({field_upd, FAnn, Access, TODO
+             %%   Lambda = ?typed_p(_, LambdaT = {fun_t, _, _, _, FieldT})}, {FVs, Decls1_0}) ->
+             %%      ModId = fresh_id(Ann, "mod_field", LambdaT),
+             %%      Proj =
+             %%          lists:foldl(
+             %%            fun({proj, ProjAnn, ProjField}, PrevExpr) ->
+             %%                    {proj, ProjAnn, PrevExpr, ProjField}
+             %%            end,
+             %%            Expr1, Access),
+             %%      {[{field, FAnn, Access, ?typed({app, FAnn, ModId, Proj}, FieldT)}|FVs],
+             %%       [ {letval, FAnn, ModId, a_normalize(Lambda)}
+             %%       | Decls1_0
+             %%       ]
+             %%      };
+             (FV, {FVs, Decls1_0}) -> {[FV|FVs], Decls1_0}
+          end,
+          {[], Decls1}, FieldVals),
+    Vals = [Val || {field, _, _, Val} <- FieldVals1],
+    {Vals1, Decls3} = a_normalize_to_simpl_list(Vals, [], Decls2),
+    {?typed({record, Ann, Expr1,
+             [{field, FAnn, Field, Val}
+              || {Val, {field, FAnn, Field, _}} <- lists:zip(Vals1, FieldVals1)]
+            }, Type),
+     Decls3
+    };
 a_normalize({proj, Ann, Expr, Field}, Type, Decls0) ->
     {Expr1, Decls1} = a_normalize_to_simpl(Expr, Decls0),
     {?typed({proj, Ann, Expr1, Field}, Type),
@@ -2608,8 +2640,25 @@ a_normalize({list, Ann, Elems}, Type, Decls0) ->
     {?typed({list, Ann, Elems1}, Type),
      Decls1
     };
+a_normalize({list_comp, Ann, Yield, Gens}, Type, Decls0) ->
+    {?typed(
+        {list_comp, Ann,
+         a_normalize(Yield),
+         [case G of
+              {comprehension_if, GAnn, Expr} ->
+                  {comprehension_if, GAnn, a_normalize(Expr)};
+              {letval, GAnn, Pat, Body} ->
+                  {letval, GAnn, Pat, a_normalize(Body)};
+              {comprehension_bind, Pat, Body} ->
+                  {comprehension_bind, Pat, a_normalize(Body)}
+          end
+          || G <- Gens]
+        },
+       Type),
+     Decls0
+    };
 a_normalize({block, Ann, Stmts}, Type, Decls0) ->
-    Stmts1 = a_normalize_block(Stmts, []),
+    Stmts1 = a_normalize_block(Stmts, Type, []),
     {?typed({block, Ann, Stmts1}, Type),
      Decls0
     };
@@ -2618,16 +2667,19 @@ a_normalize(Expr, Type, Decls) ->
      Decls
     }.
 
-a_normalize_block([], Acc) ->
+a_normalize_block([], _Type, Acc) ->
     lists:reverse(Acc);
-a_normalize_block([{letval, Ann, Pat, Body}|Rest], Acc0) ->
+a_normalize_block([{letval, Ann, Pat, Body}|Rest], Type, Acc0) when element(1, Pat) == id ->
     {Body1, Acc1} = a_normalize(Body, Acc0),
-    a_normalize_block(Rest, [{letval, Ann, Pat, Body1}|Acc1]);
-a_normalize_block([{letfun, Ann, Name, Args, RetT, Body}|Rest], Acc) ->
-    a_normalize_block(Rest, [{letfun, Ann, Name, Args, RetT, a_normalize(Body)}|Acc]);
-a_normalize_block([Expr|Rest], Acc0) ->
+    a_normalize_block(Rest, Type, [{letval, Ann, Pat, Body1}|Acc1]);
+a_normalize_block([{letval, Ann, Pat, Body}|Rest], Type, Acc) ->
+    Switch = {switch, Ann, Body, [{'case', Ann, Pat, ?typed({block, Ann, Rest}, Type)}]},
+    a_normalize_block([?typed(Switch, Type)], Type, Acc);
+a_normalize_block([{letfun, Ann, Name, Args, RetT, Body}|Rest], Type, Acc) ->
+    a_normalize_block(Rest, Type, [{letfun, Ann, Name, Args, RetT, a_normalize(Body)}|Acc]);
+a_normalize_block([Expr|Rest], Type, Acc0) ->
     {Expr1, Acc1} = a_normalize(Expr, Acc0),
-    a_normalize_block(Rest, [Expr1|Acc1]).
+    a_normalize_block(Rest, Type, [Expr1|Acc1]).
 
 a_normalize_list([], Acc, Decls) ->
     {lists:reverse(Acc), Decls};
@@ -2786,9 +2838,12 @@ purify_expr(?typed_p(E, T), T1, ST) ->
     purify_typed(Pure, E1, T1, ST);
 purify_expr(Id = {id, _, _}, {fun_t, TAnn, [], ArgsT, RetT}, ST) ->
     %% This is a lambda so we treat it as stateful
+    %% TODO actually not, it may be pure assigned to a var
     ArgsT1 = [get_state_t(ST), balance_t(TAnn)|ArgsT],
     RetT1 = wrap_state_t(RetT, ST),
     {pure, ?typed(Id, {fun_t, [{stateful, true}|TAnn], [], ArgsT1, RetT1})};
+purify_expr(Id = {id, _, _}, T, _ST) ->
+    {pure, ?typed(Id, T)};
 purify_expr({qid, _, [_, "state"]}, T, ST) ->
     ?typed_p(STVar) = ST#purifier_st.state,
     {pure, ?typed(STVar, purify_type(T, ST))};
@@ -2862,7 +2917,42 @@ purify_expr({lam, Ann, Args, Body}, {fun_t, TAnn, [], TArgs, _}, ST) ->
 purify_expr({block, Ann, Stmts}, T, ST) ->
     {Pure, Stmts1} = purify_block(pure, Stmts, ST),
     purify_typed(Pure, {block, Ann, Stmts1}, T, ST);
+purify_expr({list_comp, Ann, Yield, Gens}, T, ST) ->
+    {Pure, Yield1} = purify_expr(Yield, ST),
+    %% TODO  not actually, but nobody sane would abuse it
+    purify_typed(
+      Pure,
+      {list_comp, Ann, Yield1,
+       [case G of
+            {comprehension_if, GAnn, Expr} ->
+                {comprehension_if, GAnn, drop_purity(purify_expr(Expr, ST))};
+            {letval, GAnn, Pat, Body} ->
+                {letval, GAnn, Pat, drop_purity(purify_expr(Body, ST))};
+            {comprehension_bind, Pat, Body} ->
+                {comprehension_bind, Pat, drop_purity(purify_expr(Body, ST))}
+        end
+        || G <- Gens]
+      },
+      T, ST);
+purify_expr({record, Ann, Fields}, T, ST) ->
+    Fields1 =
+        [ {field, FAnn, Proj, drop_purity(purify_expr(Val, ST))}
+         || {field, FAnn, Proj, Val} <- Fields
+        ],
+    {pure, ?typed({record, Ann, Fields1}, T)};
+purify_expr({tuple, Ann, Vals}, T, ST) ->
+    Vals1 = [drop_purity(purify_expr(Val, ST)) || Val <- Vals],
+    {pure, ?typed({tuple, Ann, Vals1}, T)};
+purify_expr(E = {int, _, _}, T, _) ->
+    {pure, ?typed(E, T)};
+purify_expr(E = {string, _, _}, T, _) ->
+    {pure, ?typed(E, T)};
+purify_expr(E = {char, _, _}, T, _) ->
+    {pure, ?typed(E, T)};
+purify_expr(E = {bool, _, _}, T, _) ->
+    {pure, ?typed(E, T)};
 purify_expr(E, T, ST) ->
+    error({todo, E}),
     purify_typed(pure, E, T, ST).
 
 purify_block(PurePrev, [Expr], ST) ->
