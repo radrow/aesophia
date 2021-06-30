@@ -50,75 +50,9 @@ refiner_test_group() ->
                    {{ok, AST}, {success, Assertions}} ->
                        io:format("AST:\n~s\n\n", [aeso_pretty:pp(decls, AST)]),
                        check_ast_refinement(AST, Assertions);
-                   {{error, {contradict, Assump, Promise}}, {contradict, ExAssump, ExPromise}} ->
-                       ?assertEqual(ExAssump, Assump),
-                       ?assertEqual(ExPromise, Promise);
-                   {{error, {contradict, {Ann, Assump, Promise}}}, _} ->
-                       io:format("Could not prove the promise at ~s ~p:~p\n"
-                                 "~s:\n"
-                                 "  ~s\n"
-                                 "from the assumption\n"
-                                 "  ~s\n",
-                                 [aeso_syntax:get_ann(file, Ann, ""),
-                                  aeso_syntax:get_ann(line, Ann, 0),
-                                  aeso_syntax:get_ann(col, Ann, 0),
-                                  pp_context(aeso_syntax:get_ann(context, Ann, none)),
-                                  aeso_pretty:pp(predicate, Promise),
-                                  aeso_pretty:pp(predicate, Assump)]
-                                ),
-                       error(contradict);
-                   {{error, {invalid_reachable, {Ann, Pred}}}, _} ->
-                       io:format("Could not ensure safety of the control flow at ~s ~p:~p\n"
-                                 "Could not prove that\n"
-                                 "  ~s\n"
-                                 "never holds.",
-                                 [aeso_syntax:get_ann(file, Ann, ""),
-                                  aeso_syntax:get_ann(line, Ann, 0),
-                                  aeso_syntax:get_ann(col, Ann, 0),
-                                  aeso_pretty:pp(predicate, aeso_ast_refine_types:path_pred(Pred))
-                                 ]
-                                ),
-                       error(invalid_reachable);
-                   {{error, {valid_unreachable, {Ann, Pred}}}, _} ->
-                       io:format("Found dead code at ~s ~p:~p\n"
-                                 "by proving that\n"
-                                 "  ~s\n"
-                                 "never holds.",
-                                 [aeso_syntax:get_ann(file, Ann, ""),
-                                  aeso_syntax:get_ann(line, Ann, 0),
-                                  aeso_syntax:get_ann(col, Ann, 0),
-                                  aeso_pretty:pp(predicate, aeso_ast_refine_types:path_pred(Pred))
-                                 ]
-                                ),
-                       error(valid_unreachable);
-                   {{error, {overwrite, Id}}, _} ->
-                       io:format("Illegal redefinition of the variable ~s at ~s ~p:~p",
-                                 [aeso_pretty:pp(expr, Id),
-                                  aeso_syntax:get_ann(file, Id, ""),
-                                  aeso_syntax:get_ann(line, Id, 0),
-                                  aeso_syntax:get_ann(col, Id, 0)
-                                 ]
-                                ),
-                       error(overwrite);
-                   {{error, {entrypoint_arg_assump, {Name, Ann, T}}}, _} ->
-                       io:format("The entrypoint ~s has got assumptions on its argument at ~s ~p:~p.\n"
-                                 "These assumptions won't be checked after the contract is deployed.\n"
-                                 "Please provide ~s an external type declaration and validate the data using\n"
-                                 "  `require : (bool, string) => unit` function.\n"
-                                 "The illegal type was\n"
-                                 "  ~s",
-                                 [Name,
-                                  aeso_syntax:get_ann(file, Ann, ""),
-                                  aeso_syntax:get_ann(line, Ann, 0),
-                                  aeso_syntax:get_ann(col, Ann, 0),
-                                  Name,
-                                  aeso_pretty:pp(type, T)
-                                 ]
-                                ),
-                       error(entrypoint_arg_assump);
-                   {{error, ErrBin}, _} ->
-                       io:format("\nerror: ~s", [ErrBin]),
-                       error(ErrBin)
+                   {{error, Err}, _} ->
+                       io:format(aeso_ast_refine_types:pp_error(Err)),
+                       error(Err)
                catch E:T:S -> io:format("Caught:\n~p: ~p\nstack:\n~p\n", [E, T, S]), error(T)
                end
        end} || {ContractName, Expect} <- compilable_contracts()].
@@ -159,38 +93,3 @@ compilable_contracts() ->
      %%  }
      %% }
     ].
-
-
-pp_context(none) ->
-    "";
-pp_context({app, Ann, {typed, _, Fun, _}, N}) ->
-    io_lib:format(
-      "arising from an application of ~p to its ~s argument",
-      [ aeso_pretty:pp(expr, Fun)
-      , case aeso_syntax:get_ann(format, Ann, prefix) of
-            prefix -> case abs(N rem 10) of
-                          1 -> integer_to_list(N) ++ "st";
-                          2 -> integer_to_list(N) ++ "nd";
-                          3 -> integer_to_list(N) ++ "rd";
-                          _ -> integer_to_list(N) ++ "th"
-                      end;
-            infix -> case N of
-                         1 -> "left";
-                         2 -> "right"
-                     end
-        end
-      ]);
-pp_context(then) ->
-    "arising from the assumption of the `if` condition";
-pp_context(else) ->
-    "arising from the negation of the `if` condition";
-pp_context({switch, N}) ->
-    io_lib:format(
-      "arising from the assumption of triggering of the ~s branch of `switch`",
-      case abs(N rem 10) of
-          1 -> integer_to_list(N) ++ "st";
-          2 -> integer_to_list(N) ++ "nd";
-          3 -> integer_to_list(N) ++ "rd";
-          _ -> integer_to_list(N) ++ "th"
-      end
-     ).

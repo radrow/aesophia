@@ -2,12 +2,27 @@
 -define(IS_STDLIB(NS),
         (NS == "List" orelse
          NS == "ListInternal" orelse
-         NS == "Option"
+         NS == "Option" orelse
+         NS == "Bits" orelse
+         NS == "Bytes" orelse
+         NS == "Char" orelse
+         NS == "Int" orelse
+         NS == "Map" orelse
+         NS == "Address" orelse
+         NS == "Crypto" orelse
+         NS == "Auth" orelse
+         NS == "Oracle" orelse
+         NS == "AENS" orelse
+         NS == "Contract" orelse
+         NS == "Call" orelse
+         NS == "Chain" orelse
+         false
         )).
 
 -define(IS_STDLIB_STATEFUL(NS, Fun),
         ((NS == "List" andalso Fun == "map") orelse
          (NS == "List" andalso Fun == "flat_map") orelse
+         (NS == "Chain" andalso Fun == "spend") orelse
          false
         )).
 
@@ -32,6 +47,29 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], _, _}
 
 -define(
    STDLIB_CONSTRS,
+   ?CONSTR("Chain", "spend", [State, Balance, Addr, Amount],
+           begin
+               {_, S1} = constr_expr(Env, State, S0),
+               {BalanceT, S2} = constr_expr(Env, Balance, S1),
+               {_, S3} = constr_expr(Env, Addr, S2),
+               {AmountT, S4} = constr_expr(Env, Amount, S3),
+               ExprT = {tuple_t, _, [_, _, NewBalanceT]} = fresh_liquid(Env, "spend", RetT),
+               {ExprT,
+                [ {well_formed, constr_id(chain_spend), Env, ExprT}
+                , {subtype, constr_id(chain_spend), Ann, Env,
+                   AmountT,
+                   refined(?int_t(Ann), [ ?op(Ann, nu(Ann), '=<', Balance)
+                                        , ?op(Ann, nu(Ann), '>=', ?int(Ann, 0))])}
+                , {subtype, constr_id(chain_spend), Ann, Env,
+                   refined(?int_t(Ann), [?op(Ann, nu(Ann), '==', ?op(Ann, Balance, '-', Amount))]),
+                   NewBalanceT
+                  }
+                | S4
+                ]
+               }
+           end
+          )
+
    ?CONSTR("List", "is_empty", [L],
            begin
                {_, S1} = constr_expr(Env, L, S0),

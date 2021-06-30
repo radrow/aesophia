@@ -1,5 +1,10 @@
 -module(aeso_ast_refine_types).
--compile([export_all, nowarn_export_all]).
+
+-export([ refine_ast/2, apply_subst/3, apply_subst/2, nu/1, init_refiner/0
+        , type_binds/1, type_binds/2, pred_of/2, path_pred/1, init_env/1, bind_var/3
+        , impl_holds/3, impl_holds/4
+        ]).
+-export([pp_error/1]).
 
 -include_lib("eunit/include/eunit.hrl").
 -include("aeso_ast_refine_types_stdlib.hrl").
@@ -448,16 +453,13 @@ type_defs(#env{scopes = Scopes}) ->
 path_pred(#env{path_pred = PathPred}) ->
     PathPred.
 
-
-%% -- Constraint generator state -----------------------------------------------
-
-
 %% -- Initialization -----------------------------------------------------------
 
 -spec init_refiner() -> ok.
 init_refiner() ->
     put(ltvar_supply, 0),
     put(id_supply, 0),
+    put(refiner_errors, []),
     ok.
 
 init_env(TCEnv) ->
@@ -525,38 +527,6 @@ init_env(TCEnv) ->
     BytesScope = #scope
         { fun_env = MkDefs(
                    [{"to_int", DFun1(Arg("bytes", Bytes(any)), ?d_nonneg_int(Ann))}]) },
-
-    %% ListScope = #scope
-    %%     { fun_env = MkDefs(
-    %%                   [ {"is_empty",
-    %%                      DFun1(Arg("l", ?d_list(A)), ?d_bool(?op(Ann, {id, Ann, "l"}, '==', ?int(Ann, 0))))}
-    %%                   , {"firsrt",
-    %%                      DFun1(Arg("l", ?d_list(A)), ?d_bool(?op(Ann, {id, Ann, "l"}, '==', ?int(Ann, 0))))}
-    %%                   ]) },
-
-    ListInternalScope = #scope
-        { fun_env = MkDefs(
-                      [{"is_empty"}
-
-                      ]) },
-
-    %% OptionScope = #scope
-    %%     { fun_env = MkDefs(
-    %%                   [
-
-    %%                   ]) },
-
-    %% PairScope = #scope
-    %%     { fun_env = MkDefs(
-    %%                 [
-
-    %%                 ]) },
-
-    %% TripleScope = #scope
-    %%     { fun_env = MkDefs(
-    %%                   [
-
-    %%                   ]) },
 
     TopScope = #scope
         { fun_env  = MkDefs(
@@ -653,8 +623,8 @@ find_tuple_sizes(T, Acc) when is_tuple(T) ->
 find_tuple_sizes(_, Acc) ->
     Acc.
 
--spec bind_ast_funs(aeso_ast_infer_types:env(), ast(), env()) -> env().
-bind_ast_funs(TCEnv, AST, Env) ->
+-spec bind_ast_funs(ast(), env()) -> env().
+bind_ast_funs(AST, Env) ->
     lists:foldr(
       fun({namespace, _, {con, _, CName}, _}, Env0)
             when ?IS_STDLIB(CName) ->
@@ -724,7 +694,7 @@ check_arg_assumptions({id, _, Name}, Ann, Args) ->
     case proplists:get_value(entrypoint, Ann, false) of
         true ->
             [ case has_assumptions(Arg) of
-                  true -> throw({entrypoint_arg_assump, {Name, Ann, Arg}});
+                  true -> add_error({entrypoint_arg_assump, {Name, Ann, Arg}});
                   false -> ok
               end
               || Arg <- Args
@@ -996,6 +966,20 @@ switch_variance(forced_covariant) ->
 switch_variance(forced_contravariant) ->
     forced_contravariant.
 
+fresh_wildcards({typed, Ann, {id, Ann, "_"}, T}) ->
+    {typed, Ann, fresh_id(Ann, "x"), T};
+fresh_wildcards({id, Ann, "_"}) ->
+    fresh_id(Ann, "x");
+fresh_wildcards({dep_arg_t, Ann, {id, IAnn, "_"}, T}) ->
+    {dep_arg_t, Ann, fresh_id(IAnn, "arg_w"), T};
+fresh_wildcards([H|T]) ->
+    [fresh_wildcards(H)|fresh_wildcards(T)];
+fresh_wildcards(X) -> X.
+
+
+%% -- Utils --------------------------------------------------------------------
+
+
 base_type({refined_t, _, _, T, _}) ->
     T;
 base_type({dep_list_t, Ann, _, ElemT, _}) ->
@@ -1015,16 +999,11 @@ base_type({app_t, Ann, T, Args}) ->
     {app_t, Ann, T, [base_type(A) || A <- Args]};
 base_type(T) -> T.
 
-fresh_wildcards({typed, Ann, {id, Ann, "_"}, T}) ->
-    {typed, Ann, fresh_id(Ann, "x"), T};
-fresh_wildcards({id, Ann, "_"}) ->
-    fresh_id(Ann, "x");
-fresh_wildcards({dep_arg_t, Ann, {id, IAnn, "_"}, T}) ->
-    {dep_arg_t, Ann, fresh_id(IAnn, "arg_w"), T};
-fresh_wildcards([H|T]) ->
-    [fresh_wildcards(H)|fresh_wildcards(T)];
-fresh_wildcards(X) -> X.
 
+add_error(Err) ->
+    Errs = get(refiner_errors),
+    put(refiner_errors, [Err|Errs]),
+    error.
 
 
 %% -- Entrypoint ---------------------------------------------------------------
@@ -1038,7 +1017,7 @@ refine_ast(TCEnv, AST) ->
     Env3 = register_typedefs(AST, Env2),
     Env4 = register_stateful(AST, Env3),
     try
-        Env5 = bind_ast_funs(TCEnv, AST, Env4),
+        Env5 = bind_ast_funs(AST, Env4),
         {AST1, CS0} = constr_ast(Env5, AST),
         [?DBG("C:\n~s", [aeso_pretty:pp(constr, strip_typed(C))]) || C <- CS0, element(1, C) == subtype],
         CS1 = split_constr(CS0),
@@ -1049,14 +1028,16 @@ refine_ast(TCEnv, AST) ->
                   solve(Env5, CS1)
           end) of
             Assg ->
+                case get(refiner_errors) of
+                    [] -> ok;
+                    Errs -> throw({refinement_errors, Errs})
+                end,
                 AST2 = apply_assg(Assg, AST1),
                 AST3 = strip_typed(AST2),
                 {ok, AST3}
         end
     catch {ErrType, _}=E
-                when ErrType =:= contradict;
-                     ErrType =:= invalid_reachable;
-                     ErrType =:= valid_unreachable;
+                when ErrType =:= refinement_errors;
                      ErrType =:= overwrite;
                      ErrType =:= entrypoint_arg_assump
                      -> {error, E}
@@ -1274,7 +1255,6 @@ constr_expr(Env, Expr = {IdHead, Ann, Name}, T, S)
                       ]
                     };
                 undefined ->
-                    DT = fresh_liquid(Env, Name, T),
                     {DT,
                      [ {well_formed, constr_id(IdHead), Env, DT}
                      | S
@@ -1284,16 +1264,22 @@ constr_expr(Env, Expr = {IdHead, Ann, Name}, T, S)
     end;
 constr_expr(_Env, I = {int, Ann, _}, T = ?int_tp, S) ->
     {refined(T, [?op(Ann, nu(Ann), '==', I)]), S};
+constr_expr(_Env, I = {char, Ann, _}, T, S) ->
+    {refined(T, [?op(Ann, nu(Ann), '==', I)]), S};
+constr_expr(_Env, {address, _, _}, T, S0) ->
+    {refined(T), S0};
+constr_expr(_Env, {string, _, _}, T, S0) ->
+    {refined(T), S0};
 constr_expr(_Env, {bool, Ann, B}, T, S) ->
     {refined(T, [if B -> nu(Ann); true -> ?op(Ann, '!', nu(Ann)) end]), S};
+
+?STDLIB_CONSTRS
 
 constr_expr(Env, {tuple, Ann, Elems}, _, S0) ->
     {ElemsT, S1} = constr_expr_list(Env, Elems, S0),
     {{tuple_t, Ann, ElemsT},
      S1
     };
-
-?STDLIB_CONSTRS
 constr_expr(Env, {record, Ann, FieldVals}, T, S0) ->
     {Fields, Vals} =
         lists:unzip([{Field, Val} || {field, _, [{proj, _, Field}], Val} <- FieldVals]),
@@ -1303,6 +1289,8 @@ constr_expr(Env, {record, Ann, FieldVals}, T, S0) ->
        || {Field, ValT} <- lists:zip(Fields, ValsT)]},
      S1
     };
+constr_expr(_Env0, {list_comp, _Ann, _Yield, _Gens}, _T, _S0) ->
+    error({list_comprehension_not_supported});
 
 constr_expr(_Env, Expr = {CmpOp, Ann}, {fun_t, _, _, [OpLT, OpRT], RetT = ?bool_tp}, S)
   when CmpOp =:= '<';
@@ -1551,8 +1539,6 @@ constr_expr(Env,
             ], T, S0) ->
     Env1 = assert(Cond, Env),
     constr_expr(Env1, Rest, T, [{reachable, constr_id(require), Ann, Env1}|S0]);
-constr_expr(_Env, {string, _, _}, T, S0) ->
-    {refined(T), S0};
 constr_expr(Env, [Expr|Rest], T, S0) ->
     ExprT = fresh_liquid(Env, "expr", T),
     {_, S1} = constr_expr(Env, Expr, S0),
@@ -2093,7 +2079,10 @@ solve(Assg, AllCs, [C|Rest]) ->
             end;
         true  ->
             %% ?DBG("VALID"),
-            solve(Assg, AllCs, Rest)
+            solve(Assg, AllCs, Rest);
+        error ->
+            %% Error has been registered.
+            solve(Assg, AllCs -- [C], Rest)
     end.
 
 valid_in({well_formed, _, _, _}, _) ->
@@ -2115,7 +2104,7 @@ valid_in({subtype, Ref, Ann, Env,
         false ->
             ?DBG("**** CONTRADICTION IN ~p", [Ref]),
             SimpAssump = simplify_pred(Assg, Env1, pred_of(Assg, Env1) ++ AssumpPred),
-            throw({contradict, {Ann, strip_typed(SimpAssump), strip_typed(ConclPred)}})
+            add_error({contradict, {Ann, strip_typed(SimpAssump), strip_typed(ConclPred)}})
     end;
 valid_in({subtype, R, _, Env,
           {refined_t, _, SubId,    _, SubPredVar},
@@ -2189,14 +2178,14 @@ check_reachable(Assg, [{reachable, _, Ann, Env}|Rest]) ->
     case impl_holds(Assg, Env, [], [?bool(Ann, false)]) of
         true ->
             ?DBG("UNERACHABLE: ~s", [aeso_pretty:pp(predicate, pred_of(Assg, Env))]),
-            throw({valid_unreachable, {Ann, Env}});
+            add_error({valid_unreachable, {Ann, Env}});
         false ->
             check_reachable(Assg, Rest)
     end;
 check_reachable(Assg, [{unreachable, _, Ann, Env}|Rest]) ->
     case impl_holds(Assg, Env, [], [?bool(Ann, false)]) of
         true -> check_reachable(Assg, Rest);
-        false -> throw({invalid_reachable, {Ann, Env}})
+        false -> add_error({invalid_reachable, {Ann, Env}})
     end;
 check_reachable(Assg, [_|Rest]) ->
     check_reachable(Assg, Rest);
@@ -2343,6 +2332,10 @@ type_to_smt({refined_t, _, _, T, _}) ->
 type_to_smt(?bool_tp) ->
     {var, "Bool"};
 type_to_smt(?int_tp) ->
+    {var, "Int"};
+type_to_smt({id, _, "char"}) ->
+    {var, "Int"};
+type_to_smt({id, _, "address"}) ->
     {var, "Int"};
 type_to_smt({id, _, "string"}) ->
     {var, "Int"};
@@ -2658,12 +2651,12 @@ a_normalize(Expr, Type, Decls) ->
 
 a_normalize_block([], _Type, Acc) ->
     lists:reverse(Acc);
-a_normalize_block([{letval, Ann, Pat, Body}|Rest], Type, Acc0) when element(1, Pat) == id ->
+%% a_normalize_block([{letval, Ann, Pat, Body}|Rest], Type, Acc)  when element(1, Pat) /= id ->
+%%     Switch = {switch, Ann, Body, [{'case', Ann, Pat, ?typed({block, Ann, Rest}, Type)}]},
+%%     a_normalize_block([?typed(Switch, Type)], Type, Acc);
+a_normalize_block([{letval, Ann, Pat, Body}|Rest], Type, Acc0) ->
     {Body1, Acc1} = a_normalize(Body, Acc0),
     a_normalize_block(Rest, Type, [{letval, Ann, Pat, Body1}|Acc1]);
-a_normalize_block([{letval, Ann, Pat, Body}|Rest], Type, Acc) ->
-    Switch = {switch, Ann, Body, [{'case', Ann, Pat, ?typed({block, Ann, Rest}, Type)}]},
-    a_normalize_block([?typed(Switch, Type)], Type, Acc);
 a_normalize_block([{letfun, Ann, Name, Args, RetT, Body}|Rest], Type, Acc) ->
     a_normalize_block(Rest, Type, [{letfun, Ann, Name, Args, RetT, a_normalize(Body)}|Acc]);
 a_normalize_block([Expr|Rest], Type, Acc0) ->
@@ -2685,6 +2678,9 @@ a_normalize_to_simpl(L, Decls) when is_list(L) ->
     a_normalize_to_simpl_list(L, [], Decls).
 
 
+a_normalize_to_simpl(?typed_p(E, T1), Type, Decls0) ->
+    {E1, Decls1} = a_normalize_to_simpl(E, T1, Decls0),
+    {?typed(E1, Type), Decls1};
 a_normalize_to_simpl(Expr = {id, _, _}, Type, Decls) ->
     {?typed(Expr, Type), Decls};
 a_normalize_to_simpl(Expr = {qid, _, _}, Type, Decls) ->
@@ -2828,6 +2824,7 @@ purify_expr(?typed_p(E, T), T1, ST) ->
 purify_expr(Id = {id, _, _}, {fun_t, TAnn, [], ArgsT, RetT}, ST) ->
     %% This is a lambda so we treat it as stateful
     %% TODO actually not, it may be pure assigned to a var
+    %% The env should follow statefulness and purity
     ArgsT1 = [get_state_t(ST), balance_t(TAnn)|ArgsT],
     RetT1 = wrap_state_t(RetT, ST),
     {pure, ?typed(Id, {fun_t, [{stateful, true}|TAnn], [], ArgsT1, RetT1})};
@@ -2860,6 +2857,11 @@ purify_expr({app, Ann, ?typed_p(Fun = {qid, _, [NS, FunName]}, FunT), Args}, T, 
 purify_expr({app, Ann, Fun = ?typed_p({qid, _, [NS, _]}), Args}, T, ST)
   when ?IS_STDLIB(NS) ->
     %% This is a builin namespace which doesn't interact with the state
+    Args1 = [drop_purity(purify_expr(A, ST)) || A <- Args],
+    {pure, ?typed({app, Ann, Fun, Args1}, T)};
+purify_expr({app, Ann, Fun = ?typed_p({id, _, FName}), Args}, T, ST)
+  when FName == "require" orelse FName == "abort" ->
+    %% This is a builin function which doesn't interact with the state
     Args1 = [drop_purity(purify_expr(A, ST)) || A <- Args],
     {pure, ?typed({app, Ann, Fun, Args1}, T)};
 purify_expr({app, Ann, Fun = ?typed_p({HEAD, _, _}), Args}, T, ST) when HEAD == qcon; HEAD == con ->
@@ -2935,16 +2937,7 @@ purify_expr({tuple, Ann, Vals}, T, ST) ->
 purify_expr({list, Ann, Vals}, T, ST) ->
     Vals1 = [drop_purity(purify_expr(Val, ST)) || Val <- Vals],
     {pure, ?typed({list, Ann, Vals1}, T)};
-purify_expr(E = {int, _, _}, T, _) ->
-    {pure, ?typed(E, T)};
-purify_expr(E = {string, _, _}, T, _) ->
-    {pure, ?typed(E, T)};
-purify_expr(E = {char, _, _}, T, _) ->
-    {pure, ?typed(E, T)};
-purify_expr(E = {bool, _, _}, T, _) ->
-    {pure, ?typed(E, T)};
 purify_expr(E, T, ST) ->
-    error({todo, E}),
     purify_typed(pure, E, T, ST).
 
 purify_block(PurePrev, [Expr], ST) ->
@@ -3038,3 +3031,105 @@ purify_expr_to_pure(Expr, ST) ->
                BType
               )
     end.
+
+
+%% -- Errors -------------------------------------------------------------------
+
+pp_error({contradict, {Ann, Assump, Promise}}) ->
+    io_lib:format("Could not prove the promise at ~s ~p:~p\n"
+              "~s:\n"
+              "  ~s\n"
+              "from the assumption\n"
+              "  ~s\n",
+              [aeso_syntax:get_ann(file, Ann, ""),
+               aeso_syntax:get_ann(line, Ann, 0),
+               aeso_syntax:get_ann(col, Ann, 0),
+               pp_context(aeso_syntax:get_ann(context, Ann, none)),
+               aeso_pretty:pp(predicate, Promise),
+               aeso_pretty:pp(predicate, Assump)]
+             );
+pp_error({invalid_reachable, {Ann, Pred}}) ->
+    io_lib:format("Could not ensure safety of the control flow at ~s ~p:~p\n"
+              "Could not prove that\n"
+              "  ~s\n"
+              "never holds.",
+              [aeso_syntax:get_ann(file, Ann, ""),
+               aeso_syntax:get_ann(line, Ann, 0),
+               aeso_syntax:get_ann(col, Ann, 0),
+               aeso_pretty:pp(predicate, aeso_ast_refine_types:path_pred(Pred))
+              ]
+             );
+pp_error({valid_unreachable, {Ann, Pred}}) ->
+    io_lib:format("Found dead code at ~s ~p:~p\n"
+              "by proving that\n"
+              "  ~s\n"
+              "never holds.",
+              [aeso_syntax:get_ann(file, Ann, ""),
+               aeso_syntax:get_ann(line, Ann, 0),
+               aeso_syntax:get_ann(col, Ann, 0),
+               aeso_pretty:pp(predicate, aeso_ast_refine_types:path_pred(Pred))
+              ]
+             );
+pp_error({overwrite, Id}) ->
+    io_lib:format("Illegal redefinition of the variable ~s at ~s ~p:~p",
+                  [aeso_pretty:pp(expr, Id),
+                   aeso_syntax:get_ann(file, Id, ""),
+                   aeso_syntax:get_ann(line, Id, 0),
+                   aeso_syntax:get_ann(col, Id, 0)
+                  ]
+                 );
+pp_error({entrypoint_arg_assump, {Name, Ann, T}}) ->
+    io_lib:format("The entrypoint ~s has got assumptions on its argument at ~s ~p:~p.\n"
+              "These assumptions won't be checked after the contract is deployed.\n"
+              "Please provide ~s an external type declaration and validate the data using\n"
+              "  `require : (bool, string) => unit` function.\n"
+              "The illegal type was\n"
+              "  ~s",
+              [Name,
+               aeso_syntax:get_ann(file, Ann, ""),
+               aeso_syntax:get_ann(line, Ann, 0),
+               aeso_syntax:get_ann(col, Ann, 0),
+               Name,
+               aeso_pretty:pp(type, T)
+              ]
+             );
+pp_error({refinement_errors, Errs}) ->
+    string:join([pp_error(E) || E <- Errs], "\n\n");
+pp_error(ErrBin) ->
+    io_lib:format("\nerror: ~s", [ErrBin]),
+    error(ErrBin).
+
+
+pp_context(none) ->
+    "";
+pp_context({app, Ann, {typed, _, Fun, _}, N}) ->
+    io_lib:format(
+      "arising from an application of ~p to its ~s argument",
+      [ aeso_pretty:pp(expr, Fun)
+      , case aeso_syntax:get_ann(format, Ann, prefix) of
+            prefix -> case abs(N rem 10) of
+                          1 -> integer_to_list(N) ++ "st";
+                          2 -> integer_to_list(N) ++ "nd";
+                          3 -> integer_to_list(N) ++ "rd";
+                          _ -> integer_to_list(N) ++ "th"
+                      end;
+            infix -> case N of
+                         1 -> "left";
+                         2 -> "right"
+                     end
+        end
+      ]);
+pp_context(then) ->
+    "arising from the assumption of the `if` condition";
+pp_context(else) ->
+    "arising from the negation of the `if` condition";
+pp_context({switch, N}) ->
+    io_lib:format(
+      "arising from the assumption of triggering of the ~s branch of `switch`",
+      case abs(N rem 10) of
+          1 -> integer_to_list(N) ++ "st";
+          2 -> integer_to_list(N) ++ "nd";
+          3 -> integer_to_list(N) ++ "rd";
+          _ -> integer_to_list(N) ++ "th"
+      end
+     ).
