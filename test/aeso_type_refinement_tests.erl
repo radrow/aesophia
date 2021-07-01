@@ -10,6 +10,7 @@
 -compile([export_all, nowarn_export_all]).
 
 -include_lib("eunit/include/eunit.hrl").
+-include("../src/aeso_ast_refine_types.hrl").
 
 setup() ->
     erlang:system_flag(backtrace_depth, 100),
@@ -47,9 +48,9 @@ refiner_test_group() ->
     [ {"Testing type refinement of " ++ ContractName,
        fun() ->
                try {run_refine("hagia/" ++ ContractName), Expect} of
-                   {{ok, AST}, {success, Assertions}} ->
+                   {{ok, {Env, AST}}, {success, Assertions}} ->
                        io:format("AST:\n~s\n\n", [aeso_pretty:pp(decls, AST)]),
-                       check_ast_refinement(AST, Assertions);
+                       check_ast_refinement(Env, AST, Assertions);
                    {{error, Err}, _} ->
                        io:format(aeso_ast_refine_types:pp_error(Err)),
                        error(Err)
@@ -65,31 +66,38 @@ run_refine(Name) ->
     RAst = aeso_ast_refine_types:refine_ast(TEnv, TAst),
     RAst.
 
-check_ast_refinement(AST, Assertions) ->
+check_ast_refinement(Env, AST, Assertions) ->
     [ case maps:get({Name, FName}, Assertions, unchecked) of
           unchecked -> ok;
-          ExType -> check_type(ExType, Type)
+          ExRetType -> check_type(Env, AST, ExRetType, Type)
       end
      || {_, _, {con, _, Name}, Defs} <- AST,
         {fun_decl, _, {id, _, FName}, Type} <- Defs
     ].
 
-check_type(ExQuals, {dep_fun_t, _, _, _, {refined_t, _, _, Quals}}) ->
-    ?assertEqual(ExQuals, aeso_pretty:pp(predicate, Quals)).
+-define(nu(), ?nu(?ann())).
+-define(nu_op(Op, Rel), ?op(?ann(), ?nu(), Op, Rel)).
+-define(id(V), {id, ?ann(), V}).
+-define(int(V), {int, ?ann(), V}).
 
-%% compilable_contracts() -> [ContractName].
-%%  The currently compilable contracts.
+check_type(Env, AST, ExRet, Fun = {dep_fun_t, Ann, Args, _}) ->
+    put(refiner_errors, []),
+    CS = aeso_ast_refine_types:split_constr(
+           [ {subtype, {test, 0}, ?ann(), Env, Fun, {dep_fun_t, Ann, Args, ExRet}}
+           ,  {subtype, {test, 0}, ?ann(), Env, {dep_fun_t, Ann, Args, ExRet}, Fun}
+           ]),
+    aeso_ast_refine_types:solve(Env, AST, CS),
+    case get(refiner_errors) of
+        [] -> ok;
+        Errs -> throw({refinement_errors, Errs})
+    end.
+
 compilable_contracts() ->
-    [ {"test",
-       {success,
-        #{{"Test", "f"} => something}
+    [ {"max",
+      {success,
+       #{{"C", "max"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('>=', ?id("a")), ?nu_op('>=', ?id("b"))])
+       , {"C", "trim"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('>=', ?int(0)), ?nu_op('>=', ?id("x"))])
        }
       }
-     %% , {"max",
-     %%  {success,
-     %%   #{{"C", "max"} => "$nu >= b && $nu >= a"
-     %%   , {"C", "trim"} => "$nu > -1 && $nu >= x"
-     %%   }
-     %%  }
-     %% }
+     }
     ].

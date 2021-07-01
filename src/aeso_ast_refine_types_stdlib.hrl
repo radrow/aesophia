@@ -58,10 +58,10 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], _, _}
                 [ {well_formed, constr_id(chain_spend), Env, ExprT}
                 , {subtype, constr_id(chain_spend), Ann, Env,
                    AmountT,
-                   refined(?int_t(Ann), [ ?op(Ann, nu(Ann), '=<', Balance)
-                                        , ?op(Ann, nu(Ann), '>=', ?int(Ann, 0))])}
+                   ?refined(?int_t(Ann), [ ?op(Ann, ?nu(Ann), '=<', Balance)
+                                        , ?op(Ann, ?nu(Ann), '>=', ?int(Ann, 0))])}
                 , {subtype, constr_id(chain_spend), Ann, Env,
-                   refined(?int_t(Ann), [?op(Ann, nu(Ann), '==', ?op(Ann, Balance, '-', Amount))]),
+                   ?refined(?int_t(Ann), [?op(Ann, ?nu(Ann), '==', ?op(Ann, Balance, '-', Amount))]),
                    NewBalanceT
                   }
                 | S4
@@ -77,7 +77,7 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], _, _}
                { ExprT
                , [ {well_formed, constr_id(list_is_empty), Env, ExprT}
                  , {subtype, constr_id(is_empty), Ann, Env,
-                    refined(?bool_t(Ann), [?op(Ann, nu(Ann), '==', ?op(Ann, L, '==', ?int(Ann, 0)))]),
+                    ?refined(?bool_t(Ann), [?op(Ann, ?nu(Ann), '==', ?op(Ann, L, '==', ?int(Ann, 0)))]),
                     ExprT}
                  | S1
                  ]
@@ -241,7 +241,7 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], _, _}
                {_, S1} = constr_expr(Env, From, S0),
                {_, S2} = constr_expr(Env, To, S1),
                ExprT = fresh_liquid(Env, "from_to", RetT),
-               ElemT = refined(?int_t(Ann), [?op(Ann, From, '=<', nu(Ann)), ?op(Ann, nu(Ann), '=<', To)]),
+               ElemT = ?refined(?int_t(Ann), [?op(Ann, From, '=<', ?nu(Ann)), ?op(Ann, ?nu(Ann), '=<', To)]),
                EnvEmpty = assert(?op(Ann, To, '<', From), Env),
                EnvSome = assert(?op(Ann, To, '>=', From), Env),
                LId = fresh_id(Ann, "from_to_l"),
@@ -265,7 +265,7 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], _, _}
                {_, S2} = constr_expr(Env, To, S1),
                {StepT, S3} = constr_expr(Env, Step, S2),
                ExprT = fresh_liquid(Env, "from_to_step", RetT),
-               ElemT = refined(?int_t(Ann), [?op(Ann, From, '=<', nu(Ann)), ?op(Ann, nu(Ann), '=<', To)]),
+               ElemT = ?refined(?int_t(Ann), [?op(Ann, From, '=<', ?nu(Ann)), ?op(Ann, ?nu(Ann), '=<', To)]),
                EnvEmpty = assert(?op(Ann, To, '<', From), Env),
                EnvSome = assert(?op(Ann, To, '>=', From), Env),
                LId = fresh_id(Ann, "from_to_l_step"),
@@ -278,7 +278,7 @@ constr_expr(Env, {app, Ann, {typed, _, {qid, _, [NS, Fun]}, {fun_t, _, [], _, _}
                     {dep_list_t, Ann, LId, ElemT,
                      [?op(Ann, LId, '==', ?op(Ann, ?op(Ann, ?op(Ann, To, '-', From), '/', Step), '+', ?int(Ann, 1)))]},
                     ExprT}
-                 , {subtype, constr_id(list_from_to_step), Ann, Env, StepT, refined(?int_t(Ann), [?op(Ann, nu(Ann), '>', ?int(Ann, 0))])}
+                 , {subtype, constr_id(list_from_to_step), Ann, Env, StepT, ?refined(?int_t(Ann), [?op(Ann, ?nu(Ann), '>', ?int(Ann, 0))])}
                  | S2
                  ]
                }
