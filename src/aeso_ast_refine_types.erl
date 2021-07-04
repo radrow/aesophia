@@ -586,8 +586,14 @@ register_ast_funs(AST, Env) ->
 
 register_funs(Env, Defs) ->
     [ begin
-          TypeDep = make_topfun(Env, FAnn, Id, Args),
-          {Name, TypeDep}
+          TypeDepDecl =
+              {dep_fun_t, _, [STArg, BArg|_], _} =
+              make_topfun(Env, FAnn, Id, Args),
+          TypeBase = base_type(TypeDepDecl),
+          {dep_fun_t, DFAnn, [_, _|RestArgs], RetT} = fresh_liquid(Env, Name, TypeBase),
+          TypeDepFresh = {dep_fun_t, DFAnn, [STArg, BArg|RestArgs], RetT},
+          ?DBG("KURWA ~p", [TypeDepFresh]),
+          {Name, TypeDepFresh}
       end
       || {letfun, FAnn, Id = {id, _, Name}, Args, _, _} <- Defs
     ].
@@ -1009,7 +1015,8 @@ constr_con(Env0, {Tag, Ann, Con, Defs}, S0)
 -spec constr_letfun(env(), letfun(), [constr()]) -> {fundecl(), [constr()]}.
 constr_letfun(Env0, {letfun, Ann, Id, Args, RetT, Body}, S0) ->
     PurifierST = init_purifier_st(?ann_of(RetT), Env0),
-    {_, _, GlobFunT = {dep_fun_t, _, GlobArgsT, GlobRetT}} = type_of(Env0, Id),
+    {_, _, GlobFunT} = type_of(Env0, Id),
+    DeclFunT = {dep_fun_t, _, DeclArgsT, DeclRetT} = make_topfun(Env0, Ann, Id, Args),
     Args0 = fresh_wildcards(Args),
     Args1 =
         [?typed(Arg, purify_type(ArgT, PurifierST)) || ?typed_p(Arg, ArgT) <- Args0],
@@ -1017,20 +1024,20 @@ constr_letfun(Env0, {letfun, Ann, Id, Args, RetT, Body}, S0) ->
         [init_state_var(Ann, state_t(Ann, Env0)), init_balance_var(Ann) | Args1],
     {ArgsT, _ArgsSubst} = fresh_liquid_args(Env0, Args2),
     Env1 = bind_args(ArgsT, Env0),
-    Env2 = ensure_args(GlobArgsT, Env1),
+    Env2 = ensure_args(DeclArgsT, Env1),
     Env3 =
         assert(
           [ ?op(Ann, Arg1, '==', Arg2)
            || {{dep_arg_t, _, Arg1, _}, {dep_arg_t, _, Arg2, {refined_t, _, _, _, _}}}
-                  <- lists:zip(ArgsT, GlobArgsT), name(Arg1) /= name(Arg2)
+                  <- lists:zip(ArgsT, DeclArgsT), name(Arg1) /= name(Arg2)
           ] ++
           [ ?op(Ann, Arg1, '==', Arg2)
             || {{dep_arg_t, _, Arg1, _}, {dep_arg_t, _, Arg2, {dep_list_t, _, _, _, _}}}
-                   <- lists:zip(ArgsT, GlobArgsT), name(Arg1) /= name(Arg2)
+                   <- lists:zip(ArgsT, DeclArgsT), name(Arg1) /= name(Arg2)
           ] ++
           [ ?op(Ann, Arg1, '==', Arg2)
             || {{dep_arg_t, _, Arg1, _}, {dep_arg_t, _, Arg2, {dep_variant_t, _, _, _, _}}}
-                   <- lists:zip(ArgsT, GlobArgsT), name(Arg1) /= name(Arg2)
+                   <- lists:zip(ArgsT, DeclArgsT), name(Arg1) /= name(Arg2)
           ],
           Env2),
     Body1 = a_normalize(Body),
@@ -1047,11 +1054,13 @@ constr_letfun(Env0, {letfun, Ann, Id, Args, RetT, Body}, S0) ->
                 end
         end,
     Body3 = a_normalize(Body2),
-    %% ?DBG("PURIFIED\n~s", [aeso_pretty:pp(expr, Body3)]),
-    %% ?DBG("PURIFIED\n~p", [Body3]),
+    ?DBG("PURIFIED\n~s", [aeso_pretty:pp(expr, Body3)]),
+    ?DBG("PURIFIED\n~p", [Body3]),
     {BodyT, S1} = constr_expr(Env3, Body3, S0),
     InnerFunT = {dep_fun_t, Ann, ArgsT, BodyT},
-    S3 = [ {subtype, constr_id(letfun_top), Ann, Env3, GlobRetT, BodyT}
+    S3 = [ {subtype, constr_id(letfun_top_decl), Ann, Env3, DeclRetT, BodyT}
+         , {subtype, constr_id(lefun_top_glob), Ann, Env0, InnerFunT, GlobFunT}
+         , {well_formed, constr_id(letfun_glob), Env0, DeclFunT}
          , {well_formed, constr_id(letfun_glob), Env0, GlobFunT}
          , {well_formed, constr_id(letfun_int), Env0, InnerFunT}
          | S1
@@ -1118,13 +1127,15 @@ constr_expr_list(Env, [H|T], Acc, S0) ->
 constr_expr(Env, ?typed_p(Expr, Type), S0) ->
     Base = base_type(Type),
     case Base == Type of
-        true -> constr_expr(Env, Expr, Type, S0);
+        true ->
+            %% Nothing interesting
+            constr_expr(Env, Expr, Type, S0);
         false ->
             DType = fresh_liquid(Env, "typed", Type),
             {ExprT, S1} = constr_expr(Env, Expr, Base, S0),
             {ExprT,
-             %% Declared type <: Inferred type
-             [ {subtype, constr_id(typed), ?ann_of(Type), Env, DType, ExprT}
+             %% Inferred type <: Declared type, because we can treat Cat as and Animal
+             [ {subtype, constr_id(typed), ?ann_of(Type), Env, ExprT, DType}
              , {well_formed, constr_id(typed), Env, DType}
              | S1
              ]
@@ -1932,7 +1943,6 @@ split_constr1(C = {subtype, Ref, Ann, Env0, SubT, SupT}) ->
               ]
              );
         _ ->
-            ?DBG("SKIP CONSTR\n~p\n\n~p", [SubT, SupT]),
             [C]
     end;
 split_constr1(C = {well_formed, Ref, Env0, T}) ->

@@ -16,6 +16,7 @@
         , infer/2
         , unfold_types_in_type/3
         , pp_type/2
+        , init_env/1
         , lookup_env/4
         ]).
 

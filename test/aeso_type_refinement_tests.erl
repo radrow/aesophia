@@ -12,6 +12,11 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("../src/aeso_ast_refine_types.hrl").
 
+-define(nu(), ?nu(?ann())).
+-define(nu_op(Op, Rel), ?op(?ann(), ?nu(), Op, Rel)).
+-define(id(V), {id, ?ann(), V}).
+-define(int(V), {int, ?ann(), V}).
+
 setup() ->
     erlang:system_flag(backtrace_depth, 100),
     aeso_smt:start_z3(),
@@ -36,10 +41,10 @@ smt_solver_test_group() ->
       , fun() ->
                 ?assert(aeso_ast_refine_types:impl_holds(
                           aeso_ast_refine_types:bind_var(
-                            {id, [], "x"}, {id, [], "int"},
-                            aeso_ast_refine_types:init_env(undefined)),
+                            ?nu(), ?id("int"),
+                            aeso_ast_refine_types:init_env(aeso_ast_infer_types:init_env([]))),
                           [],
-                          [{app, [], {'==', []}, [{id, [], "x"}, {id, [], "x"}]}]))
+                          [?nu_op('==', ?nu())]))
         end
       }
     ].
@@ -76,11 +81,6 @@ check_ast_refinement(Env, AST, Assertions) ->
         {fun_decl, _, {id, _, FName}, Type} <- Defs
     ].
 
--define(nu(), ?nu(?ann())).
--define(nu_op(Op, Rel), ?op(?ann(), ?nu(), Op, Rel)).
--define(id(V), {id, ?ann(), V}).
--define(int(V), {int, ?ann(), V}).
-
 check_type(Env, AST, ExRet, Fun = {dep_fun_t, Ann, Args, _}) ->
     put(refiner_errors, []),
     CS = aeso_ast_refine_types:split_constr(
@@ -94,7 +94,11 @@ check_type(Env, AST, ExRet, Fun = {dep_fun_t, Ann, Args, _}) ->
     end.
 
 compilable_contracts() ->
-    [
+    [ {"simple",
+       {success,
+        #{{"C", "f"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?int(123))])}
+       }
+      }
      %%  {"max",
      %%  {success,
      %%   #{{"C", "max"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('>=', ?id("a")), ?nu_op('>=', ?id("b"))])
@@ -126,13 +130,13 @@ compilable_contracts() ->
     %%     }
     %%    }
       %%   }
-     {"types",
-       {success,
-        #{{"C", "test_i"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?int(123))])
-        , {"C", "test_ii"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?int(123))])
-        }
-       }
-      }
+     %% {"types",
+     %%   {success,
+     %%    #{{"C", "test_i"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?int(123))])
+     %%    , {"C", "test_ii"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?int(123))])
+     %%    }
+     %%   }
+     %%  }
     %% , {"args",
     %%    {success,
     %%     #{{"C", "f"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('=<', ?id("n"))])
