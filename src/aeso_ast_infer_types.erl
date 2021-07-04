@@ -1181,15 +1181,15 @@ check_type(Env, T = {dep_variant_t, Ann, TId, Base, undefined, Constrs}, Arity) 
           end
           || ConstrOld = {constr_t, _, CNameOld, _} <- TrueConstrs
         ],
-    OnQid = fun(A) -> qid(aeso_syntax:get_ann(QId), lists:droplast(qname(QId)) ++ qname(A)) end,
+    OnQcon = fun(A) -> qcon(aeso_syntax:get_ann(QId), lists:droplast(qname(QId)) ++ qname(A)) end,
     TagPred =
         case Constrs of
             [] -> [{bool, [], false}];
             [{constr_t, CAnn, Con, Args}] ->
-                [{is_tag, CAnn, TId, OnQid(Con), Args}];
+                [{is_tag, CAnn, TId, OnQcon(Con), Args, Base1}];
             _ ->
                 [ {app, Ann, {'!', Ann},
-                   [{is_tag, CAnn, TId, OnQid(TrueCon), Args}]}
+                   [{is_tag, CAnn, TId, OnQcon(TrueCon), Args, Base1}]}
                  || {constr_t, CAnn, TrueCon, Args} <- TrueConstrs,
                     lists:all(
                       fun({constr_t, _, Con, _}) ->
@@ -2501,10 +2501,16 @@ unfold_types_in_type(Env, Id, Options) when ?is_type_id(Id) ->
     end;
 unfold_types_in_type(Env, {field_t, Attr, Name, Type}, Options) ->
     {field_t, Attr, Name, unfold_types_in_type(Env, Type, Options)};
+unfold_types_in_type(Env, {dep_field_t, Attr, Name, Type}, Options) ->
+    {dep_field_t, Attr, Name, unfold_types_in_type(Env, Type, Options)};
 unfold_types_in_type(Env, {constr_t, Ann, Con, Types}, Options) ->
     {constr_t, Ann, Con, unfold_types_in_type(Env, Types, Options)};
+unfold_types_in_type(Env, {dep_constr_t, Ann, Con, Types}, Options) ->
+    {dep_constr_t, Ann, Con, unfold_types_in_type(Env, Types, Options)};
 unfold_types_in_type(Env, {named_arg_t, Ann, Con, Types, Default}, Options) ->
     {named_arg_t, Ann, Con, unfold_types_in_type(Env, Types, Options), Default};
+unfold_types_in_type(Env, {dep_arg_t, Ann, Con, Types}, Options) ->
+    {dep_arg_t, Ann, Con, unfold_types_in_type(Env, Types, Options)};
 unfold_types_in_type(Env, T, Options) when is_tuple(T) ->
     list_to_tuple(unfold_types_in_type(Env, tuple_to_list(T), Options));
 unfold_types_in_type(Env, [H|T], Options) ->
@@ -2678,6 +2684,12 @@ occurs_check1(R, {dep_record_t, _, _, T}) ->
     occurs_check1(R, T);
 occurs_check1(R, {dep_variant_t, _, _, _, _, T}) ->
     occurs_check1(R, T);
+occurs_check1(R, {constr_t, _, _, T}) ->
+    occurs_check(R, T);
+occurs_check1(R, {dep_constr_t, _, _, T}) ->
+    occurs_check(R, T);
+occurs_check1(R, {dep_field_t, _, _, T}) ->
+    occurs_check(R, T);
 occurs_check1(R, {dep_list_t, _, _, T, _}) ->
     occurs_check1(R, T);
 occurs_check1(_, []) -> false.

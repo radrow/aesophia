@@ -365,13 +365,13 @@ dep_type({dep_variant_t, _, _, Type, Pred, Constrs}) ->
               con -> Tag;
               qcon -> lists:last(Tag)
           end
-         || {is_tag, _, _, {HEAD, _, Tag}, _} <- PredList],
+         || {is_tag, _, _, {HEAD, _, Tag}, _, _} <- PredList],
     NotIsTags =
         [ case HEAD of
               con -> Tag;
               qcon -> lists:last(Tag)
           end
-         || {app, _, {'!', _}, [{is_tag, _, _, {HEAD, _, Tag}, _}]} <- PredList],
+         || {app, _, {'!', _}, [{is_tag, _, _, {HEAD, _, Tag}, _, _}]} <- PredList],
     Constrs1 =
         case IsTags of
             [] -> [ Con
@@ -599,7 +599,7 @@ expr_p(_, E = {qcon, _, _}) -> name(E);
 expr_p(_, {Op, _}) when is_atom(Op) ->
     paren(text(atom_to_list(Op)));
 expr_p(_, {lvalue, _, LV})  -> lvalue(LV);
-expr_p(P, {is_tag, _, What, Con, Args}) ->
+expr_p(P, {is_tag, _, What, Con, Args, _}) ->
     beside(
       [ expr_p(P, What), text("==")
       , app(P, Con, [{id, [], "_"} || _ <- Args])

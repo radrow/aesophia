@@ -23,13 +23,13 @@ unsetup(_) ->
     ok.
 
 hagia_test_() ->
-    {inorder,
-     {foreach, local, fun setup/0, fun unsetup/1,
-      [ {timeout, 5, smt_solver_test_group()}
-      , {timeout, 40, refiner_test_group()}
-      ]
-     }
-    }.
+     {inorder,
+      {foreach, local, fun setup/0, fun unsetup/1,
+       [ {timeout, 5, smt_solver_test_group()}
+       , {timeout, 1000000, refiner_test_group()}
+       ]
+      }
+     }.
 
 smt_solver_test_group() ->
     [ { "x == x"
@@ -45,18 +45,19 @@ smt_solver_test_group() ->
     ].
 
 refiner_test_group() ->
-    [ {"Testing type refinement of " ++ ContractName,
-       fun() ->
-               try {run_refine("hagia/" ++ ContractName), Expect} of
-                   {{ok, {Env, AST}}, {success, Assertions}} ->
-                       io:format("AST:\n~s\n\n", [aeso_pretty:pp(decls, AST)]),
-                       check_ast_refinement(Env, AST, Assertions);
-                   {{error, Err}, _} ->
-                       io:format(aeso_ast_refine_types:pp_error(Err)),
-                       error(Err)
-               catch E:T:S -> io:format("Caught:\n~p: ~p\nstack:\n~p\n", [E, T, S]), error(T)
-               end
-       end} || {ContractName, Expect} <- compilable_contracts()].
+    [ {"Testing type refinement of the " ++ ContractName ++ ".aes contract",
+       {timeout, 60,
+        fun() ->
+                try {run_refine("hagia/" ++ ContractName), Expect} of
+                    {{ok, {Env, AST}}, {success, Assertions}} ->
+                        io:format("AST:\n~s\n\n", [aeso_pretty:pp(decls, AST)]),
+                        check_ast_refinement(Env, AST, Assertions);
+                    {{error, Err}, _} ->
+                        io:format(aeso_ast_refine_types:pp_error(Err)),
+                        error(Err)
+                catch E:T:S -> io:format("Caught:\n~p: ~p\nstack:\n~p\n", [E, T, S]), error(T)
+                end
+        end}} || {ContractName, Expect} <- compilable_contracts()].
 
 
 run_refine(Name) ->
@@ -84,7 +85,7 @@ check_type(Env, AST, ExRet, Fun = {dep_fun_t, Ann, Args, _}) ->
     put(refiner_errors, []),
     CS = aeso_ast_refine_types:split_constr(
            [ {subtype, {test, 0}, ?ann(), Env, Fun, {dep_fun_t, Ann, Args, ExRet}}
-           ,  {subtype, {test, 0}, ?ann(), Env, {dep_fun_t, Ann, Args, ExRet}, Fun}
+           , {subtype, {test, 0}, ?ann(), Env, {dep_fun_t, Ann, Args, ExRet}, Fun}
            ]),
     aeso_ast_refine_types:solve(Env, AST, CS),
     case get(refiner_errors) of
@@ -93,11 +94,49 @@ check_type(Env, AST, ExRet, Fun = {dep_fun_t, Ann, Args, _}) ->
     end.
 
 compilable_contracts() ->
-    [ {"max",
-      {success,
-       #{{"C", "max"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('>=', ?id("a")), ?nu_op('>=', ?id("b"))])
-       , {"C", "trim"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('>=', ?int(0)), ?nu_op('>=', ?id("x"))])
+    [
+     %%  {"max",
+     %%  {success,
+     %%   #{{"C", "max"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('>=', ?id("a")), ?nu_op('>=', ?id("b"))])
+     %%   , {"C", "trim"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('>=', ?int(0)), ?nu_op('>=', ?id("x"))])
+     %%   }
+     %%  }
+     %% }
+    %% , {"switch",
+    %%    {success,
+    %%     #{{"C", "f"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?id("x"))])
+    %%     , {"C", "g"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?int(2))])
+    %%     }
+    %%    }
+    %%   }
+    %% , {"require",
+      %%  {success,
+      %%   #{{"C", "f1"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?int(0))])
+      %%   , {"C", "f2"} => ?refined(?nu(), ?int_t(?ann()),
+      %%                             [?nu_op('=<', ?id("x")), ?nu_op('>=', ?int(0)),
+      %%                              ?nu_op('=<', ?int(1)),  ?nu_op('!=', ?op(?ann(), ?id("x"), '-', ?int(1)))
+      %%                             ])
+      %%   }
+      %%  }
+      %% }
+    %% , {"balance",
+    %%    {success,
+    %%     #{{"C", "f1"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?int(0))])
+    %%     , {"C", "f2"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?int(0))])
+    %%     }
+    %%    }
+      %%   }
+     {"types",
+       {success,
+        #{{"C", "test_i"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?int(123))])
+        , {"C", "test_ii"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?int(123))])
+        }
        }
       }
-     }
+    %% , {"args",
+    %%    {success,
+    %%     #{{"C", "f"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('=<', ?id("n"))])
+    %%     }
+    %%    }
+    %%   }
     ].

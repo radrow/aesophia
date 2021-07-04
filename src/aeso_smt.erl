@@ -9,9 +9,11 @@
                  | {app, string(), [formula()]}
                    .
 
+-define(TIMEOUT, 10000).
+
 start_z3() ->
     PortOpts = [exit_status, {line, 100000}],
-    Port = open_port({spawn, "z3 -in -t:10000"}, PortOpts),
+    Port = open_port({spawn, "z3 -in -t:" ++ integer_to_list(?TIMEOUT)}, PortOpts),
     persistent_term:put(z3_connection, Port),
     send_z3_success({app, "set-option", [{param, "print-success"}, {var, "true"}]}),
     ok.
@@ -43,7 +45,7 @@ check_sat() ->
                 "unsat" -> false;
                 X -> throw({smt_error, X})
             end
-    after 5000 -> {error, timeout}
+    after ?TIMEOUT * 2 -> {error, timeout}
     end.
 
 send_z3_success(Query) ->

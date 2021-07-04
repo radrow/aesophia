@@ -17,6 +17,8 @@
          run_parser/2,
          run_parser/3]).
 
+-include("aeso_ast_refine_types.hrl").
+
 -include("aeso_parse_lib.hrl").
 -import(aeso_parse_lib, [current_file/0, set_current_file/1]).
 
@@ -602,7 +604,7 @@ dep_record_t(Ann, Base, Fields) ->
     {dep_record_t, Ann, Base, Fields}.
 
 dep_variant_t(Ann, Base, {variant_t, Constrs}) ->
-    {dep_variant_t, Ann, aeso_ast_refine_types:nu(Ann), Base, undefined, Constrs}.
+    {dep_variant_t, Ann, ?nu(Ann), Base, undefined, Constrs}.
 
 dep_list_t(Ann, Id, ElemT, LenPred) ->
     {dep_list_t, Ann, Id, ElemT, LenPred}.
