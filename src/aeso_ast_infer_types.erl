@@ -1157,18 +1157,28 @@ check_type(Env, T = {dep_variant_t, Ann, TId, Base, undefined, Constrs}, Arity) 
              {app_t, _, I, _} -> I;
              _ -> Base1
          end,
+    Args = case Base1 of
+             {app_t, _, _, A} -> A;
+             _ -> []
+         end,
     {QId, TrueConstrs} =
         case lookup_type(Env, Id) of
             {Q, {QAnn, {_, {variant_t, Cs}}}} -> {{qid, QAnn, Q}, Cs};
+            {["option"], {QAnn, {builtin, _}}} ->
+                {{qid, QAnn, ["option"]},
+                 [ {dep_constr_t, QAnn, {con, QAnn, "None"}, []}
+                 , {dep_constr_t, QAnn, {con, QAnn, "Some"}, Args}
+                 ]
+                }; %% TODO other types
             _ -> type_error({not_a_variant_type, Id, T}),
                  {Id, []}
         end,
     [ check_expr(Env, Con,
-            case Args of
+            case CArgs of
                 [] -> Base1;
-                _ -> {fun_t, CAnn, [], Args, Base1}
+                _ -> {fun_t, CAnn, [], CArgs, Base1}
             end)
-      || {constr_t, CAnn, Con, Args} <- Constrs
+      || {constr_t, CAnn, Con, CArgs} <- Constrs
     ],
     Constrs1 =
         [ case [ ConstrNew

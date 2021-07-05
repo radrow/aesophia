@@ -99,11 +99,11 @@
      | tvar().
 -type liquid_type() :: dep_type(predicate()).
 
--type dep_constr_t(Qual) :: {dep_constr_t, ann(), con(), [dep_type(Qual)]}.
+-type dep_constr_t(Qual) :: {constr_t, ann(), con(), [dep_type(Qual)]}.
 
 -type dep_arg_t(Qual) :: {dep_arg_t, ann(), id(), dep_type(Qual)}.
 
--type dep_field_t(Qual) :: {dep_field_t, ann(), id(), dep_type(Qual)}.
+-type dep_field_t(Qual) :: {field_t, ann(), id(), dep_type(Qual)}.
 
 -type named_arg_t() :: {named_arg_t, ann(), id(), type(), expr()}.
 

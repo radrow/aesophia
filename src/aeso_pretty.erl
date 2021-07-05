@@ -375,12 +375,12 @@ dep_type({dep_variant_t, _, _, Type, Pred, Constrs}) ->
     Constrs1 =
         case IsTags of
             [] -> [ Con
-                   || Con = {dep_constr_t, _, {con, _, CName}, _} <- Constrs,
+                   || Con = {constr_t, _, {con, _, CName}, _} <- Constrs,
                       not lists:member(CName, NotIsTags)
                   ];
             _ ->
                 [ Con
-                  || Con = {dep_constr_t, _, {con, _, CName}, _} <- Constrs,
+                  || Con = {constr_t, _, {con, _, CName}, _} <- Constrs,
                      lists:member(CName, IsTags)
                 ]
         end,
@@ -388,11 +388,12 @@ dep_type({dep_variant_t, _, _, Type, Pred, Constrs}) ->
       [ text("{")
       , hsep(
           [ type(Type)
+          , text(io_lib:format("===~p", [Pred]))
           , text("<:")
           , if is_list(Pred) -> prettypr:empty();
                true -> predicate(Pred)
             end
-          , par(punctuate(text(" |"), lists:map(fun dep_constructor_t/1, Constrs1)))
+          , par(punctuate(text(" |"), lists:map(fun constructor_t/1, Constrs1)))
           ])
       , text("}")
       ]);
@@ -421,10 +422,6 @@ dep_type({dep_list_t, _, Id, Elem, LenPred}) ->
      );
 dep_type(T = {tvar, _, _}) ->
     name(T).
-
-dep_constructor_t({dep_constr_t, _, C, []}) -> name(C);
-dep_constructor_t({dep_constr_t, _, C, Args}) ->
-    hsep(name(C), args_type(Args)).
 
 subst(Subst) ->
     beside(

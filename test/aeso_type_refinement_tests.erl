@@ -28,13 +28,14 @@ unsetup(_) ->
     ok.
 
 hagia_test_() ->
+    {timeout, 100000000,
      {inorder,
       {foreach, local, fun setup/0, fun unsetup/1,
        [ {timeout, 5, smt_solver_test_group()}
        , {timeout, 1000000, refiner_test_group()}
        ]
       }
-     }.
+     }}.
 
 smt_solver_test_group() ->
     [ { "x == x"
@@ -130,13 +131,13 @@ compilable_contracts() ->
     %%     }
     %%    }
       %%   }
-     %% {"types",
-     %%   {success,
-     %%    #{{"C", "test_i"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?int(123))])
-     %%    , {"C", "test_ii"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?int(123))])
-     %%    }
-     %%   }
-     %%  }
+    %% , {"types",
+    %%    {success,
+    %%     #{{"C", "test_i"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?int(123))])
+    %%     , {"C", "test_ii"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?int(123))])
+    %%     }
+    %%    }
+    %%   }
     %% , {"args",
     %%    {success,
     %%     #{{"C", "f"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('=<', ?id("n"))])
