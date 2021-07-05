@@ -1166,8 +1166,8 @@ check_type(Env, T = {dep_variant_t, Ann, TId, Base, undefined, Constrs}, Arity) 
             {Q, {QAnn, {_, {variant_t, Cs}}}} -> {{qid, QAnn, Q}, Cs};
             {["option"], {QAnn, {builtin, _}}} ->
                 {{qid, QAnn, ["option"]},
-                 [ {dep_constr_t, QAnn, {con, QAnn, "None"}, []}
-                 , {dep_constr_t, QAnn, {con, QAnn, "Some"}, Args}
+                 [ {constr_t, QAnn, {con, QAnn, "None"}, []}
+                 , {constr_t, QAnn, {con, QAnn, "Some"}, Args}
                  ]
                 }; %% TODO other types
             _ -> type_error({not_a_variant_type, Id, T}),
@@ -2512,12 +2512,8 @@ unfold_types_in_type(Env, Id, Options) when ?is_type_id(Id) ->
     end;
 unfold_types_in_type(Env, {field_t, Attr, Name, Type}, Options) ->
     {field_t, Attr, Name, unfold_types_in_type(Env, Type, Options)};
-unfold_types_in_type(Env, {dep_field_t, Attr, Name, Type}, Options) ->
-    {dep_field_t, Attr, Name, unfold_types_in_type(Env, Type, Options)};
 unfold_types_in_type(Env, {constr_t, Ann, Con, Types}, Options) ->
     {constr_t, Ann, Con, unfold_types_in_type(Env, Types, Options)};
-unfold_types_in_type(Env, {dep_constr_t, Ann, Con, Types}, Options) ->
-    {dep_constr_t, Ann, Con, unfold_types_in_type(Env, Types, Options)};
 unfold_types_in_type(Env, {named_arg_t, Ann, Con, Types, Default}, Options) ->
     {named_arg_t, Ann, Con, unfold_types_in_type(Env, Types, Options), Default};
 unfold_types_in_type(Env, {dep_arg_t, Ann, Con, Types}, Options) ->
@@ -2629,7 +2625,7 @@ unify1(Env, {dep_record_t, _, A, _}, B, When) ->
     unify1(Env, A, B, When);
 unify1(Env, A, {dep_variant_t, _, _, B, _, _}, When) ->
     unify1(Env, A, B, When);
-unify1(Env, {dep_variant_t, _, _, A, _}, B, When) ->
+unify1(Env, {dep_variant_t, _, _, A, _, _}, B, When) ->
     unify1(Env, A, B, When);
 unify1(Env, A, {dep_list_t, Ann, _, B, _}, When) ->
     unify1(Env, A, {app_t, Ann, {id, Ann, "list"}, [B]}, When);
@@ -2696,10 +2692,6 @@ occurs_check1(R, {dep_record_t, _, _, T}) ->
 occurs_check1(R, {dep_variant_t, _, _, _, _, T}) ->
     occurs_check1(R, T);
 occurs_check1(R, {constr_t, _, _, T}) ->
-    occurs_check(R, T);
-occurs_check1(R, {dep_constr_t, _, _, T}) ->
-    occurs_check(R, T);
-occurs_check1(R, {dep_field_t, _, _, T}) ->
     occurs_check(R, T);
 occurs_check1(R, {dep_list_t, _, _, T, _}) ->
     occurs_check1(R, T);

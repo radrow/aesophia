@@ -753,7 +753,7 @@ fresh_liquid(Env, Variance, _, {dep_record_t, Ann, Rec, Fields}) ->
     };
 fresh_liquid(Env, Variance, Hint, {dep_variant_t, Ann, Id, Type, TagPred, Constrs}) ->
     {dep_variant_t, Ann, Id, Type, TagPred,
-     [ {dep_constr_t, CAnn, Con,
+     [ {constr_t, CAnn, Con,
         fresh_liquid(Env, Variance, Hint ++ "_" ++ name(Con), Vals)}
        || {_CONSTR_HEAD, CAnn, Con, Vals} <- Constrs
      ]
@@ -818,7 +818,7 @@ fresh_liquid(Env, Variance, Hint,
                 {variant_t, Constrs} ->
                     Id = fresh_id(Ann, Hint),
                     DepConstrs =
-                        [ {dep_constr_t, CAnn, Con,
+                        [ {constr_t, CAnn, Con,
                            fresh_liquid(Env, Variance, Hint ++ "_" ++ name(Con),
                                         apply_subst(Subst, Vals))}
                           || {constr_t, CAnn, Con, Vals} <- Constrs
@@ -893,7 +893,7 @@ fresh_liquid_args(Env, Variance, [Arg|Rest]) ->
 
 fresh_liquid_field(Env, Variance, _, Id, Type) ->
     {{dep_arg_t, A, I, DT}, _} = fresh_liquid_arg(Env, Variance, Id, Type),
-    {dep_field_t, A, I, DT}.
+    {field_t, A, I, DT}.
 
 -spec switch_variance(variance()) -> variance().
 switch_variance(covariant) ->
@@ -1125,7 +1125,7 @@ constr_expr(Env, ?typed_p(Expr, Type), S0) ->
             DType = fresh_liquid(Env, "typed", Type),
             {ExprT, S1} = constr_expr(Env, Expr, Base, S0),
             {ExprT,
-             %% Inferred type <: Declared type, because we can treat Cat as and Animal
+             %% Inferred type <: Declared type, because the user can generalize Cat to Animal
              [ {subtype, constr_id(typed), ?ann_of(Type), Env, ExprT, DType}
              , {well_formed, constr_id(typed), Env, DType}
              | S1
@@ -1209,7 +1209,7 @@ constr_expr(Env, {record, Ann, FieldVals}, T, S0) ->
         lists:unzip([{Field, Val} || {field, _, [{proj, _, Field}], Val} <- FieldVals]),
     {ValsT, S1} = constr_expr_list(Env, Vals, S0),
     {{dep_record_t, Ann, T,
-      [{dep_field_t, ?ann_of(Field), Field, ValT}
+      [{field_t, ?ann_of(Field), Field, ValT}
        || {Field, ValT} <- lists:zip(Fields, ValsT)]},
      S1
     };
@@ -1328,7 +1328,7 @@ constr_expr(Env, {app, Ann, ?typed_p(QCon = {qcon, _, QName}), Args}, Type, S0) 
     TypeSubst = lists:zip(DeclaredTypeArgs, AppliedTypeArgs),
 
     DepConstrs =
-        [ {dep_constr_t, CAnn, Con,
+        [ {constr_t, CAnn, Con,
            case lists:last(QName) == name(Con) of
                true  -> ArgsT;
                false -> [?refined(Arg, [?bool(CAnn, false)]) || Arg <- ConArgs]
@@ -1403,7 +1403,7 @@ constr_expr(Env, {proj, Ann, Rec, Field}, T, S0) ->
     {{dep_record_t, _, _, Fields}, S1} = constr_expr(Env, Rec, S0),
     [FieldT] =
         [ RecFieldT
-         || {dep_field_t, _, RecFieldName, RecFieldT} <- Fields,
+         || {field_t, _, RecFieldName, RecFieldT} <- Fields,
             name(Field) == name(RecFieldName)
         ],
     {ExprT,
@@ -1536,7 +1536,7 @@ match_to_pattern(Env, {tuple, _, Pats}, Expr, {tuple_t, _, Types}, Pred) ->
      );
 match_to_pattern(Env, {record, _, Fields}, Expr, {dep_record_t, _, Type, FieldsT}, Pred) ->
     FieldTypes =
-        [{dep_field_t, Ann, Field, FieldT} || {{id, Ann, Field}, FieldT} <- FieldsT],
+        [{field_t, Ann, Field, FieldT} || {{id, Ann, Field}, FieldT} <- FieldsT],
     Qid = case Type of
               {qid, _, _} -> Type;
               {app_t, _, Q, _} -> Q
@@ -1563,7 +1563,7 @@ match_to_pattern(Env, {app, Ann, ?typed_p(QCon = {qcon, _, QName}), Args},
     N = length(Args),
     [ArgTypes] =
         [ ConArgs
-         || {dep_constr_t, _, {con, _, CName}, ConArgs} <- Constrs,
+         || {constr_t, _, {con, _, CName}, ConArgs} <- Constrs,
             lists:last(QName) == CName
         ],
     Pred1 = [{is_tag, Ann, Expr, QCon, ArgTypes, Type}|Pred0],
@@ -1665,12 +1665,18 @@ plus_int_qualifiers(SelfId, Int, Thing) ->
 var_int_qualifiers(SelfId, Var) ->
     int_qualifiers(SelfId, Var) ++ plus_int_qualifiers(SelfId, ?int(?ann_of(SelfId), 1), Var).
 
-inst_pred_variant_tag(SelfId, Qid, Type, Constrs, Args) ->
-    [ {is_tag, ?ann_of(SelfId), SelfId, qcon(?ann_of(Con), lists:droplast(qname(Qid)) ++ [name(Con)]), Args, Type}
-      || {constr_t, _, Con, _} <- Constrs
+inst_pred_variant_tag(SelfId, Qid, Type, Constrs, Subst) ->
+    [ {is_tag, ?ann_of(SelfId), SelfId,
+       qcon(?ann_of(Con), lists:droplast(qname(Qid)) ++ qname(Con)),
+       apply_subst(Subst, Args),
+       apply_subst(Subst, Type)}
+      || {constr_t, _, Con, Args} <- Constrs
     ] ++
-    [ ?op(?ann_of(SelfId), '!', {is_tag, ?ann_of(SelfId), SelfId, qcon(?ann_of(Con), lists:droplast(qname(Qid)) ++ [name(Con)]), Args, Type})
-      || {constr_t, _, Con, _} <- Constrs
+    [ ?op(?ann_of(SelfId), '!', {is_tag, ?ann_of(SelfId), SelfId,
+                                 qcon(?ann_of(Con), lists:droplast(qname(Qid)) ++ qname(Con)),
+                                 apply_subst(Subst, Args),
+                                 apply_subst(Subst, Type)})
+      || {constr_t, _, Con, Args} <- Constrs
     ].
 
 inst_pred_int(Env, SelfId) ->
@@ -1732,19 +1738,19 @@ inst_pred(Env = #env{tc_env = TCEnv}, SelfId, BaseT) ->
             case lookup_type(Env, BaseT) of
                 {_, _, {[], {variant_t, Constrs}}} ->
                     inst_pred_variant_tag(
-                      SelfId, BaseT,
-                      aeso_ast_infer_types:unfold_types_in_type(TCEnv, Constrs, []), [], BaseT);
+                      SelfId, BaseT, BaseT, aeso_ast_infer_types:unfold_types_in_type(TCEnv, Constrs, []), []);
                 X -> error({todo, {inst_pred, X}})
             end;
         {app_t, _, Qid = {qid, _, _}, Args} ->
             case lookup_type(Env, Qid) of
                 {_, _, {AppArgs, {variant_t, Constrs}}} ->
+                    Subst = lists:zip(Args, AppArgs),
                     inst_pred_variant_tag(
                       SelfId,
                       Qid,
-                      apply_subst(lists:zip(Args, AppArgs), aeso_ast_infer_types:unfold_types_in_type(TCEnv, Constrs, [])),
-                      Args,
-                      BaseT
+                      BaseT,
+                      aeso_ast_infer_types:unfold_types_in_type(TCEnv, Constrs, []),
+                      Subst
                      );
                 X -> error({todo, {inst_pred, X}})
             end;
@@ -1826,7 +1832,7 @@ type_binds_pred(Assg, Access, TB) ->
                        Assg,
                        fun(X) -> {proj, Ann, Access(Var), X} end,
                        [{qid(FAnn, QName ++ [name(Field)]), T}
-                        || {dep_field_t, FAnn, Field, T} <- Fields]
+                        || {field_t, FAnn, Field, T} <- Fields]
                       );
                  {dep_variant_t, _, Id, VT, Tag, Constrs} ->
                      QName = case VT of
@@ -1847,7 +1853,7 @@ type_binds_pred(Assg, Access, TB) ->
                                  Args
                               )
                               )
-                             || {dep_constr_t, CAnn, Con, Args} <- Constrs
+                             || {constr_t, CAnn, Con, Args} <- Constrs
                            ]),
                      TagPred ++ ConPred;
                  {dep_list_t, Ann, Id, ElemT, LenPred} ->
@@ -1905,7 +1911,7 @@ split_constr1(C = {subtype, Ref, Ann, Env0, SubT, SupT}) ->
             FieldsSup1 = lists:keysort(3, FieldsSup),
             split_constr(
               [ {subtype, Ref, Ann, Env0, FTSub, FTSup}
-               || {{dep_field_t, _, _, FTSub}, {dep_field_t, _, _, FTSup}} <- lists:zip(FieldsSub1, FieldsSup1)
+               || {{field_t, _, _, FTSub}, {field_t, _, _, FTSup}} <- lists:zip(FieldsSub1, FieldsSup1)
               ]
              );
         { {dep_variant_t, _, IdSub, TypeSub, TagSub, ConstrsSub}
@@ -1913,8 +1919,8 @@ split_constr1(C = {subtype, Ref, Ann, Env0, SubT, SupT}) ->
         } ->
             ConstrsSplit =
                 [ {subtype, Ref, Ann, Env0, ArgSub, ArgSup}
-                  || { {dep_constr_t, _, _, ArgsSub}
-                     , {dep_constr_t, _, _, ArgsSup}
+                  || { {constr_t, _, _, ArgsSub}
+                     , {constr_t, _, _, ArgsSup}
                      } <- lists:zip(ConstrsSub, ConstrsSup),
                      {ArgSub, ArgSup} <- lists:zip(ArgsSub, ArgsSup)
                 ],
@@ -1948,11 +1954,11 @@ split_constr1(C = {well_formed, Ref, Env0, T}) ->
         {tuple_t, _, Ts} ->
             split_constr([{well_formed, Ref, Env0, Tt} || Tt <- Ts]);
         {dep_record_t, _, _, Fields} ->
-            split_constr([{well_formed, Ref, Env0, TF} || {dep_field_t, _, _, TF} <- Fields]);
+            split_constr([{well_formed, Ref, Env0, TF} || {field_t, _, _, TF} <- Fields]);
         {dep_variant_t, _, Id, Type, Tag, Constrs} ->
             ConstrsSplit =
                 [ {well_formed, Ref, Env0, Arg}
-                  || {dep_constr_t, _, _, Args} <- Constrs,
+                  || {constr_t, _, _, Args} <- Constrs,
                      Arg <- Args
                 ],
             split_constr(
@@ -2923,11 +2929,11 @@ purify_type({dep_list_t, Ann, Id, ElemT, Qual}, ST) ->
     {dep_list_t, Ann, Id, purify_type(ElemT, ST), Qual};
 purify_type({dep_record_t, Ann, Base, Fields}, ST) ->
     {dep_record_t, Ann, Base,
-     [{dep_field_t, FAnn, Id, purify_type(FType, ST)} || {dep_field_t, FAnn, Id, FType} <- Fields]};
+     [{field_t, FAnn, Id, purify_type(FType, ST)} || {field_t, FAnn, Id, FType} <- Fields]};
 purify_type({dep_variant_t, Ann, Id, Base, Constrs}, ST) ->
     {dep_variant_t, Ann, Id, Base,
-     [{dep_constr_t, FAnn, Con, [purify_type(Arg, ST) || Arg <- Args]}
-     || {dep_constr_t, FAnn, Con, Args} <- Constrs]};
+     [{constr_t, FAnn, Con, [purify_type(Arg, ST) || Arg <- Args]}
+     || {constr_t, FAnn, Con, Args} <- Constrs]};
 purify_type(T, _) -> T.
 
 

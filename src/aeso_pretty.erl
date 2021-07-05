@@ -388,7 +388,6 @@ dep_type({dep_variant_t, _, _, Type, Pred, Constrs}) ->
       [ text("{")
       , hsep(
           [ type(Type)
-          , text(io_lib:format("===~p", [Pred]))
           , text("<:")
           , if is_list(Pred) -> prettypr:empty();
                true -> predicate(Pred)
