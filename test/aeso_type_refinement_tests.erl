@@ -16,6 +16,7 @@
 -define(nu_op(Op, Rel), ?op(?ann(), ?nu(), Op, Rel)).
 -define(id(V), {id, ?ann(), V}).
 -define(int(V), {int, ?ann(), V}).
+-define(unstate(T), {tuple_t, ?ann(), [T, nope, nope]}).
 
 setup() ->
     erlang:system_flag(backtrace_depth, 100),
@@ -52,12 +53,13 @@ smt_solver_test_group() ->
 
 refiner_test_group() ->
     [ {"Testing type refinement of the " ++ ContractName ++ ".aes contract",
-       {timeout, 60,
+       {timeout, 600,
         fun() ->
                 try {run_refine("hagia/" ++ ContractName), Expect} of
                     {{ok, {Env, AST}}, {success, Assertions}} ->
-                        io:format("AST:\n~s\n\n", [aeso_pretty:pp(decls, AST)]),
                         check_ast_refinement(Env, AST, Assertions);
+                    {{error, {refinement_errors, Errs}}, {error, ExpErrors}} ->
+                        check_errors(Errs, ExpErrors);
                     {{error, Err}, _} ->
                         io:format(aeso_ast_refine_types:pp_error(Err)),
                         error(Err)
@@ -68,69 +70,75 @@ refiner_test_group() ->
 
 run_refine(Name) ->
     ContractString = aeso_test_utils:read_contract(Name),
-    Ast = aeso_parser:string(ContractString, sets:new(), []),
-    {TEnv, TAst, _} = aeso_ast_infer_types:infer(Ast, [return_env, dont_unfold]),
+    Ast = aeso_parser:string(ContractString, sets:new(), [{file, Name}]),
+    {TEnv, TAst, _} = aeso_ast_infer_types:infer(Ast, [return_env, dont_unfold, {file, Name}]),
     RAst = aeso_ast_refine_types:refine_ast(TEnv, TAst),
     RAst.
 
 check_ast_refinement(Env, AST, Assertions) ->
     [ case maps:get({Name, FName}, Assertions, unchecked) of
           unchecked -> ok;
-          ExRetType -> check_type(Env, AST, ExRetType, Type)
+          {Scope, ExRetType} -> check_type(Env, AST, Scope, ExRetType, Type)
       end
      || {_, _, {con, _, Name}, Defs} <- AST,
         {fun_decl, _, {id, _, FName}, Type} <- Defs
     ].
 
-check_type(Env, AST, ExRet, Fun = {dep_fun_t, Ann, Args, _}) ->
+check_type(Env, AST, Scope, ExRet, Fun = {dep_fun_t, Ann, Args, _}) ->
     put(refiner_errors, []),
+    Left  = {subtype, {test, 0}, ?ann(), Env, Fun, {dep_fun_t, Ann, Args, ExRet}},
+    Right = {subtype, {test, 0}, ?ann(), Env, {dep_fun_t, Ann, Args, ExRet}, Fun},
     CS = aeso_ast_refine_types:split_constr(
-           [ {subtype, {test, 0}, ?ann(), Env, Fun, {dep_fun_t, Ann, Args, ExRet}}
-           , {subtype, {test, 0}, ?ann(), Env, {dep_fun_t, Ann, Args, ExRet}, Fun}
-           ]),
+           case Scope of
+               iff -> [Left, Right];
+               sub -> [Left]
+           end),
     aeso_ast_refine_types:solve(Env, AST, CS),
     case get(refiner_errors) of
         [] -> ok;
         Errs -> throw({refinement_errors, Errs})
     end.
 
+check_errors(Errs, ExpErrs) ->
+    ?assertEqual(length(ExpErrs), length(Errs)).
+
 compilable_contracts() ->
     [ {"simple",
        {success,
-        #{{"C", "f"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?int(123))])}
+        #{{"C", "f"} => {iff, ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?int(123))])}}
        }
       }
-     %%  {"max",
-     %%  {success,
-     %%   #{{"C", "max"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('>=', ?id("a")), ?nu_op('>=', ?id("b"))])
-     %%   , {"C", "trim"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('>=', ?int(0)), ?nu_op('>=', ?id("x"))])
-     %%   }
-     %%  }
-     %% }
-    %% , {"switch",
+    , {"max",
+       {success,
+        #{{"C", "max"}  => {iff, ?refined(?nu(), ?int_t(?ann()), [?nu_op('>=', ?id("a")), ?nu_op('>=', ?id("b"))])}
+        , {"C", "trim"} => {iff, ?refined(?nu(), ?int_t(?ann()), [?nu_op('>=', ?int(0)), ?nu_op('>=', ?id("x"))])}
+        }
+       }
+      }
+    , {"switch",
+       {success,
+        #{{"C", "f"} => {iff, ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?id("x"))])}
+        , {"C", "g"} => {iff, ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?int(2))])}
+        }
+       }
+      }
+    %% , {"require",
     %%    {success,
-    %%     #{{"C", "f"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?id("x"))])
-    %%     , {"C", "g"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?int(2))])
+    %%     #{{"C", "f1"} => {iff, ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?int(0))])}
+    %%     , {"C", "f2"} => {iff, ?refined(?nu(), ?int_t(?ann()),
+    %%                               [?nu_op('=<', ?id("x")), ?nu_op('>=', ?int(0)),
+    %%                                ?nu_op('=<', ?int(1)),  ?nu_op('!=', ?op(?ann(), ?id("x"), '-', ?int(1)))
+    %%                               ])}
     %%     }
     %%    }
     %%   }
-    %% , {"require",
-      %%  {success,
-      %%   #{{"C", "f1"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?int(0))])
-      %%   , {"C", "f2"} => ?refined(?nu(), ?int_t(?ann()),
-      %%                             [?nu_op('=<', ?id("x")), ?nu_op('>=', ?int(0)),
-      %%                              ?nu_op('=<', ?int(1)),  ?nu_op('!=', ?op(?ann(), ?id("x"), '-', ?int(1)))
-      %%                             ])
-      %%   }
-      %%  }
-      %% }
     %% , {"balance",
     %%    {success,
-    %%     #{{"C", "f1"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?int(0))])
-    %%     , {"C", "f2"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?int(0))])
+    %%     #{{"C", "f1"} => {iff, ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?int(0))])}
+    %%     , {"C", "f2"} => {sub, ?unstate(?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?int(0))]))}
     %%     }
     %%    }
-      %%   }
+    %%   }
     %% , {"types",
     %%    {success,
     %%     #{{"C", "test_i"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?int(123))])
@@ -140,8 +148,19 @@ compilable_contracts() ->
     %%   }
     %% , {"args",
     %%    {success,
-    %%     #{{"C", "f"} => ?refined(?nu(), ?int_t(?ann()), [?nu_op('=<', ?id("n"))])
+    %%     #{{"C", "f"} => {iff, ?refined(?nu(), ?int_t(?ann()), [?nu_op('=<', ?id("n"))])}
     %%     }
     %%    }
     %%   }
+    , {"state",
+      {success,
+       #{{"C", "f"} => {iff, ?unstate(?refined(?nu(), ?int_t(?ann()), [?nu_op('==', {proj, [], ?id("$init_state"), ?id("C.state.x")})]))}
+       }
+      }
+     }
+    , {"failing",
+       {error,
+        lists:seq(1, 7)
+       }
+      }
     ].
