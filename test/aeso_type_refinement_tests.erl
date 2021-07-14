@@ -108,20 +108,25 @@ compilable_contracts() ->
         #{{"C", "f"} => {iff, ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?int(123))])}}
        }
       }
-    , {"max",
-       {success,
-        #{{"C", "max"}  => {iff, ?refined(?nu(), ?int_t(?ann()), [?nu_op('>=', ?id("a")), ?nu_op('>=', ?id("b"))])}
-        , {"C", "trim"} => {iff, ?refined(?nu(), ?int_t(?ann()), [?nu_op('>=', ?int(0)), ?nu_op('>=', ?id("x"))])}
-        }
-       }
-      }
-    , {"switch",
-       {success,
-        #{{"C", "f"} => {iff, ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?id("x"))])}
-        , {"C", "g"} => {iff, ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?int(2))])}
-        }
-       }
-      }
+    %% , {"len",
+    %%    {success,
+    %%     #{{"C", "f"} => {iff, ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?id("l"))])}}
+    %%    }
+    %%   }
+    %% , {"max",
+    %%    {success,
+    %%     #{{"C", "max"}  => {iff, ?refined(?nu(), ?int_t(?ann()), [?nu_op('>=', ?id("a")), ?nu_op('>=', ?id("b"))])}
+    %%     , {"C", "trim"} => {iff, ?refined(?nu(), ?int_t(?ann()), [?nu_op('>=', ?int(0)), ?nu_op('>=', ?id("x"))])}
+    %%     }
+    %%    }
+    %%   }
+    %% , {"switch",
+    %%    {success,
+    %%     #{{"C", "f"} => {iff, ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?id("x"))])}
+    %%     , {"C", "g"} => {iff, ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?int(2))])}
+    %%     }
+    %%    }
+    %%   }
     %% , {"require",
     %%    {success,
     %%     #{{"C", "f1"} => {iff, ?refined(?nu(), ?int_t(?ann()), [?nu_op('==', ?int(0))])}
@@ -152,15 +157,15 @@ compilable_contracts() ->
     %%     }
     %%    }
     %%   }
-    , {"state",
-      {success,
-       #{{"C", "f"} => {iff, ?unstate(?refined(?nu(), ?int_t(?ann()), [?nu_op('==', {proj, [], ?id("$init_state"), ?id("C.state.x")})]))}
-       }
-      }
-     }
-    , {"failing",
-       {error,
-        lists:seq(1, 7)
-       }
-      }
+    %% , {"state",
+    %%   {success,
+    %%    #{{"C", "f"} => {iff, ?unstate(?refined(?nu(), ?int_t(?ann()), [?nu_op('==', {proj, [], ?id("$init_state"), ?id("C.state.x")})]))}
+    %%    }
+    %%   }
+    %%  }
+    %% , {"failing",
+    %%    {error,
+    %%     lists:seq(1, 7)
+    %%    }
+    %%   }
     ].

@@ -73,8 +73,11 @@
 -type var_env()  :: #{name() => {ann(), template()}}.
 -type type_env() :: [{name(),   {ann(), typedef()}}]. % order matters
 
+-type args_substs() :: #{name() => subst()}.
+
 -record(scope, { fun_env = #{} :: fun_env()
                , type_env = [] :: type_env()
+               , args_substs = #{} :: args_substs()
                }).
 -type scope() :: #scope{}.
 
@@ -163,13 +166,6 @@ pop_scope(Env) ->
     Env#env{ namespace = lists:droplast(Env#env.namespace) }.
 
 
--spec get_scope(env(), qname()) -> false | scope().
-get_scope(#env{ scopes = Scopes }, Name) ->
-    maps:get(Name, Scopes, false).
-
--spec namespace_type(env(), qname()) -> namespace_type() | no_return().
-namespace_type(NS, #env{namespaces = NSs}) ->
-    maps:get(NS, NSs).
 -spec namespace_type(env()) -> namespace_type() | toplevel.
 namespace_type(#env{namespace = NS, namespaces = NSs}) ->
     maps:get(NS, NSs, toplevel).
@@ -178,10 +174,6 @@ namespace_type(#env{namespace = NS, namespaces = NSs}) ->
 on_current_scope(Env = #env{ namespace = NS, scopes = Scopes }, Fun) ->
     Scope = maps:get(NS, Scopes),
     Env#env{ scopes = Scopes#{ NS => Fun(Scope) } }.
-
--spec on_scopes(env(), fun((scope()) -> scope())) -> env().
-on_scopes(Env = #env{ scopes = Scopes }, Fun) ->
-    Env#env{ scopes = maps:map(fun(_, Scope) -> Fun(Scope) end, Scopes) }.
 
 -spec set_stateful(id(), env()) -> env().
 set_stateful(Id, Env) ->
@@ -212,11 +204,6 @@ ensure_var({id, Ann, Name}, T, Env = #env{var_env = VarEnv}) ->
         none -> Env#env{ var_env = VarEnv#{Name => {Ann1, T}}};
         _    -> Env
     end.
-
--spec ensure_vars([{id(), lutype()}], env()) -> env().
-ensure_vars([], Env) -> Env;
-ensure_vars([{X, T}|Rest], Env) ->
-    ensure_vars(Rest, ensure_var(X, T, Env)).
 
 -spec bind_vars([{id(), lutype()}], env()) -> env().
 bind_vars([], Env) -> Env;
@@ -251,6 +238,18 @@ bind_funs([], Env) -> Env;
 bind_funs([{Id, Type} | Rest], Env) ->
     bind_funs(Rest, bind_fun(Id, Type, Env)).
 
+-spec register_args_subst(name(), subst(), env()) -> env().
+register_args_subst(X, Subst, Env) ->
+    on_current_scope(
+      Env, fun(Scope = #scope{ args_substs = Substs }) ->
+                   Scope#scope{ args_substs = Substs#{X => Subst} }
+           end).
+
+-spec register_args_substs([{name(), subst()}], env()) -> env().
+register_args_substs([], Env) -> Env;
+register_args_substs([{Id, Subst} | Rest], Env) ->
+    register_args_substs(Rest, register_args_subst(Id, Subst, Env)).
+
 -spec bind_type(id(), [type()], typedef(), env()) -> env().
 bind_type({id, Ann, Name}, Args, Def, Env) ->
     on_current_scope(Env, fun(Scope = #scope{ type_env = Types }) ->
@@ -280,7 +279,8 @@ lookup_type(Env, Id) ->
     lookup_env(Env, type, qname(Id)).
 
 -spec lookup_env(env(), term, qname()) -> false | {qname(), ann(), lutype()};
-                (env(), type, qname()) -> false | {qname(), ann(), typedef()}.
+                (env(), type, qname()) -> false | {qname(), ann(), typedef()};
+                (env(), subst, qname()) -> false | subst().
 lookup_env(Env, Kind, Name) ->
     Var = case Name of
             [X] when Kind == term -> maps:get(X, Env#env.var_env, false);
@@ -293,23 +293,25 @@ lookup_env(Env, Kind, Name) ->
                 []    -> false;
                 [Res] -> Res;
                 Many  ->
-                    error({ambiguous_name, [Q || {Q, _} <- Many]})
+                    error({ambiguous_name, Many})
             end;
         {Ann, Type} -> {Name, Ann, Type}
     end.
 
--spec lookup_env1(env(), term | type, qname()) -> false | {qname(), {ann(), lutype()}}.
+-spec lookup_env1(env(), term | type | subst, qname()) -> false | {qname(), {ann(), lutype()}} | subst().
 lookup_env1(#env{ scopes = Scopes }, Kind, QName) ->
     Qual = lists:droplast(QName),
     Name = lists:last(QName),
     case maps:get(Qual, Scopes, false) of
         false -> false;
-        #scope{ fun_env = Funs, type_env = Types } ->
+        #scope{ fun_env = Funs, type_env = Types, args_substs = Substs } ->
             case case Kind of
                      term -> maps:get(Name, Funs, false);
+                     subst -> {subst, maps:get(Name, Substs, false)};
                      type -> proplists:get_value(Name, Types, false)
                  end of
                 false -> false;
+                {subst, Subst} -> Subst;
                 {Ann, E} -> {QName, Ann, E}
             end
     end.
@@ -328,6 +330,14 @@ type_of(Env, Id) ->
         false ->
             undefined;
         {QId, Ann, Ty} -> {set_qname(QId, Id), Ann, Ty}
+    end.
+
+-spec args_subst_of(env(), type_id()) -> subst().
+args_subst_of(Env, Id) ->
+    case lookup_env(Env, subst, qname(Id)) of
+        false ->
+            undefined;
+        Subst -> Subst
     end.
 
 -spec bind_assg(assignment(), env()) -> env().
@@ -607,24 +617,27 @@ register_ast_funs(AST, Env) ->
                  HEAD =:= contract_child;
                  HEAD =:= contract_interface ->
               Env1 = push_scope(Con, Env0),
-              Env2 = bind_funs(register_funs(Env1, Defs), Env1),
-              Env3 = bind_funs(
+              {Funs, ArgsSubsts} = register_funs(Env1, Defs),
+              Env2 = bind_funs(Funs, Env1),
+              Env3 = register_args_substs(ArgsSubsts, Env2),
+              Env4 = bind_funs(
                        [ {Name, fresh_liquid(Env2, Name, Type)}
                          || {fun_decl, _, {id, _, Name}, Type} <- Defs
                        ],
-                       Env2),
-              Env4 = pop_scope(Env3),
-              Env4
+                       Env3),
+              Env5 = pop_scope(Env4),
+              Env5
       end,
      Env, AST).
 
 register_funs(Env, Defs) ->
-    [ begin
-          TypeDep = make_topfun(Env, FAnn, Id, Args),
-          {Name, TypeDep}
-      end
-      || {letfun, FAnn, Id = {id, _, Name}, Args, _, _} <- Defs
-    ].
+    lists:unzip(
+      [ begin
+            {TypeDep, ArgsSubst} = make_topfun(Env, FAnn, Id, Args),
+            {{Name, TypeDep}, {Name, ArgsSubst}}
+        end
+        || {letfun, FAnn, Id = {id, _, Name}, Args, _, _} <- Defs
+      ]).
 
 make_topfun(Env, FAnn, Id, Args) ->
     TCEnv = Env#env.tc_env,
@@ -663,7 +676,7 @@ make_topfun(Env, FAnn, Id, Args) ->
                 fresh_liquid(Env, "ret", wrap_state_t(RetT1, init_purifier_st(?ann_of(RetT), Env)))
         end,
     DepRetT2 = purify_type(DepRetT1, PurifierST),
-    {dep_fun_t, TSAnn, DepArgsT1, DepRetT2}.
+    {{dep_fun_t, TSAnn, DepArgsT1, DepRetT2}, ArgsSubst}.
 
 check_arg_assumptions({id, _, Name}, Ann, Args) ->
     case proplists:get_value(entrypoint, Ann, false) of
@@ -903,6 +916,8 @@ fresh_liquid_arg(Env, Variance, Id, Type) ->
                 {{refined_t, Ann, Id, Base, apply_subst(TId, Id, Pred)}, [{TId, Id}]};
             {dep_list_t, Ann, TId, Elem, Pred} ->
                 {{dep_list_t, Ann, Id, Elem, apply_subst(TId, Id, Pred)}, [{TId, Id}]};
+            {dep_variant_t, Ann, TId, Tag, Constrs} ->
+                {{dep_variant_t, Ann, Id, apply_subst(TId, Id, Tag), Constrs}, [{TId, Id}]};
             T -> {T, []}
         end,
     {{dep_arg_t, ?ann_of(Id), Id, DepType}, Sub}.
@@ -1052,22 +1067,24 @@ constr_letfun(Env0, {letfun, Ann, Id, Args, RetT, Body}, S0) ->
     {ArgsT, _ArgsSubst} = fresh_liquid_args(Env0, Args2),
     Env1 = bind_args(ArgsT, Env0),
     Env2 = ensure_args(GlobArgsT, Env1),
-    Env3 =
-        assert(
-          [ ?op(Ann, Arg1, '==', Arg2)
-           || {{dep_arg_t, _, Arg1, _}, {dep_arg_t, _, Arg2, {refined_t, _, _, _, _}}}
-                  <- lists:zip(ArgsT, GlobArgsT), name(Arg1) /= name(Arg2)
-          ] ++
-          [ ?op(Ann, Arg1, '==', Arg2)
-            || {{dep_arg_t, _, Arg1, _}, {dep_arg_t, _, Arg2, {dep_list_t, _, _, _, _}}}
-                   <- lists:zip(ArgsT, GlobArgsT), name(Arg1) /= name(Arg2)
-          ] ++
-          [ ?op(Ann, Arg1, '==', Arg2)
-            || {{dep_arg_t, _, Arg1, _}, {dep_arg_t, _, Arg2, {dep_variant_t, _, _, _, _}}}
-                   <- lists:zip(ArgsT, GlobArgsT), name(Arg1) /= name(Arg2)
-          ],
-          Env2),
-    Body1 = a_normalize(Body),
+    Env3 = Env2,
+        %% assert(
+        %%   [ ?op(Ann, Arg1, '==', Arg2)
+        %%    || {{dep_arg_t, _, Arg1, _}, {dep_arg_t, _, Arg2, {refined_t, _, _, _, _}}}
+        %%           <- lists:zip(ArgsT, GlobArgsT), name(Arg1) /= name(Arg2)
+        %%   ] ++
+        %%   [ ?op(Ann, Arg1, '==', Arg2)
+        %%     || {{dep_arg_t, _, Arg1, _}, {dep_arg_t, _, Arg2, {dep_list_t, _, _, _, _}}}
+        %%            <- lists:zip(ArgsT, GlobArgsT), name(Arg1) /= name(Arg2)
+        %%   ] ++
+        %%   [ ?op(Ann, Arg1, '==', Arg2)
+        %%     || {{dep_arg_t, _, Arg1, _}, {dep_arg_t, _, Arg2, {dep_variant_t, _, _, _, _}}}
+        %%            <- lists:zip(ArgsT, GlobArgsT), name(Arg1) /= name(Arg2)
+        %%   ],
+        %%   Env2),
+    ArgsSubst = args_subst_of(Env3, Id),
+    Body0 = apply_subst(ArgsSubst, Body),
+    Body1 = a_normalize(Body0),
     Body2 =
         case namespace_type(Env0) of
             namespace -> Body1;
@@ -1084,6 +1101,8 @@ constr_letfun(Env0, {letfun, Ann, Id, Args, RetT, Body}, S0) ->
     ?DBG("PURIFIED\n~s", [aeso_pretty:pp(expr, Body3)]),
     ?DBG("PURIFIED\n~p", [Body3]),
     {BodyT, S1} = constr_expr(Env3, Body3, S0),
+    ?DBG("KURWA\n~p\n\n~p", [ArgsT, GlobArgsT]),
+    ?DBG("CHUJ\n~p\n\n~p", [BodyT, GlobRetT]),
     InnerFunT = {dep_fun_t, Ann, ArgsT, BodyT},
     S3 = [ {subtype, constr_id(letfun_top_decl), Ann, Env3, BodyT, GlobRetT}
          , {well_formed, constr_id(letfun_glob), Env0, GlobFunT}
@@ -1397,7 +1416,7 @@ constr_expr(Env, {app, Ann, F = ?typed_p(_, {fun_t, _, NamedT, _, _}), Args0}, _
           end
          || {named_arg_t, _, TArgName, _, TArgDefault} <- NamedT
         ] ++ (Args0 -- NamedArgs),
-    {FF = {dep_fun_t, _, ArgsFT, RetT}, S1} = constr_expr(Env, F, S0),
+    {{dep_fun_t, _, ArgsFT, RetT}, S1} = constr_expr(Env, F, S0),
     {ArgsT, S2} = constr_expr_list(Env, Args, S1),
     ArgSubst = [{X, Expr} || {{dep_arg_t, _, X, _}, Expr} <- lists:zip(ArgsFT, Args)],
     { apply_subst(ArgSubst, RetT)
@@ -1993,6 +2012,22 @@ split_constr1(C = {subtype, Ref, Ann, Env0, SubT, SupT}) ->
               , {subtype, Ref, Ann, Env0, DepElemSub, DepElemSup}
               ]
              );
+        { {dep_list_t, _, IdSub, DepElemSub, LenQualSub}
+        , {refined_t, _, IdSub, BaseSup = ?int_tp, LenQualSup}
+        } ->
+            split_constr1(
+              {subtype, Ref, Ann, Env0,
+               ?refined(IdSub, ?int_t(?ann_of(DepElemSub)), LenQualSub),
+               ?refined(IdSub, BaseSup, LenQualSup)}
+             );
+        { {refined_t, _, IdSub, BaseSub = ?int_tp, LenQualSub}
+        , {dep_list_t, _, IdSup, DepElemSup, LenQualSup}
+        } ->
+            split_constr1(
+              {subtype, Ref, Ann, Env0,
+               ?refined(IdSub, BaseSub, LenQualSub),
+               ?refined(IdSup, ?int_t(?ann_of(DepElemSup)), LenQualSup)}
+             );
         _ ->
             [C]
     end;
@@ -2039,6 +2074,8 @@ filter_obvious([], Acc) ->
     Acc;
 filter_obvious([H|T], Acc) ->
     case H of
+        {subtype, _, _, _, _, {refined_t, _, _, _, []}} ->
+            filter_obvious(T, Acc);
         {well_formed, _, _, {refined_t, _, _, _, []}} ->
             filter_obvious(T, Acc);
          _ -> filter_obvious(T, [H|Acc])
@@ -2063,9 +2100,10 @@ solve(Env, AST0, CS) ->
     end.
 
 -spec run_solve([constr()]) -> assignment().
-run_solve(Cs) ->
-    Assg0 = run_solve(init_assg(Cs), Cs, Cs),
-    check_reachable(Assg0, Cs),
+run_solve(Cs0) ->
+    Cs1 = [C || C = {subtype, _, _, _, _, _} <- Cs0],
+    Assg0 = run_solve(init_assg(Cs0), Cs1, Cs1),
+    check_reachable(Assg0, Cs0),
     simplify_assg(Assg0).
 run_solve(Assg, _, []) ->
     Assg;
@@ -2086,14 +2124,16 @@ run_solve(Assg, AllCs, [C|Rest]) ->
 valid_in({well_formed, _, _, _}, _) ->
     true;
 valid_in({subtype, _Ref, Ann, Env,
-          {refined_t, _, SubId, _, SubP},
-          {refined_t, _, SupId, Base, SupP}
+          _SB = {refined_t, _, SubId, _, SubP},
+          _SP = {refined_t, _, SupId, Base, SupP}
          }, Assg) when is_list(SupP) ->
     SubPred = pred_of(Assg, SubP),
     SupPred = pred_of(Assg, SupP),
     AssumpPred = SubPred,
     ConclPred  = apply_subst(SupId, SubId, SupPred),
     Env1 = ensure_var(SubId, Base, Env),
+    ?DBG("VALID ~s <: ~s\nASSUMP ~s\n\nCONCL ~s", [name(SubId), name(SupId), aeso_pretty:pp(predicate, AssumpPred), aeso_pretty:pp(predicate, ConclPred)]),
+    ?DBG("VARS ~p", [local_type_binds(Assg, Env)]),
     case impl_holds(Assg, Env1, AssumpPred, ConclPred) of
         true ->
             true;
@@ -2103,14 +2143,12 @@ valid_in({subtype, _Ref, Ann, Env,
             add_error({contradict, {Ann, strip_typed(SimpAssump), strip_typed(ConclPred)}})
     end;
 valid_in({subtype, _Ref, _, Env,
-          {refined_t, _, SubId,    _, SubPredVar},
-          {refined_t, _, SupId, Base, SupPredVar}
-         }, Assg)
-  when element(1, SupPredVar) =:= template ->
-    Ltinfo = assg_of(Assg, SupPredVar),
-    Id = Ltinfo#ltinfo.id,
+          {refined_t, _, SubId, _, SubPredVar},
+          {refined_t, _, SupId, _, {template, Subst, Var}}
+         }, Assg) ->
+    #ltinfo{id = Id, base = Base, predicate = Pred} = assg_of(Assg, Var),
     SubPred = pred_of(Assg, SubPredVar),
-    SupPred = pred_of(Assg, SupPredVar),
+    SupPred = apply_subst(Subst, Pred),
     AssumpPred = apply_subst(SubId, Id, SubPred),
     ConclPred  = apply_subst(SupId, Id, SupPred),
     Env1 = bind_var(Id, Base, Env),
@@ -2128,17 +2166,15 @@ valid_in(_, _) ->
 
 weaken({subtype, _Ref, _, Env,
         {refined_t, _, SubId,    _, SubPredVar},
-        {refined_t, _, SupId, Base, SupPredVar = {template, _, Var}}
+        {refined_t, _, SupId, _, {template, Subst, Var}}
        }, Assg) ->
-    Ltinfo = assg_of(Assg, SupPredVar),
-    Id = Ltinfo#ltinfo.id,
+    Ltinfo = #ltinfo{id = Id, base = Base, predicate = Pred} = assg_of(Assg, Var),
     SubPred = pred_of(Assg, SubPredVar),
     AssumpPred = apply_subst(SubId, Id, SubPred),
     Env1 = bind_var(Id, Base, Env),
-    Pred = pred_of(Assg, SupPredVar),
     Filtered =
-        [ Q || Q <- Pred,
-               impl_holds(Assg, Env1, AssumpPred, apply_subst(SupId, Id, Q))
+        [Q || Q <- Pred,
+             impl_holds(Assg, Env1, AssumpPred, apply_subst([{SupId, Id}|Subst], Q))
         ],
     %% ?DBG("WEAKENED (~s <: ~s  --> ~s) ~p\nUNDER\n~s\nFROM\n~s\nTO\n~s", [name(SubId), name(SupId), name(Id), _Ref, aeso_pretty:pp(predicate, AssumpPred), aeso_pretty:pp(predicate, Pred), aeso_pretty:pp(predicate, Filtered)]),
     NewLtinfo = Ltinfo#ltinfo{

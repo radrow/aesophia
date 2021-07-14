@@ -55,7 +55,7 @@ send_z3_success(Query) ->
             %% io:format("Z3: " ++ Resp ++ "\n"),
             case string:trim(Resp) of
                 "success" -> success;
-                X         -> throw({smt_error, X})
+                X         -> error(xdf), throw({smt_error, X})
             end
     after 5000 -> {error, timeout}
     end.
