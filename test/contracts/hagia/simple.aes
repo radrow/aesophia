@@ -1,7 +1,14 @@
 contract C =
+
+  entrypoint
+    g : {a : int} => {r : int | r == a}
+    g(x) =
+      if(x =< 0) x
+      else g(x - 1) + 1
+
+/*
   entrypoint
     len : {l : list('a)} => {r : int | r == l}
     len([]) = 0
-    len(_::t) = len(t)
-
-  entrypoint f() = 123
+//    len(q) = len(q)
+    len(_::t) = len(t) + 1 */

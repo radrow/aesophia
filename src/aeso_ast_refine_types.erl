@@ -748,7 +748,8 @@ fresh_supply() ->
     I.
 
 constr_id(When) ->
-    {When, fresh_supply()}.
+    Id = fresh_supply(),
+    {When, Id}.
 
 -spec fresh_ltvar(name()) -> ltvar().
 fresh_ltvar(Name) ->
@@ -1006,8 +1007,8 @@ refine_ast(TCEnv, AST) ->
         Env5 = register_ast_funs(AST, Env4),
         {AST1, CS0} = constr_ast(Env5, AST),
         CS1 = split_constr(CS0),
-        [ ?DBG("SUBTYPE:\n~s\n<:\n~s", [aeso_pretty:pp(type, T1), aeso_pretty:pp(type, T2)])
-          || {subtype, _, _, _, T1, T2} <- CS1
+        [ ?DBG("SUBTYPE ~p:\n~s\n<:\n~s", [Id, aeso_pretty:pp(type, strip_typed(T1)), aeso_pretty:pp(type, strip_typed(T2))])
+          || {subtype, Id, _, _, T1, T2} <- CS1
         ],
         {Env5, solve(Env5, AST1, CS1)}
     of
@@ -1068,20 +1069,6 @@ constr_letfun(Env0, {letfun, Ann, Id, Args, RetT, Body}, S0) ->
     Env1 = bind_args(ArgsT, Env0),
     Env2 = ensure_args(GlobArgsT, Env1),
     Env3 = Env2,
-        %% assert(
-        %%   [ ?op(Ann, Arg1, '==', Arg2)
-        %%    || {{dep_arg_t, _, Arg1, _}, {dep_arg_t, _, Arg2, {refined_t, _, _, _, _}}}
-        %%           <- lists:zip(ArgsT, GlobArgsT), name(Arg1) /= name(Arg2)
-        %%   ] ++
-        %%   [ ?op(Ann, Arg1, '==', Arg2)
-        %%     || {{dep_arg_t, _, Arg1, _}, {dep_arg_t, _, Arg2, {dep_list_t, _, _, _, _}}}
-        %%            <- lists:zip(ArgsT, GlobArgsT), name(Arg1) /= name(Arg2)
-        %%   ] ++
-        %%   [ ?op(Ann, Arg1, '==', Arg2)
-        %%     || {{dep_arg_t, _, Arg1, _}, {dep_arg_t, _, Arg2, {dep_variant_t, _, _, _, _}}}
-        %%            <- lists:zip(ArgsT, GlobArgsT), name(Arg1) /= name(Arg2)
-        %%   ],
-        %%   Env2),
     ArgsSubst = args_subst_of(Env3, Id),
     Body0 = apply_subst(ArgsSubst, Body),
     Body1 = a_normalize(Body0),
@@ -1101,8 +1088,6 @@ constr_letfun(Env0, {letfun, Ann, Id, Args, RetT, Body}, S0) ->
     ?DBG("PURIFIED\n~s", [aeso_pretty:pp(expr, Body3)]),
     ?DBG("PURIFIED\n~p", [Body3]),
     {BodyT, S1} = constr_expr(Env3, Body3, S0),
-    ?DBG("KURWA\n~p\n\n~p", [ArgsT, GlobArgsT]),
-    ?DBG("CHUJ\n~p\n\n~p", [BodyT, GlobRetT]),
     InnerFunT = {dep_fun_t, Ann, ArgsT, BodyT},
     S3 = [ {subtype, constr_id(letfun_top_decl), Ann, Env3, BodyT, GlobRetT}
          , {well_formed, constr_id(letfun_glob), Env0, GlobFunT}
@@ -1170,11 +1155,12 @@ constr_expr_list(Env, [H|T], Acc, S0) ->
 
 constr_expr(Env, ?typed_p(Expr, Type), S0) ->
     Base = base_type(Type),
-    case Base == Type of
-        true ->
+    case Base /= Type andalso has_assumptions(Type) of
+        false ->
             %% Nothing interesting
             constr_expr(Env, Expr, Type, S0);
-        false ->
+        true ->
+            ?DBG("TYPING CAUSE\n~p", [Type]),
             DType = fresh_liquid(Env, "typed", Type),
             {ExprT, S1} = constr_expr(Env, Expr, Base, S0),
             {ExprT,
@@ -1206,7 +1192,7 @@ constr_expr(Env, {block, Ann, Stmts}, T, S) ->
      ]
     };
 constr_expr(Env, {typed, Ann, E, T1}, T2, S0) ->
-    DT2 = fresh_liquid(Env, "t", T2),
+    DT2 = fresh_liquid(Env, "typed", T2),
     {DT1, S1} = constr_expr(Env, E, T1, S0),
     {DT2,
      [ {well_formed, constr_id(exp_typed), Env, DT2}
@@ -1221,6 +1207,12 @@ constr_expr(Env, Expr = {IdHead, Ann, Name}, T, S)
     if element(1, BaseT) =:= id;
        element(1, BaseT) =:= tvar ->
             {?refined(BaseT, [?op(Ann, ?nu(Ann), '==', Expr)]), S};
+       element(1, DT) =:= dep_list_t ->
+            {dep_list_t, TAnn, _, ElemT, _} = DT,
+            FreshId = fresh_id(Ann, Name),
+            {{dep_list_t, TAnn, FreshId, ElemT, [?op(Ann, FreshId, '==', Expr)]},
+             [{well_formed, constr_id(IdHead), Env, DT}|S]
+            };
        true ->
             case type_of(Env, Expr) of
                 {_, _, DT1} ->
@@ -2132,14 +2124,16 @@ valid_in({subtype, _Ref, Ann, Env,
     AssumpPred = SubPred,
     ConclPred  = apply_subst(SupId, SubId, SupPred),
     Env1 = ensure_var(SubId, Base, Env),
-    ?DBG("VALID ~s <: ~s\nASSUMP ~s\n\nCONCL ~s", [name(SubId), name(SupId), aeso_pretty:pp(predicate, AssumpPred), aeso_pretty:pp(predicate, ConclPred)]),
-    ?DBG("VARS ~p", [local_type_binds(Assg, Env)]),
     case impl_holds(Assg, Env1, AssumpPred, ConclPred) of
         true ->
             true;
         false ->
-            ?DBG("CONTRADICT ON ~p \n~p\n<:\n~p", [_Ref, SubP, SupP]),
-            SimpAssump = simplify_pred(Assg, Env1, pred_of(Assg, Env1) ++ AssumpPred),
+            ?DBG("~s -> ~s", [name(SupId), name(SubId)]),
+            ?DBG("CONTRADICT ON ~p \n~s\n<:\n~s", [_Ref, aeso_pretty:pp(predicate, strip_typed(pred_of(Assg, Env) ++ AssumpPred)), aeso_pretty:pp(predicate, strip_typed(ConclPred))]),
+            ?DBG("IN\n~s", [aeso_pretty:pp(predicate, strip_typed(pred_of(Assg, Env1)))]),
+            SimpAssump = simplify_pred(Assg, Env1,
+                                       %% pred_of(Assg, Env1) ++
+                                           AssumpPred),
             add_error({contradict, {Ann, strip_typed(SimpAssump), strip_typed(ConclPred)}})
     end;
 valid_in({subtype, _Ref, _, Env,
@@ -2822,6 +2816,7 @@ purify_typed(impure, E, T, ST) ->
     {impure, ?typed(E, wrap_state_t(purify_type(T, ST), ST))}.
 
 purify_expr(?typed_p(E, T), T1, ST) ->
+    ?DBG("PURI PYK\n~p\n~p",[T, T1]),
     {Pure, E1} = purify_expr(E, T, ST),
     purify_typed(Pure, E1, T1, ST);
 
@@ -3151,10 +3146,11 @@ pp_context(else) ->
 pp_context({switch, N}) ->
     io_lib:format(
       "arising from the assumption of triggering of the ~s branch of `switch`",
-      case abs(N rem 10) of
+      [case abs(N rem 10) of
           1 -> integer_to_list(N) ++ "st";
           2 -> integer_to_list(N) ++ "nd";
           3 -> integer_to_list(N) ++ "rd";
           _ -> integer_to_list(N) ++ "th"
       end
+      ]
      ).
