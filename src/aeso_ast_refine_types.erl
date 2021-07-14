@@ -651,15 +651,7 @@ make_topfun(Env, FAnn, Id, Args) ->
     {DepArgsT, ArgsSubst} =
         fresh_liquid_args(
           Env,
-          [ case purify_type(ArgT, PurifierST) of
-                {refined_t, ArgAnn, ArgId, _, _} ->
-                    {dep_arg_t, ArgAnn, ArgId, ArgT};
-                {depl_list_t, ArgAnn, ArgId, _, _} ->
-                    {dep_arg_t, ArgAnn, ArgId, ArgT};
-                {depl_variant_t, ArgAnn, ArgId, _, _, _} ->
-                    {dep_arg_t, ArgAnn, ArgId, ArgT};
-                _ -> {Arg, ArgT}
-            end
+          [ {Arg, purify_type(ArgT, PurifierST)}
             || {?typed_p(Arg), ArgT} <- lists:zip(Args, ArgsT)
           ]
          ),
@@ -1059,17 +1051,19 @@ constr_con(Env0, {Tag, Ann, Con, Defs}, S0)
 -spec constr_letfun(env(), letfun(), [constr()]) -> {fundecl(), [constr()]}.
 constr_letfun(Env0, {letfun, Ann, Id, Args, RetT, Body}, S0) ->
     PurifierST = init_purifier_st(?ann_of(RetT), Env0),
-    {_, _, GlobFunT = {dep_fun_t, _, GlobArgsT, GlobRetT}} = type_of(Env0, Id),
+    {_, _, GlobFunT = {dep_fun_t, _, _, GlobRetT}} = type_of(Env0, Id),
     Args0 = fresh_wildcards(Args),
     Args1 =
         [?typed(Arg, purify_type(ArgT, PurifierST)) || ?typed_p(Arg, ArgT) <- Args0],
     Args2 =
         [init_state_var(Ann, state_t(Ann, Env0)), init_balance_var(Ann) | Args1],
     {ArgsT, _ArgsSubst} = fresh_liquid_args(Env0, Args2),
+    ArgsSubst = args_subst_of(Env0, Id),
     Env1 = bind_args(ArgsT, Env0),
-    Env2 = ensure_args(GlobArgsT, Env1),
-    Env3 = Env2,
-    ArgsSubst = args_subst_of(Env3, Id),
+    Env2 = ensure_args(apply_subst([{B, A} || {A, B} <- ArgsSubst], ArgsT), Env1),
+    Env3 = assert(
+             [?op(Ann, I1, '==', I2) || {I1, I2} <- ArgsSubst],
+             Env2),
     Body0 = apply_subst(ArgsSubst, Body),
     Body1 = a_normalize(Body0),
     Body2 =
@@ -1085,6 +1079,8 @@ constr_letfun(Env0, {letfun, Ann, Id, Args, RetT, Body}, S0) ->
                 end
         end,
     Body3 = a_normalize(Body2),
+    ?DBG("ANORM\n~s", [aeso_pretty:pp(expr, Body1)]),
+    ?DBG("PURI\n~s", [aeso_pretty:pp(expr, Body2)]),
     ?DBG("PURIFIED\n~s", [aeso_pretty:pp(expr, Body3)]),
     ?DBG("PURIFIED\n~p", [Body3]),
     {BodyT, S1} = constr_expr(Env3, Body3, S0),
@@ -1408,10 +1404,13 @@ constr_expr(Env, {app, Ann, F = ?typed_p(_, {fun_t, _, NamedT, _, _}), Args0}, _
           end
          || {named_arg_t, _, TArgName, _, TArgDefault} <- NamedT
         ] ++ (Args0 -- NamedArgs),
-    {{dep_fun_t, _, ArgsFT, RetT}, S1} = constr_expr(Env, F, S0),
+    {_FDT = {dep_fun_t, _, ArgsFT, RetT}, S1} = constr_expr(Env, F, S0),
+    ?DBG("APP OF\n~s", [aeso_pretty:pp(type, _FDT)]),
     {ArgsT, S2} = constr_expr_list(Env, Args, S1),
     ArgSubst = [{X, Expr} || {{dep_arg_t, _, X, _}, Expr} <- lists:zip(ArgsFT, Args)],
-    { apply_subst(ArgSubst, RetT)
+    RetT1 = apply_subst(ArgSubst, RetT),
+    ?DBG("SUBST:\n~s\n->\n~s", [aeso_pretty:pp(type, RetT), aeso_pretty:pp(type, RetT1)]),
+    { RetT1
     , [{subtype, constr_id(app), [{context, {app, Ann, F, N}}|?ann_of(ArgT)],
         Env, ArgT, ArgFT}
        || {{dep_arg_t, _, _, ArgFT}, ArgT, N} <- lists:zip3(ArgsFT, ArgsT, lists:seq(1, length(ArgsT)))
@@ -2134,7 +2133,7 @@ valid_in({subtype, _Ref, Ann, Env,
             SimpAssump = simplify_pred(Assg, Env1,
                                        %% pred_of(Assg, Env1) ++
                                            AssumpPred),
-            add_error({contradict, {Ann, strip_typed(SimpAssump), strip_typed(ConclPred)}})
+            add_error({contradict, {Ann, strip_typed(AssumpPred), strip_typed(ConclPred)}})
     end;
 valid_in({subtype, _Ref, _, Env,
           {refined_t, _, SubId, _, SubPredVar},
@@ -2884,16 +2883,21 @@ purify_expr({app, Ann, Fun = ?typed_p({HEAD, _, _}), Args}, T, ST) when HEAD == 
     Args1 = [drop_purity(purify_expr(A, ST)) || A <- Args],
     {pure, ?typed({app, Ann, Fun, Args1}, T)};
 %% Casual function call
-purify_expr({app, Ann, Fun, Args}, _, ST) ->
-    {pure, Fun1 = ?typed_p(_, {fun_t, FAnn, _, _, RetT})} = purify_expr(Fun, ST),
+purify_expr({app, Ann, Fun, Args}, RetT, ST) ->
+    {pure, Fun1 = ?typed_p(_, {fun_t, FAnn, _, _, _})} = purify_expr(Fun, ST),
     Pure =
         case aeso_syntax:get_ann(stateful, FAnn, false) of
             false -> pure;
             true  -> impure
         end,
+    RetT1 =
+        case Pure of
+            pure   -> RetT;
+            impure -> wrap_state_t(RetT, ST)
+        end,
     Args1 = [ ST#purifier_st.state, ST#purifier_st.balance
             | [drop_purity(purify_expr(A, ST)) || A <- Args]],
-    {Pure, ?typed({app, Ann, Fun1, Args1}, RetT)};
+    {Pure, ?typed({app, Ann, Fun1, Args1}, RetT1)};
 
 purify_expr({'if', Ann, Cond, Then, Else}, T, ST) ->
     {pure, Cond1} = purify_expr(Cond, ST),
