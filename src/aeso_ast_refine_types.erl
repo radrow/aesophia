@@ -316,13 +316,9 @@ lookup_env1(#env{ scopes = Scopes }, Kind, QName) ->
             end
     end.
 
--spec is_stateful(env(), type_id()) -> {qname(), ann(), lutype()}.
-is_stateful(Env, Id) ->
-    case lookup_env(Env, term, qname(Id)) of
-        false ->
-            false;
-        {_, Ann, _} -> aeso_syntax:get_ann(stateful, Ann, false)
-    end.
+-spec is_stateful(env(), type_id()) -> boolean().
+is_stateful(#env{stateful = Stateful}, Id) ->
+    maps:get(qname(Id), Stateful, false).
 
 -spec type_of(env(), type_id()) -> {qname(), ann(), lutype()}.
 type_of(Env, Id) ->
@@ -593,7 +589,7 @@ with_cool_ints_from(AST, Env = #env{cool_ints = CI}) ->
 
 
 find_tuple_sizes(Expr) ->
-    sets:to_list(find_tuple_sizes(Expr, sets:from_list([0, 3]))).
+    sets:to_list(find_tuple_sizes(Expr, sets:from_list([0, 1, 2, 3]))).
 find_tuple_sizes({tuple_t, _, T}, Acc) ->
     find_tuple_sizes(T, sets:add_element(length(T), Acc));
 find_tuple_sizes({tuple, _, T}, Acc) ->
@@ -1540,7 +1536,7 @@ constr_expr(_, A, B, _) ->
     error({todo, A, B}).
 
 constr_cases(_Env, _Switched, _SwitchedT, _ExprT, Alts, S) ->
-    constr_cases(_Env, _Switched, _SwitchedT, _ExprT, Alts, 0, S).
+    constr_cases(_Env, _Switched, _SwitchedT, _ExprT, Alts, 1, S).
 constr_cases(Env, Switched, _SwitchedT, _ExprT, [], _N, S) ->
     [{unreachable, constr_id(switch_trap), ?ann_of(Switched), Env}|S];
 constr_cases(Env0, Switched, SwitchedT, ExprT,
@@ -2131,9 +2127,8 @@ valid_in({subtype, _Ref, Ann, Env,
             ?DBG("CONTRADICT ON ~p \n~s\n<:\n~s", [_Ref, aeso_pretty:pp(predicate, strip_typed(pred_of(Assg, Env) ++ AssumpPred)), aeso_pretty:pp(predicate, strip_typed(ConclPred))]),
             ?DBG("IN\n~s", [aeso_pretty:pp(predicate, strip_typed(pred_of(Assg, Env1)))]),
             SimpAssump = simplify_pred(Assg, Env1,
-                                       %% pred_of(Assg, Env1) ++
-                                           AssumpPred),
-            add_error({contradict, {Ann, strip_typed(AssumpPred), strip_typed(ConclPred)}})
+                                       pred_of(Assg, Env1) ++ AssumpPred),
+            add_error({contradict, {Ann, strip_typed(SimpAssump), strip_typed(ConclPred)}})
     end;
 valid_in({subtype, _Ref, _, Env,
           {refined_t, _, SubId, _, SubPredVar},
@@ -2742,18 +2737,18 @@ init_purifier_st(Ann, Env) ->
 get_state_t(#purifier_st{state = ?typed_p(_, StateT)}) ->
     StateT.
 
-wrap_pure({Pure, E}, ST) ->
-    wrap_pure(Pure, E, ST).
-wrap_pure(pure, E, ST) ->
+wrap_if_pure({Pure, E}, ST) ->
+    wrap_if_pure(Pure, E, ST).
+wrap_if_pure(pure, E, ST) ->
     wrap_state(E, ST);
-wrap_pure(impure, E, _) ->
+wrap_if_pure(impure, E, _) ->
     E.
 
-wrap_impure({Pure, E}, ST) ->
-    wrap_pure(Pure, E, ST).
-wrap_impure(impure, E, ST) ->
+wrap_if_impure({Pure, E}, ST) ->
+    wrap_if_impure(Pure, E, ST).
+wrap_if_impure(impure, E, ST) ->
     wrap_state(E, ST);
-wrap_impure(pure, E, _) ->
+wrap_if_impure(pure, E, _) ->
     E.
 
 wrap_state(E = ?typed_p(_, T), ST) ->
@@ -2771,7 +2766,7 @@ unwrap_state(Pat, ST) ->
     STVar = fresh_id(?ann_of(Pat), "$state", get_state_t(ST)),
     BLVar = fresh_id(?ann_of(Pat), "$balance", balance_t(?ann_of(Pat))),
     Pat1 = {tuple, ?ann_of(Pat), [Pat, STVar, BLVar]},
-    {Pat1, #purifier_st{state = STVar, balance = BLVar}}.
+    {Pat1, ST#purifier_st{state = STVar, balance = BLVar}}.
 
 pure_plus(pure, pure) ->
     pure;
@@ -2794,13 +2789,13 @@ purify_many(E1, E2, ST) ->
         {{pure, P1}, {pure, P2}} ->
             {pure, {P1, P2}};
         {S1, S2} ->
-            {impure, {wrap_pure(S1, ST), wrap_pure(S2, ST)}}
+            {impure, {wrap_if_pure(S1, ST), wrap_if_pure(S2, ST)}}
     end.
 purify_many(L, ST) when is_list(L) ->
     L1 = [purify_expr(E, ST)|| E <- L],
     case lists:any(fun({impure, _}) -> true; (_) -> false end, L1) of
         true ->
-            {impure, [wrap_pure(E, ST) || {_, E} <- L1]};
+            {impure, [wrap_if_pure(Pure, E, ST) || {Pure, E} <- L1]};
         false -> {pure, [E || {_, E} <- L1]}
     end.
 
@@ -2886,7 +2881,13 @@ purify_expr({app, Ann, Fun = ?typed_p({HEAD, _, _}), Args}, T, ST) when HEAD == 
 purify_expr({app, Ann, Fun, Args}, RetT, ST) ->
     {pure, Fun1 = ?typed_p(_, {fun_t, FAnn, _, _, _})} = purify_expr(Fun, ST),
     Pure =
-        case aeso_syntax:get_ann(stateful, FAnn, false) of
+        case aeso_syntax:get_ann(stateful, FAnn, false) orelse
+            case Fun of
+                ?typed_p(FId = {HEAD, _, _}) when HEAD == qid ->
+                    is_stateful(ST#purifier_st.env, FId);
+                _ -> false
+            end
+        of
             false -> pure;
             true  -> impure
         end,
@@ -2920,7 +2921,7 @@ purify_expr({lam, Ann, Args, Body}, {fun_t, TAnn, [], TArgs, _}, ST) ->
     BodyST = ST#purifier_st{state = StateVarT, balance = BalanceVarT},
     {BodyPure, ?typed_p(_, BodyT) = Body1} =
         purify_expr(Body, BodyST),
-    Body2 = wrap_pure(BodyPure, Body1, BodyST),
+    Body2 = wrap_if_pure(BodyPure, Body1, BodyST),
     purify_typed(
       pure, {lam, Ann, Args1, Body2},
       {fun_t, [{stateful, true}|TAnn], [], [get_state_t(ST), balance_t(Ann)|TArgs], BodyT},
@@ -2967,7 +2968,7 @@ purify_block(PurePrev, [Expr], ST) ->
     {PureExpr, Expr1} = purify_expr(Expr, ST),
     Pure = pure_plus(PurePrev, PureExpr),
     PureToWrap = pure_prod(switch_pure(PureExpr), PurePrev),
-    {Pure, [wrap_impure(PureToWrap, Expr1, ST)]};
+    {Pure, [wrap_if_impure(PureToWrap, Expr1, ST)]};
 purify_block(PurePrev, [{letval, Ann, Pat, Expr}|Rest], ST) ->
     {PureExpr, Expr1} = purify_expr(Expr, ST),
     PureNext = pure_plus(PurePrev, PureExpr),
@@ -3126,10 +3127,10 @@ pp_error(ErrBin) ->
 
 pp_context(none) ->
     "";
-pp_context({app, Ann, {typed, _, Fun, _}, N}) ->
+pp_context({app, Ann, Fun, N}) ->
     io_lib:format(
       "arising from an application of ~p to its ~s argument",
-      [ aeso_pretty:pp(expr, Fun)
+      [ aeso_pretty:pp(expr, strip_typed(Fun))
       , case aeso_syntax:get_ann(format, Ann, prefix) of
             prefix -> case abs(N rem 10) of
                           1 -> integer_to_list(N) ++ "st";
@@ -3149,7 +3150,7 @@ pp_context(else) ->
     "arising from the negation of the `if` condition";
 pp_context({switch, N}) ->
     io_lib:format(
-      "arising from the assumption of triggering of the ~s branch of `switch`",
+      "arising from the assumption of triggering the ~s branch of `switch`",
       [case abs(N rem 10) of
           1 -> integer_to_list(N) ++ "st";
           2 -> integer_to_list(N) ++ "nd";
